@@ -29,9 +29,10 @@ jobs:
 
     steps:
       - name: Checkout do repositório
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
+
+      - name: Instalar cargo-audit
+        uses: taiki-e/install-action@cargo-audit
 
       - name: Checagem com cargo-audit
-        uses: rustsec/audit-check@v1.4.1
-        with:
-          token: ${{ secrets.GITHUB_TOKEN }}
+        run: cargo audit
