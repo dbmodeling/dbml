@@ -233,7 +233,7 @@ checksum = "330a5ed07fa54e4702c9d6c4174f74427fc0ef6e214bbd677ae50a5099946470"
 
 [[package]]
 name = "app"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "anyhow",
  "dbml-analysis",
@@ -1430,7 +1430,7 @@ checksum = "be1e0bca6c3637f992fc1cc7cbc52a78c1ef6db076dbf1059c4323d6a2048376"
 
 [[package]]
 name = "dbml-analysis"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "dbml-syntax",
  "insta",
@@ -1441,7 +1441,7 @@ dependencies = [
 
 [[package]]
 name = "dbml-cli"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "anyhow",
  "axum",
@@ -1463,7 +1463,7 @@ dependencies = [
 
 [[package]]
 name = "dbml-edit"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "dbml-syntax",
  "insta",
@@ -1473,7 +1473,7 @@ dependencies = [
 
 [[package]]
 name = "dbml-syntax"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "insta",
  "logos",
@@ -1483,7 +1483,7 @@ dependencies = [
 
 [[package]]
 name = "dbml-wasm"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "dbml-analysis",
  "dbml-edit",
@@ -3713,7 +3713,7 @@ dependencies = [
 
 [[package]]
 name = "layout"
-version = "0.1.2"
+version = "0.1.3"
 
 [[package]]
 name = "lazy_static"
@@ -5979,7 +5979,7 @@ dependencies = [
 
 [[package]]
 name = "schema"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "serde",
 ]
