@@ -30,8 +30,8 @@ strip "${STAGE_DIR}/usr/bin/${PKG_NAME}" || true
 chmod 0755 "${STAGE_DIR}/usr/bin/${PKG_NAME}"
 
 cp "${ROOT_DIR}/LICENSE" "${STAGE_DIR}/usr/share/doc/${PKG_NAME}/copyright"
-cp "${ROOT_DIR}/crates/app/assets/icon.svg" "${STAGE_DIR}/usr/share/icons/hicolor/scalable/apps/${PKG_NAME}.svg"
-cp "${ROOT_DIR}/crates/app/assets/icon-256.png" "${STAGE_DIR}/usr/share/icons/hicolor/256x256/apps/${PKG_NAME}.png"
+cp "${ROOT_DIR}/crates/app/assets/brand/icon.svg" "${STAGE_DIR}/usr/share/icons/hicolor/scalable/apps/${PKG_NAME}.svg"
+cp "${ROOT_DIR}/crates/app/assets/brand/icon-256.png" "${STAGE_DIR}/usr/share/icons/hicolor/256x256/apps/${PKG_NAME}.png"
 
 cat > "${STAGE_DIR}/usr/share/applications/${PKG_NAME}.desktop" <<EOF
 [Desktop Entry]
