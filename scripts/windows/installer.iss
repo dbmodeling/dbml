@@ -7,7 +7,7 @@
 
 #define AppName "DB Modeling"
 #define AppPublisher "DB Modeling Team"
-#define AppURL "https://github.com/brenoLucasN/db_modeling"
+#define AppURL "https://github.com/dbmodeling/dbml"
 #define AppExeName "db-modeling.exe"
 #define AppId "{{C5963E01-8A18-4DC5-8B29-4BE558F49221}}"
 
