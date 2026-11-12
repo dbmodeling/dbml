@@ -3,8 +3,12 @@ use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use tokio::sync::{RwLock, broadcast};
 
+static TMP_SEQ: AtomicU64 = AtomicU64::new(0);
+
+#[must_use]
 pub fn compute_hash(content: &str) -> u64 {
     let mut hasher = DefaultHasher::new();
     content.hash(&mut hasher);
@@ -12,18 +16,24 @@ pub fn compute_hash(content: &str) -> u64 {
 }
 
 /// Realiza gravação atômica em disco utilizando arquivo temporário e rename do sistema de arquivos.
+///
+/// # Errors
+///
+/// Returns an error if writing the temporary file or renaming it to `path` fails.
 pub async fn atomic_write(path: &Path, content: &str) -> anyhow::Result<()> {
     let parent = path.parent().unwrap_or_else(|| Path::new("."));
     let file_name = path.file_name().and_then(|n| n.to_str()).unwrap_or("file");
-    let tmp_path = parent.join(format!(".{file_name}.tmp-{}", std::process::id()));
+    let seq = TMP_SEQ.fetch_add(1, Ordering::Relaxed);
+    let tmp_path = parent.join(format!(".{file_name}.tmp-{}-{seq}", std::process::id()));
 
     tokio::fs::write(&tmp_path, content)
         .await
         .with_context(|| format!("Failed to write temporary file '{}'", tmp_path.display()))?;
 
-    tokio::fs::rename(&tmp_path, path)
-        .await
-        .with_context(|| format!("Failed to rename file to '{}'", path.display()))?;
+    if let Err(err) = tokio::fs::rename(&tmp_path, path).await {
+        let _ = tokio::fs::remove_file(&tmp_path).await;
+        return Err(err).with_context(|| format!("Failed to rename file to '{}'", path.display()));
+    }
 
     Ok(())
 }
@@ -56,6 +66,11 @@ fn scan_dbml_dir(dir: &Path) -> Vec<PathBuf> {
 }
 
 impl AppState {
+    /// Initializes [`AppState`] for a `.dbml` file or project directory.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if creating or reading the active `.dbml` file fails.
     pub async fn new(target: PathBuf) -> anyhow::Result<Self> {
         let target_abs = std::fs::canonicalize(&target).unwrap_or(target);
         let (project_dir, file_path) = if target_abs.is_dir() {
@@ -142,8 +157,24 @@ impl AppState {
             .collect()
     }
 
+    /// Switches the active document to `new_path` within the active workspace.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if `new_path` is outside the workspace, is not a file, or cannot be read.
     pub async fn switch_file(&self, new_path: PathBuf) -> anyhow::Result<()> {
-        let canonical = std::fs::canonicalize(&new_path).unwrap_or(new_path);
+        let canonical = tokio::fs::canonicalize(&new_path).await.unwrap_or(new_path);
+        let allowed = canonical == self.target_path
+            || self
+                .project_dir
+                .as_ref()
+                .is_some_and(|dir| canonical.starts_with(dir));
+        if !allowed {
+            anyhow::bail!(
+                "Access denied: '{}' is outside the active workspace",
+                canonical.display()
+            );
+        }
         if !canonical.is_file() {
             anyhow::bail!("File not found: {}", canonical.display());
         }
@@ -170,6 +201,11 @@ impl AppState {
         Ok(())
     }
 
+    /// Atomically persists `new_content` to the active `.dbml` file and updates in-memory state.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the atomic write fails.
     pub async fn save_content(&self, new_content: String) -> anyhow::Result<()> {
         let new_hash = compute_hash(&new_content);
 
@@ -190,6 +226,11 @@ impl AppState {
         Ok(())
     }
 
+    /// Atomically persists `layout_json` to the `.layout.json` sidecar file.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the atomic write fails.
     pub async fn save_layout(&self, layout_json: String) -> anyhow::Result<()> {
         let lp = self.layout_path.read().await.clone();
         atomic_write(&lp, &layout_json).await?;

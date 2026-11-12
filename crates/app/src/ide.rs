@@ -67,6 +67,10 @@ impl DbmlHighlighter {
         let mut brace_stack = Vec::new();
         let mut in_brackets = false;
         let mut prev_sig: Option<SyntaxKind> = None;
+        #[expect(
+            clippy::redundant_closure_for_method_calls,
+            reason = "rowan is not a direct dependency of app; method call syntax avoids adding it"
+        )]
         for tok in root
             .descendants_with_tokens()
             .filter_map(|e| e.into_token())

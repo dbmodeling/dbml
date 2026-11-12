@@ -155,7 +155,10 @@ fn c(v: u32) -> Hsla {
 impl Glass {
     /// `translucent`: chrome e laterais com alfa sobre o blur da janela. Só faz sentido
     /// onde o sistema desfoca o fundo (Windows); sem blur, tudo opaco para não "sujar".
-    #[allow(dead_code)]
+    #[expect(
+        dead_code,
+        reason = "Design-token scale helpers retained for UI components"
+    )]
     pub fn of(mode: Mode, translucent: bool) -> Self {
         Self::of_scaled(mode, translucent, 1.0)
     }
@@ -174,37 +177,58 @@ impl Glass {
         g
     }
 
-    #[allow(dead_code)]
+    #[expect(
+        dead_code,
+        reason = "Design-token scale helpers retained for UI components"
+    )]
     pub fn font_xs(&self) -> Pixels {
         px((12. * self.ui_scale).round())
     }
 
-    #[allow(dead_code)]
+    #[expect(
+        dead_code,
+        reason = "Design-token scale helpers retained for UI components"
+    )]
     pub fn font_sm(&self) -> Pixels {
         px((13.5 * self.ui_scale).round())
     }
 
-    #[allow(dead_code)]
+    #[expect(
+        dead_code,
+        reason = "Design-token scale helpers retained for UI components"
+    )]
     pub fn font_base(&self) -> Pixels {
         px((14.5 * self.ui_scale).round())
     }
 
-    #[allow(dead_code)]
+    #[expect(
+        dead_code,
+        reason = "Design-token scale helpers retained for UI components"
+    )]
     pub fn font_lg(&self) -> Pixels {
         px((16.5 * self.ui_scale).round())
     }
 
-    #[allow(dead_code)]
+    #[expect(
+        dead_code,
+        reason = "Design-token scale helpers retained for UI components"
+    )]
     pub fn icon_sm(&self) -> Pixels {
         px((14. * self.ui_scale).round())
     }
 
-    #[allow(dead_code)]
+    #[expect(
+        dead_code,
+        reason = "Design-token scale helpers retained for UI components"
+    )]
     pub fn icon_md(&self) -> Pixels {
         px((17. * self.ui_scale).round())
     }
 
-    #[allow(dead_code)]
+    #[expect(
+        dead_code,
+        reason = "Design-token scale helpers retained for UI components"
+    )]
     pub fn icon_lg(&self) -> Pixels {
         px((20. * self.ui_scale).round())
     }

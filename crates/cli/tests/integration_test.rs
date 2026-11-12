@@ -49,3 +49,26 @@ async fn test_hash_calculation_and_suppression() {
         dbml_cli::state::compute_hash(text3)
     );
 }
+
+#[tokio::test]
+async fn test_switch_file_rejects_outside_workspace() {
+    let base = std::env::temp_dir().join(format!("dbml_ws_test_{}", std::process::id()));
+    let _ = tokio::fs::remove_dir_all(&base).await;
+    tokio::fs::create_dir_all(&base).await.unwrap();
+
+    let inside = base.join("inside.dbml");
+    let outside = std::env::temp_dir().join(format!("dbml_outside_{}.dbml", std::process::id()));
+    tokio::fs::write(&inside, "Table a { id int [pk] }\n")
+        .await
+        .unwrap();
+    tokio::fs::write(&outside, "Table secret { id int [pk] }\n")
+        .await
+        .unwrap();
+
+    let state = dbml_cli::state::AppState::new(base.clone()).await.unwrap();
+    assert!(state.switch_file(inside.clone()).await.is_ok());
+    assert!(state.switch_file(outside.clone()).await.is_err());
+
+    let _ = tokio::fs::remove_dir_all(&base).await;
+    let _ = tokio::fs::remove_file(&outside).await;
+}

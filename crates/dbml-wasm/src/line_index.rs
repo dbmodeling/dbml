@@ -12,21 +12,27 @@ pub struct Position {
     pub character: u32,
 }
 
-/// Intervalo textual baseado em posições de linha e coluna UTF-16.
+/// Textual range defined by UTF-16 start and end positions.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Range {
+    /// Inclusive start position.
     pub start: Position,
+    /// Exclusive end position.
     pub end: Position,
 }
 
-/// Identificador de quebra de linha predominante no arquivo.
+/// Predominant line-ending style detected in a document.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LineEnding {
+    /// Unix line feed (`\n`).
     Lf,
+    /// Windows carriage-return + line feed (`\r\n`).
     Crlf,
 }
 
 impl LineEnding {
+    /// Returns the line-ending string slice (`"\n"` or `"\r\n"`).
+    #[must_use]
     pub fn as_str(&self) -> &'static str {
         match self {
             LineEnding::Lf => "\n",
@@ -47,6 +53,8 @@ pub struct LineIndex {
 }
 
 impl LineIndex {
+    /// Builds a [`LineIndex`] for `text` by recording line-start byte offsets.
+    #[must_use]
     pub fn new(text: &str) -> Self {
         let mut line_starts = vec![0];
         let bytes = text.as_bytes();
@@ -77,21 +85,31 @@ impl LineIndex {
         }
     }
 
+    /// Returns the predominant [`LineEnding`] detected in the indexed text.
+    #[must_use]
     pub fn line_ending(&self) -> LineEnding {
         self.line_ending
     }
 
+    /// Returns the total length of the indexed text in bytes.
+    #[must_use]
     pub fn len(&self) -> usize {
         self.len
     }
 
+    /// Returns `true` if the indexed text is empty.
+    #[must_use]
     pub fn is_empty(&self) -> bool {
         self.len == 0
     }
 
     /// Converte um offset de byte UTF-8 para uma posição `(line, character)` UTF-16.
+    #[must_use]
     pub fn offset_to_position(&self, text: &str, offset: usize) -> Position {
-        let offset = offset.min(self.len);
+        let mut offset = offset.min(self.len).min(text.len());
+        while !text.is_char_boundary(offset) {
+            offset -= 1;
+        }
 
         // Busca binária para encontrar a linha do offset
         let line = match self.line_starts.binary_search(&offset) {
@@ -99,7 +117,10 @@ impl LineIndex {
             Err(idx) => idx.saturating_sub(1),
         };
 
-        let line_start_offset = self.line_starts[line];
+        let mut line_start_offset = self.line_starts[line].min(offset);
+        while !text.is_char_boundary(line_start_offset) {
+            line_start_offset -= 1;
+        }
         let line_slice = &text[line_start_offset..offset];
 
         // Conta código UTF-16 no slice da linha até o offset
@@ -115,6 +136,7 @@ impl LineIndex {
     }
 
     /// Converte uma posição `(line, character)` UTF-16 para offset em bytes UTF-8.
+    #[must_use]
     pub fn position_to_offset(&self, text: &str, pos: Position) -> Option<usize> {
         let line = pos.line as usize;
         if line >= self.line_starts.len() {
@@ -139,7 +161,8 @@ impl LineIndex {
         Some((line_start + byte_offset_in_line).min(self.len))
     }
 
-    /// Converte um range de bytes (std::ops::Range<usize>) para Range LSP (UTF-16).
+    /// Converte um range de bytes (`std::ops::Range<usize>`) para Range LSP (UTF-16).
+    #[must_use]
     pub fn byte_range_to_range(&self, text: &str, r: std::ops::Range<usize>) -> Range {
         Range {
             start: self.offset_to_position(text, r.start),

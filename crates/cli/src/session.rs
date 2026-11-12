@@ -16,10 +16,12 @@ fn path() -> Option<PathBuf> {
     Some(base.join("db-modeling").join("cli-session.json"))
 }
 
+#[must_use]
 pub fn load() -> CliSession {
     path().map(|p| load_from(&p)).unwrap_or_default()
 }
 
+#[must_use]
 pub fn load_from(p: &Path) -> CliSession {
     let Ok(text) = std::fs::read_to_string(p) else {
         return CliSession::default();

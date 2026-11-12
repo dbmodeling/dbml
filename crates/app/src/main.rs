@@ -4,6 +4,7 @@
 
 mod actions;
 mod canvas;
+mod canvas_geom;
 mod glass;
 mod ide;
 mod platform;
@@ -104,6 +105,6 @@ fn main() {
             shell
         })
         .expect("failed to open window");
-        shell::register_global_actions(win, shell, cx);
+        shell::register_global_actions(win, &shell, cx);
     });
 }

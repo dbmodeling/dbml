@@ -62,3 +62,10 @@ editor como o Zed ou de uma ferramenta como Figma/Linear.
 - **Conexão com banco**: sem leitura/introspecção de banco existente.
 - **SQL**: sem export/import de DDL nem migrações. O foco é exclusivamente o visual da modelagem.
 - macOS (GPUI suporta, mas não é alvo; pode ser avaliado no futuro).
+
+
+## Estado atual implementado
+
+- **3 alvos sincronizados:** App Desktop nativo (`crates/app`), CLI Web Server (`crates/cli` / `dbml`) e Extensão VS Code (`vscode-extension/`), compartilhando o núcleo Rust e `packages/canvas-web` via `crates/dbml-wasm`.
+- **Plataformas:** Windows, Linux (Ubuntu/Fedora) e macOS, com instaladores (`.exe`, `.dmg`/`.pkg`, `.deb`, `.rpm` e `scripts/install.sh`).
+- **Exports:** PNG, JPEG, SVG e Mermaid `erDiagram`.

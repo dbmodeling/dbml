@@ -87,35 +87,41 @@ pub struct RunConfig {
 }
 
 impl Cli {
+    /// Resolves CLI flags and fallback session target into a [`RunConfig`].
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if no target file or folder was provided and no previous session exists.
     pub fn resolve_config(self) -> anyhow::Result<RunConfig> {
         let (file, port, host, no_open, no_watch) = match self.command {
-            Some(Commands::Run {
-                file,
-                port,
-                host,
-                no_open,
-                no_watch,
-            })
-            | Some(Commands::Serve {
-                file,
-                port,
-                host,
-                no_open,
-                no_watch,
-            }) => (file, port, host, no_open, no_watch),
+            Some(
+                Commands::Run {
+                    file,
+                    port,
+                    host,
+                    no_open,
+                    no_watch,
+                }
+                | Commands::Serve {
+                    file,
+                    port,
+                    host,
+                    no_open,
+                    no_watch,
+                },
+            ) => (file, port, host, no_open, no_watch),
             None => (self.file, self.port, self.host, self.no_open, self.no_watch),
         };
 
-        let resolved_file = match file {
-            Some(f) => f,
-            None => {
-                let session = crate::session::load();
-                match session.last_target {
-                    Some(prev) if prev.exists() => prev,
-                    _ => anyhow::bail!(
-                        "No .dbml file or folder specified and no previous session found. Usage: dbml <file.dbml | folder>"
-                    ),
-                }
+        let resolved_file = if let Some(f) = file {
+            f
+        } else {
+            let session = crate::session::load();
+            match session.last_target {
+                Some(prev) if prev.exists() => prev,
+                _ => anyhow::bail!(
+                    "No .dbml file or folder specified and no previous session found. Usage: dbml <file.dbml | folder>"
+                ),
             }
         };
 

@@ -97,3 +97,10 @@ Enum post_status {
 ```
 
 JSON formatado de forma estável (chaves ordenadas, 2 espaços) para diffs limpos no git.
+
+
+## Estado atual implementado
+
+- **Parser e helpers (`crates/dbml-syntax`):** Lexer `logos` + CST `rowan` sem perdas e sem `unsafe`, expondo também `unquote`, `child_tokens` e `descendant_tokens` compartilhados.
+- **Análise e edição (`crates/dbml-analysis`, `crates/dbml-edit`):** `analyze`, `lint`, `complete` (com proteção de limites UTF-8 e `proptest`), `Patch` e `EditError` (`Display` + `std::error::Error`).
+- **Recursos DBML e sidecar:** Suporte a `Table`, colunas (`pk`, `not null`, `unique`, `ref`), `Ref` (`<`, `>`, `-`, `<>`), `TableGroup` (`color`), `headercolor`, extração de `Enum` e sidecar determinístico `*.dbml.layout.json`.

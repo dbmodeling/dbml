@@ -2,19 +2,9 @@
 //! tabela (`headercolor`). Cada função devolve o texto novo, tocando só os
 //! trechos necessários (comentários e formatação do resto ficam intactos).
 
-use dbml_syntax::{SyntaxKind, SyntaxNode, parse};
+use dbml_syntax::{SyntaxKind, SyntaxNode, child_tokens as sig, parse, unquote};
 use rowan::TextRange;
-
-fn sig(n: &SyntaxNode) -> Vec<dbml_syntax::SyntaxToken> {
-    n.children_with_tokens()
-        .filter_map(|e| e.into_token())
-        .filter(|t| !t.kind().is_trivia())
-        .collect()
-}
-
-fn unquote(s: &str) -> &str {
-    s.trim_matches(|c| c == '"' || c == '\'' || c == '`')
-}
+use std::fmt::Write as _;
 
 fn name_of(n: &SyntaxNode) -> Option<String> {
     sig(n)
@@ -26,7 +16,7 @@ fn name_of(n: &SyntaxNode) -> Option<String> {
 
 fn member(line: &SyntaxNode) -> Option<String> {
     line.descendants_with_tokens()
-        .filter_map(|e| e.into_token())
+        .filter_map(rowan::NodeOrToken::into_token)
         .find(|t| !t.kind().is_trivia())
         .map(|t| unquote(t.text()).to_string())
 }
@@ -83,6 +73,7 @@ fn remove_members(text: &str, tables: &[&str]) -> String {
 }
 
 /// Cria `TableGroup name { ... }` no fim do texto com `tables`, tirando-as de grupos antigos.
+#[must_use]
 pub fn group_tables(text: &str, tables: &[&str], name: &str) -> String {
     let mut out = remove_members(text, tables);
     while out.ends_with("\n\n") {
@@ -94,20 +85,22 @@ pub fn group_tables(text: &str, tables: &[&str], name: &str) -> String {
     if !out.is_empty() {
         out.push('\n');
     }
-    out.push_str(&format!("TableGroup {name} {{\n"));
+    let _ = writeln!(out, "TableGroup {name} {{");
     for t in tables {
-        out.push_str(&format!("  {t}\n"));
+        let _ = writeln!(out, "  {t}");
     }
     out.push_str("}\n");
     out
 }
 
 /// Tira a tabela do grupo em que estiver.
+#[must_use]
 pub fn ungroup_table(text: &str, table: &str) -> String {
     remove_members(text, &[table])
 }
 
 /// First available `group_N` name.
+#[must_use]
 pub fn next_group_name(text: &str) -> String {
     let root = parse(text).syntax();
     let names: Vec<String> = root
@@ -115,13 +108,14 @@ pub fn next_group_name(text: &str) -> String {
         .filter(|n| n.kind() == SyntaxKind::TableGroup)
         .filter_map(|n| name_of(&n))
         .collect();
-    (1..)
+    (1..=names.len() + 1)
         .map(|i| format!("group_{i}"))
         .find(|n| !names.contains(n))
-        .unwrap()
+        .unwrap_or_else(|| format!("group_{}", names.len() + 1))
 }
 
 /// Define (ou remove, com `None`) `headercolor` no cabeçalho da tabela.
+#[must_use]
 pub fn set_table_color(text: &str, table: &str, color: Option<&str>) -> Option<String> {
     let root = parse(text).syntax();
     let t = root

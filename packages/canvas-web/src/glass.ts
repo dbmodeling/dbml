@@ -1,6 +1,6 @@
 /**
  * Camada de tema e constantes visuais portada 1:1 de `crates/app/src/glass.rs`
- * e `crates/app/src/canvas.rs` / `crates/app/src/shell.rs`.
+ * e `crates/app/src/canvas.rs` / `crates/app/src/shell/mod.rs`.
  */
 
 export const CARD_W = 260;
@@ -45,7 +45,7 @@ export const TABLE_COLORS: ReadonlyArray<readonly [string, string]> = [
   ['Violet', '#8b5cf6'],
 ];
 
-/** Tipos padrão sugeridos no autocomplete do Inspector (`crates/app/src/shell.rs::STANDARD_TYPES`) */
+/** Tipos padrão sugeridos no autocomplete do Inspector (`crates/app/src/shell/mod.rs::STANDARD_TYPES`) */
 export const STANDARD_TYPES: ReadonlyArray<readonly [string, string]> = [
   ['int', '4-byte integer'],
   ['bigint', '8-byte integer'],

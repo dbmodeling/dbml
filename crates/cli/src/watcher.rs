@@ -3,6 +3,11 @@ use notify::{Config, Event, RecommendedWatcher, RecursiveMode, Watcher};
 use std::sync::mpsc::channel;
 use std::time::Duration;
 
+/// Starts a background filesystem watcher for external edits to the active `.dbml` file.
+///
+/// # Errors
+///
+/// Returns an error if initializing the OS file watcher or watching the directory fails.
 pub fn start_file_watcher(state: AppState) -> anyhow::Result<()> {
     let watch_dir = state
         .project_dir
@@ -53,7 +58,7 @@ pub fn start_file_watcher(state: AppState) -> anyhow::Result<()> {
                                 }
                                 {
                                     let mut content_lock = state.content.write().await;
-                                    *content_lock = new_content.clone();
+                                    content_lock.clone_from(&new_content);
                                 }
 
                                 let msg = serde_json::json!({

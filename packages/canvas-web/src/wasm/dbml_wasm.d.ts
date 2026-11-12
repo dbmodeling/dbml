@@ -3,16 +3,28 @@
 
 /**
  * Aplica um comando semântico e gera o patch textual mínimo com metadados de UI.
+ *
+ * # Errors
+ *
+ * Returns a [`JsValue`] error if `command_js` cannot be deserialized or serialization fails.
  */
 export function apply_command(source: string, command_js: any): any;
 
 /**
  * Executa o algoritmo de auto-layout oficial (`auto_layout_schema`: `layout::layered` ou `layout::clustered`).
+ *
+ * # Errors
+ *
+ * Returns a [`JsValue`] error if JSON serialization fails.
  */
 export function compute_layout(source: string, _params_js: any): any;
 
 /**
  * Calcula toda a cena geométrica (posições de tabelas, caixas de grupos, FKs, polilinhas ortogonais SVG).
+ *
+ * # Errors
+ *
+ * Returns a [`JsValue`] error if JSON serialization fails.
  */
 export function compute_scene(source: string, positions_js: any): any;
 
@@ -23,11 +35,19 @@ export function format_dbml(source: string): string;
 
 /**
  * Analisa o código-fonte DBML e devolve a projeção semântica (`Schema`), diagnósticos e `Enum`s.
+ *
+ * # Errors
+ *
+ * Returns a [`JsValue`] error if JSON serialization fails.
  */
 export function parse_and_analyze(source: string): any;
 
 /**
  * Move uma linha para cima ou para baixo (`Alt+Up` / `Alt+Down`) preservando terminadores CRLF/LF.
+ *
+ * # Errors
+ *
+ * Returns a [`JsValue`] error if JSON serialization fails.
  */
 export function swap_dbml_lines(source: string, line: number, up: boolean): any;
 

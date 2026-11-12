@@ -1,7 +1,7 @@
 /**
  * Renderizadores dos painéis laterais (Sidebar Esquema/Problemas, Inspector Completo,
  * Paleta de Comandos `Ctrl+K`, Modal de Atalhos `Ctrl+/` e Menu de Aparência).
- * Portado 1:1 de `crates/app/src/shell.rs`.
+ * Portado 1:1 de `crates/app/src/shell/panels.rs`.
  */
 
 import { Schema, Diagnostic } from './types';
@@ -32,7 +32,7 @@ export function renderKbd(keys: string[]): string {
   return keys.map((k) => `<span class="dbm-kbd">${escHtml(k)}</span>`).join(' ');
 }
 
-/** Renderiza a aba Esquema da Sidebar esquerda (`shell.rs::schema_pane`) */
+/** Renderiza a aba Esquema da Sidebar esquerda (`shell/panels.rs::schema_pane`) */
 export function renderSchemaPane(
   schema: Schema,
   selection: string[],
@@ -93,7 +93,7 @@ export function renderSchemaPane(
   return body;
 }
 
-/** Renderiza a aba Problemas da Sidebar esquerda (`shell.rs::problems_pane`) */
+/** Renderiza a aba Problemas da Sidebar esquerda (`shell/panels.rs::problems_pane`) */
 export function renderProblemsPane(
   diags: Diagnostic[],
   docTitle: string,
@@ -133,7 +133,7 @@ export function renderProblemsPane(
   return html;
 }
 
-/** Renderiza o Inspector lateral direito completo (`shell.rs::inspector`) */
+/** Renderiza o Inspector lateral direito completo (`shell/panels.rs::inspector`) */
 export function renderInspectorPane(params: {
   schema: Schema;
   selection: string[];
@@ -351,7 +351,7 @@ export function renderInspectorPane(params: {
     `;
   }
 
-  // Caso 3: Nada selecionado (`shell.rs` linhas 2837-2889)
+  // Caso 3: Nada selecionado (`shell/panels.rs`)
   const tips: Array<[string, string[]]> = [
     ['Select', ['V']],
     ['Pan view', ['H']],

@@ -71,7 +71,7 @@ pub fn load() -> Settings {
                     .parse::<f32>()
                     .ok()
                     .filter(|w| (60.0..=400.0).contains(w))
-                    .unwrap_or(d.col_type_w)
+                    .unwrap_or(d.col_type_w);
             }
             Some(("translucent_cards", v)) => s.translucent_cards = v.trim() == "true",
             Some(("ui_scale", v)) => {
@@ -104,22 +104,17 @@ pub fn save(s: &Settings) {
         Some(Mode::Light) => "light",
         _ => "dark",
     };
-    if let Some(dir) = p.parent() {
-        let _ = std::fs::create_dir_all(dir);
-    }
-    let _ = std::fs::write(
-        p,
-        format!(
-            "mode={mode}\nsidebar_w={}\neditor_w={}\ninspector_w={}\ncol_type_w={}\ntranslucent_cards={}\nui_scale={:.2}\ninspector_auto_hide={}\nsidebar_open={}\ninspector_open={}\n",
-            s.sidebar_w.round(),
-            s.editor_w.round(),
-            s.inspector_w.round(),
-            s.col_type_w.round(),
-            s.translucent_cards,
-            s.ui_scale,
-            s.inspector_auto_hide,
-            s.sidebar_open,
-            s.inspector_open,
-        ),
+    let body = format!(
+        "mode={mode}\nsidebar_w={}\neditor_w={}\ninspector_w={}\ncol_type_w={}\ntranslucent_cards={}\nui_scale={:.2}\ninspector_auto_hide={}\nsidebar_open={}\ninspector_open={}\n",
+        s.sidebar_w.round(),
+        s.editor_w.round(),
+        s.inspector_w.round(),
+        s.col_type_w.round(),
+        s.translucent_cards,
+        s.ui_scale,
+        s.inspector_auto_hide,
+        s.sidebar_open,
+        s.inspector_open,
     );
+    let _ = crate::session::atomic_write_sync(&p, &body);
 }

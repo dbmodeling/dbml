@@ -3,23 +3,33 @@
 
 use crate::analyze;
 
+/// Category of a DBML autocompletion suggestion.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CompletionKind {
+    /// Top-level DBML keyword (`Table`, `Ref`, `TableGroup`, `Enum`).
     Keyword,
+    /// Built-in or user-defined column data type.
     Type,
+    /// Bracketed column or table setting (`pk`, `unique`, `not null`, etc.).
     Setting,
+    /// Table name in a group or relationship reference.
     Table,
+    /// Column name after `table.`.
     Column,
 }
 
+/// A single context-aware autocompletion item.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Completion {
+    /// Display label shown in the completion menu.
     pub label: String,
-    /// Texto inserido (pode diferir do rótulo, ex.: `Ref: ` com espaço).
+    /// Text inserted when accepted (may differ from `label`, e.g., `Ref: `).
     pub insert: String,
+    /// Semantic kind of this completion.
     pub kind: CompletionKind,
+    /// Short description or type detail shown alongside `label`.
     pub detail: String,
-    /// Intervalo (bytes) que a inserção substitui: a palavra em digitação.
+    /// Byte range in the source text replaced by `insert`.
     pub replace: std::ops::Range<usize>,
 }
 
@@ -62,14 +72,19 @@ const SETTINGS: [(&str, &str, &str); 8] = [
 ];
 
 /// Retorna sugestões para o cursor em `offset` (bytes). O prefixo já digitado filtra a lista.
+#[must_use]
 pub fn complete(text: &str, offset: usize) -> Vec<Completion> {
-    let offset = offset.min(text.len());
+    let mut offset = offset.min(text.len());
+    while !text.is_char_boundary(offset) {
+        offset -= 1;
+    }
     let before = &text[..offset];
     let line = &before[before.rfind('\n').map_or(0, |i| i + 1)..];
     // palavra em digitação (inclui `.` para tabela.coluna)
     let word_start = line
-        .rfind(|c: char| !(c.is_alphanumeric() || c == '_' || c == '.'))
-        .map_or(0, |i| i + 1);
+        .char_indices()
+        .rfind(|&(_, c)| !(c.is_alphanumeric() || c == '_' || c == '.'))
+        .map_or(0, |(i, c)| i + c.len_utf8());
     let word = &line[word_start..];
     let ctx = &line[..word_start];
 
@@ -257,5 +272,16 @@ mod tests {
         assert_eq!(labels(&c), vec!["email".to_string()]);
         let inline = "Table users {\n  id int [pk]\n}\nTable p {\n  u int [ref: > ";
         assert!(labels(inline).contains(&"users".to_string()));
+    }
+
+    proptest::proptest! {
+        #[test]
+        fn complete_and_lint_never_panic_on_arbitrary_utf8_offsets(
+            text in ".*",
+            offset in proptest::prelude::any::<usize>(),
+        ) {
+            let _ = complete(&text, offset);
+            let _ = crate::lint(&text);
+        }
     }
 }

@@ -27,3 +27,10 @@
 ## Perguntas em aberto
 
 1. **Licença** do código: open source (qual?) ou fechado/proprietário?
+
+
+## Atualizações de status
+
+- **Licença definida:** MIT ([LICENSE](file:///home/smovisk/Documents/db_modeling/LICENSE) e `Cargo.toml`).
+- **Alvos expandidos:** Além de Windows e Ubuntu, o projeto agora inclui **Fedora**, **macOS**, **CLI Web** e **Extensão VS Code**.
+- **Paridade (R8):** Métricas de cartão, paleta (`TABLE_COLORS`) e auto-layout ficam centralizados no crate `layout` e são sincronizados nos 3 alvos via `./scripts/sync-build.sh`.

@@ -44,3 +44,10 @@ Protótipos descartáveis, cada um respondendo uma pergunta:
 - Documentação gerada (HTML estilo dbdocs).
 - LSP standalone para DBML (reaproveitando `dbml-analysis`) para VS Code/Zed.
 - Colaboração (CRDT), plugins, macOS.
+
+
+## Estado atual implementado
+
+- **Núcleo Rust puro:** `schema`, `dbml-syntax`, `dbml-analysis`, `dbml-edit` e `layout` implementados com `#![forbid(unsafe_code)]`, `#![deny(missing_docs)]`, testes unitários, snapshots (`insta`) e `proptest`.
+- **3 alvos entregues:** App Desktop (`crates/app`), CLI Web (`crates/cli` / `dbml` com Axum/WebSocket) e Extensão VS Code (`vscode-extension/` + `crates/dbml-wasm` + `packages/canvas-web`), sincronizados por `./scripts/sync-build.sh`.
+- **Empacotamento:** Windows (`.exe` Inno Setup), macOS (`.dmg`/`.pkg`), Debian/Ubuntu (`.deb`), Fedora (`.rpm`) e `scripts/install.sh`.

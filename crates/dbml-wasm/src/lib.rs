@@ -1,7 +1,7 @@
-//! Módulo WebAssembly para o DB Modeling.
-//! Expõe parser CST (Rowan), análise semântica, gerador de patches mínimos,
-//! auto-layout clusterizado (`layout::clustered`), roteamento ortogonal (`layout::route`)
-//! e geometria completa da cena idênticos a `crates/app/src/canvas.rs` e `shell.rs`.
+#![forbid(unsafe_code)]
+#![deny(missing_docs)]
+//! WebAssembly bindings exposing the DB Modeling Rust core (CST parser, semantic
+//! analysis, minimal text patcher, clustered auto-layout, and orthogonal routing).
 
 pub mod line_index;
 pub mod types;
@@ -10,28 +10,14 @@ use line_index::LineIndex;
 use schema::Schema;
 use serde::Serialize;
 use std::collections::{HashMap, HashSet};
-use types::*;
+use std::fmt::Write as _;
+use types::{
+    AnalysisResult, Command, DiagnosticSeverity, GroupBox, LayoutResult, NodeCoordinate,
+    RoutedEdge, SceneGeometry, TableVisual, TextPatch, WasmDiagnostic,
+};
 use wasm_bindgen::prelude::*;
 
-pub const CARD_W: f32 = 260.0;
-pub const HEADER_H: f32 = 44.0;
-pub const ROW_H: f32 = 30.0;
-pub const GROUP_PAD: f32 = 32.0;
-
-pub const TABLE_COLORS: &[&str] = &[
-    "#3b82f6", // Azul
-    "#06b6d4", // Ciano
-    "#22c55e", // Verde
-    "#84cc16", // Lima
-    "#f59e0b", // Âmbar
-    "#f97316", // Laranja
-    "#ec4899", // Rosa
-    "#8b5cf6", // Violeta
-];
-
-pub fn card_h(cols: usize) -> f32 {
-    HEADER_H + ROW_H * cols as f32 + 8.0
-}
+pub use layout::{CARD_W, GROUP_PAD, HEADER_H, ROW_H, TABLE_COLORS, card_h};
 
 /// Serializa estruturas para `JsValue` garantindo que `HashMap` vire objeto JSON (`{}`) e não `Map`.
 fn to_js_json<T: Serialize>(value: &T) -> Result<JsValue, JsValue> {
@@ -42,6 +28,7 @@ fn to_js_json<T: Serialize>(value: &T) -> Result<JsValue, JsValue> {
 }
 
 /// Cor padrão de um grupo sem `color`: paleta fixa pela posição do grupo (idêntico a `canvas.rs`).
+#[must_use]
 pub fn group_color(schema: &Schema, group: &str) -> String {
     let i = schema
         .groups
@@ -51,7 +38,8 @@ pub fn group_color(schema: &Schema, group: &str) -> String {
     TABLE_COLORS[i % TABLE_COLORS.len()].to_string()
 }
 
-/// Extrai nomes de `Enum` definidos no código DBML (idêntico a `shell.rs`).
+/// Extrai nomes de `Enum` definidos no código DBML (idêntico a `crates/app/src/shell/mod.rs`).
+#[must_use]
 pub fn extract_enums_from_dbml(text: &str) -> Vec<String> {
     let mut enums = Vec::new();
     for line in text.lines() {
@@ -94,6 +82,7 @@ fn convert_diagnostic(
 
 /// Calcula o patch textual mínimo comparando o texto original e o novo texto gerado.
 /// Localiza o prefixo comum e o sufixo comum para gerar a edição mais pontual possível.
+#[must_use]
 pub fn compute_minimal_patch(original: &str, updated: &str, line_index: &LineIndex) -> TextPatch {
     if original == updated {
         let empty_pos = line_index.offset_to_position(original, original.len());
@@ -168,46 +157,31 @@ pub fn compute_minimal_patch(original: &str, updated: &str, line_index: &LineInd
     }
 }
 
-/// Auto-layout oficial portado de `crates/app/src/canvas.rs` (`auto_layout`).
+/// Auto-layout oficial compartilhado com `crates/app/src/canvas.rs` via `layout::compute_diagram_positions`.
 /// Respeita clusters de `TableGroup` via `layout::clustered` ou camadas via `layout::layered`.
+#[must_use]
 pub fn auto_layout_schema(schema: &Schema) -> HashMap<String, NodeCoordinate> {
-    let sizes: Vec<_> = schema
-        .tables
-        .iter()
-        .map(|t| layout::Size {
-            w: CARD_W,
-            h: card_h(t.columns.len()),
-        })
-        .collect();
+    let col_counts: Vec<usize> = schema.tables.iter().map(|t| t.columns.len()).collect();
     let idx = |n: &str| schema.tables.iter().position(|t| t.name == n);
     let edges: Vec<_> = schema
         .refs
         .iter()
         .filter_map(|r| Some((idx(&r.from.table)?, idx(&r.to.table)?)))
         .collect();
-    let sp = layout::Spacing {
-        gap_x: 104.0,
-        gap_y: 40.0,
-        margin: 0.0,
-    };
-    let pos = if schema.groups.is_empty() {
-        layout::layered(&sizes, &edges, &sp)
-    } else {
-        // um bloco por grupo + um para as tabelas sem grupo
-        let mut clusters: Vec<Vec<usize>> = schema
+    let clusters = (!schema.groups.is_empty()).then(|| {
+        let mut c: Vec<Vec<usize>> = schema
             .groups
             .iter()
             .map(|g| g.tables.iter().filter_map(|t| idx(t)).collect())
             .collect();
-        clusters.push(
+        c.push(
             (0..schema.tables.len())
                 .filter(|&i| schema.group_of(&schema.tables[i].name).is_none())
                 .collect(),
         );
-        // largura de linha cresce com o esquema: blocos quebram em linhas, diagrama mais "quadrado"
-        let row = ((schema.tables.len() as f32).sqrt() * 760.0).max(1650.0);
-        layout::clustered(&sizes, &edges, &clusters, &sp, GROUP_PAD, row)
-    };
+        c
+    });
+    let pos = layout::compute_diagram_positions(&col_counts, &edges, clusters.as_deref());
     schema
         .tables
         .iter()
@@ -218,6 +192,7 @@ pub fn auto_layout_schema(schema: &Schema) -> HashMap<String, NodeCoordinate> {
 
 /// Gera a string de path SVG (`M ... L ... Q ...`) para uma polilinha ortogonal com cantos arredondados
 /// em coordenadas de mundo (`z = 1.0`, raio `8.0`), usando a matemática exata de `polyline()` de `canvas.rs`.
+#[must_use]
 pub fn build_rounded_svg_path(pts: &[layout::Pos]) -> String {
     let Some(first) = pts.first() else {
         return String::new();
@@ -234,25 +209,31 @@ pub fn build_rounded_svg_path(pts: &[layout::Pos]) -> String {
         );
         let r = 8.0_f32.min(l1 / 2.0).min(l2 / 2.0);
         if r < 0.5 {
-            d.push_str(&format!(" L {:.2} {:.2}", c.x, c.y));
+            let _ = write!(d, " L {:.2} {:.2}", c.x, c.y);
             continue;
         }
         let d_in = ((c.x - p.x) / l1.max(0.001), (c.y - p.y) / l1.max(0.001));
         let d_out = ((n.x - c.x) / l2.max(0.001), (n.y - c.y) / l2.max(0.001));
         let start_corner = (c.x - d_in.0 * r, c.y - d_in.1 * r);
         let end_corner = (c.x + d_out.0 * r, c.y + d_out.1 * r);
-        d.push_str(&format!(
+        let _ = write!(
+            d,
             " L {:.2} {:.2} Q {:.2} {:.2} {:.2} {:.2}",
             start_corner.0, start_corner.1, c.x, c.y, end_corner.0, end_corner.1
-        ));
+        );
     }
     if let Some(last) = pts.last() {
-        d.push_str(&format!(" L {:.2} {:.2}", last.x, last.y));
+        let _ = write!(d, " L {:.2} {:.2}", last.x, last.y);
     }
     d
 }
 
 /// Calcula toda a geometria da cena (posições, grupos, tabelas, arestas ortogonais roteadas).
+#[must_use]
+#[expect(
+    clippy::implicit_hasher,
+    reason = "Concrete HashMap<String, NodeCoordinate> keeps Option::None callers ergonomic without turbofish"
+)]
 pub fn compute_scene_internal(
     schema: &Schema,
     provided_positions: Option<HashMap<String, NodeCoordinate>>,
@@ -447,6 +428,10 @@ pub fn compute_scene_internal(
 }
 
 /// Analisa o código-fonte DBML e devolve a projeção semântica (`Schema`), diagnósticos e `Enum`s.
+///
+/// # Errors
+///
+/// Returns a [`JsValue`] error if JSON serialization fails.
 #[wasm_bindgen]
 pub fn parse_and_analyze(source: &str) -> Result<JsValue, JsValue> {
     let schema = dbml_analysis::analyze(source);
@@ -469,6 +454,10 @@ pub fn parse_and_analyze(source: &str) -> Result<JsValue, JsValue> {
 }
 
 /// Aplica um comando semântico e gera o patch textual mínimo com metadados de UI.
+///
+/// # Errors
+///
+/// Returns a [`JsValue`] error if `command_js` cannot be deserialized or serialization fails.
 #[wasm_bindgen]
 pub fn apply_command(source: &str, command_js: JsValue) -> Result<JsValue, JsValue> {
     let command: Command = serde_wasm_bindgen::from_value(command_js)
@@ -550,7 +539,7 @@ pub fn apply_command(source: &str, command_js: JsValue) -> Result<JsValue, JsVal
         Command::GroupTables { name, tables } => {
             should_relayout = true;
             let group_name = name.unwrap_or_else(|| dbml_edit::next_group_name(source));
-            let table_refs: Vec<&str> = tables.iter().map(|s| s.as_str()).collect();
+            let table_refs: Vec<&str> = tables.iter().map(std::string::String::as_str).collect();
             dbml_edit::group_tables(source, &table_refs, &group_name)
         }
         Command::UngroupTable { table } => {
@@ -580,6 +569,10 @@ pub fn apply_command(source: &str, command_js: JsValue) -> Result<JsValue, JsVal
 }
 
 /// Move uma linha para cima ou para baixo (`Alt+Up` / `Alt+Down`) preservando terminadores CRLF/LF.
+///
+/// # Errors
+///
+/// Returns a [`JsValue`] error if JSON serialization fails.
 #[wasm_bindgen]
 pub fn swap_dbml_lines(source: &str, line: usize, up: bool) -> Result<JsValue, JsValue> {
     let has_crlf = source.contains("\r\n");
@@ -612,11 +605,16 @@ pub fn swap_dbml_lines(source: &str, line: usize, up: bool) -> Result<JsValue, J
 
 /// Executa a formatação canônica de código do documento DBML.
 #[wasm_bindgen]
+#[must_use]
 pub fn format_dbml(source: &str) -> String {
     dbml_edit::format(source)
 }
 
 /// Executa o algoritmo de auto-layout oficial (`auto_layout_schema`: `layout::layered` ou `layout::clustered`).
+///
+/// # Errors
+///
+/// Returns a [`JsValue`] error if JSON serialization fails.
 #[wasm_bindgen]
 pub fn compute_layout(source: &str, _params_js: JsValue) -> Result<JsValue, JsValue> {
     let schema = dbml_analysis::analyze(source);
@@ -626,6 +624,10 @@ pub fn compute_layout(source: &str, _params_js: JsValue) -> Result<JsValue, JsVa
 }
 
 /// Calcula toda a cena geométrica (posições de tabelas, caixas de grupos, FKs, polilinhas ortogonais SVG).
+///
+/// # Errors
+///
+/// Returns a [`JsValue`] error if JSON serialization fails.
 #[wasm_bindgen]
 pub fn compute_scene(source: &str, positions_js: JsValue) -> Result<JsValue, JsValue> {
     let schema = dbml_analysis::analyze(source);

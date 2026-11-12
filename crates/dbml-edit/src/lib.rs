@@ -1,4 +1,6 @@
-//! Operações semânticas -> patches textuais mínimos sobre o CST.
+#![forbid(unsafe_code)]
+#![deny(missing_docs)]
+//! Semantic editing operations producing minimal CST-preserving text patches.
 
 mod format;
 pub use format::{format, swap_lines};
@@ -14,37 +16,70 @@ pub use model::{
 use dbml_syntax::{SyntaxKind, SyntaxNode, parse};
 use rowan::TextRange;
 
-/// Substitui `range` por `new_text`. Aplicar patches é a única forma de mudar o texto.
+/// Byte-range text replacement; applying patches is the only way to mutate DBML text.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Patch {
+    /// Byte range in the original source text to replace.
     pub range: TextRange,
+    /// Replacement text inserted at [`Patch::range`].
     pub new_text: String,
 }
 
 impl Patch {
+    /// Applies this patch to `text` and returns the updated source string.
+    #[must_use]
     pub fn apply(&self, text: &str) -> String {
-        let (s, e) = (
-            usize::from(self.range.start()),
-            usize::from(self.range.end()),
-        );
+        let mut s = usize::from(self.range.start()).min(text.len());
+        let mut e = usize::from(self.range.end()).min(text.len());
+        while !text.is_char_boundary(s) {
+            s -= 1;
+        }
+        while !text.is_char_boundary(e) {
+            e -= 1;
+        }
+        if s > e {
+            std::mem::swap(&mut s, &mut e);
+        }
         format!("{}{}{}", &text[..s], self.new_text, &text[e..])
     }
 }
 
+/// High-level structural editing command over a DBML document.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Command {
+    /// Inserts a new column at the end of an existing table.
     AddColumn {
+        /// Target table name.
         table: String,
+        /// New column name.
         name: String,
+        /// New column data type.
         ty: String,
     },
 }
 
+/// Error returned when a structural [`Command`] cannot be applied.
 #[derive(Debug, PartialEq, Eq)]
 pub enum EditError {
+    /// Target table was not found in the DBML document.
     TableNotFound(String),
 }
 
+impl std::fmt::Display for EditError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::TableNotFound(table) => write!(f, "table not found: {table}"),
+        }
+    }
+}
+
+impl std::error::Error for EditError {}
+
+/// Computes a minimal [`Patch`] for `cmd` against `text`.
+///
+/// # Errors
+///
+/// Returns [`EditError::TableNotFound`] if the target table does not exist.
 pub fn edit(text: &str, cmd: &Command) -> Result<Patch, EditError> {
     match cmd {
         Command::AddColumn { table, name, ty } => add_column(text, table, name, ty),
@@ -53,7 +88,7 @@ pub fn edit(text: &str, cmd: &Command) -> Result<Patch, EditError> {
 
 fn table_name(t: &SyntaxNode) -> Option<String> {
     t.children_with_tokens()
-        .filter_map(|e| e.into_token())
+        .filter_map(rowan::NodeOrToken::into_token)
         .filter(|t| t.kind() == SyntaxKind::Ident)
         .nth(1) // o primeiro é a palavra-chave `Table`
         .map(|t| t.text().to_string())
@@ -74,11 +109,10 @@ fn add_column(text: &str, table: &str, name: &str, ty: &str) -> Result<Patch, Ed
         .last();
     let indent = last_col
         .as_ref()
-        .and_then(|c| c.prev_sibling_or_token())
-        .and_then(|e| e.into_token())
+        .and_then(rowan::SyntaxNode::prev_sibling_or_token)
+        .and_then(rowan::NodeOrToken::into_token)
         .filter(|tok| tok.kind() == SyntaxKind::Whitespace)
-        .map(|tok| tok.text().to_string())
-        .unwrap_or_else(|| "  ".into());
+        .map_or_else(|| "  ".into(), |tok| tok.text().to_string());
 
     // Insere logo após a última coluna (antes de comentário de fim de linha, depois dele).
     if let Some(c) = last_col {
@@ -103,7 +137,7 @@ fn add_column(text: &str, table: &str, name: &str, ty: &str) -> Result<Patch, Ed
     // Tabela vazia (ou só com blocos): insere antes do `}` final.
     let close = t
         .children_with_tokens()
-        .filter_map(|e| e.into_token())
+        .filter_map(rowan::NodeOrToken::into_token)
         .find(|k| k.kind() == SyntaxKind::RBrace);
     let at = close.map_or(t.text_range().end(), |k| k.text_range().start());
     let before_ws = text[..usize::from(at)].ends_with('\n');
@@ -173,5 +207,24 @@ mod tests {
             edit("Table t {}", &cmd),
             Err(EditError::TableNotFound("x".into()))
         );
+    }
+
+    proptest::proptest! {
+        #[test]
+        fn patch_apply_never_panics_on_arbitrary_utf8_and_bounds(
+            text in ".*",
+            a in 0usize..=256,
+            b in 0usize..=256,
+            replacement in ".*",
+        ) {
+            let start = rowan::TextSize::try_from(a).unwrap_or(rowan::TextSize::from(0));
+            let end = rowan::TextSize::try_from(b).unwrap_or(rowan::TextSize::from(0));
+            let (lo, hi) = if start <= end { (start, end) } else { (end, start) };
+            let patch = Patch {
+                range: rowan::TextRange::new(lo, hi),
+                new_text: replacement,
+            };
+            let _ = patch.apply(&text);
+        }
     }
 }

@@ -22,6 +22,8 @@ fn braces(line: &str) -> (i32, i32) {
     (open, close)
 }
 
+/// Formats a DBML document with consistent indentation while preserving comments.
+#[must_use]
 pub fn format(text: &str) -> String {
     let mut out = String::with_capacity(text.len());
     let mut depth: i32 = 0;
@@ -38,7 +40,7 @@ pub fn format(text: &str) -> String {
         }
         blank_run = 0;
         let (open, close) = braces(line);
-        let leading_close = line.starts_with('}') as i32;
+        let leading_close = i32::from(line.starts_with('}'));
         let indent = (depth - leading_close).max(0) as usize;
         // remove linha em branco antes de `}`
         if leading_close == 1 && out.ends_with("\n\n") {
@@ -57,6 +59,7 @@ pub fn format(text: &str) -> String {
 
 /// Troca a linha `line` (0-based) com a de cima (`up`) ou a de baixo. Retorna o
 /// intervalo de bytes que cobre as duas linhas e o texto que o substitui.
+#[must_use]
 pub fn swap_lines(text: &str, line: usize, up: bool) -> Option<(std::ops::Range<usize>, String)> {
     let starts: Vec<usize> = std::iter::once(0)
         .chain(text.match_indices('\n').map(|(i, _)| i + 1))
