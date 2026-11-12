@@ -4,6 +4,24 @@
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
+
+static TMP_SEQ: AtomicU64 = AtomicU64::new(0);
+
+/// Atomically writes `content` to `path` via a unique temporary file and rename.
+pub fn atomic_write_sync(path: &Path, content: &str) -> std::io::Result<()> {
+    let parent = path.parent().unwrap_or_else(|| Path::new("."));
+    std::fs::create_dir_all(parent)?;
+    let file_name = path.file_name().and_then(|n| n.to_str()).unwrap_or("file");
+    let seq = TMP_SEQ.fetch_add(1, Ordering::Relaxed);
+    let tmp_path = parent.join(format!(".{file_name}.tmp-{}-{seq}", std::process::id()));
+    std::fs::write(&tmp_path, content)?;
+    if let Err(err) = std::fs::rename(&tmp_path, path) {
+        let _ = std::fs::remove_file(&tmp_path);
+        return Err(err);
+    }
+    Ok(())
+}
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct ViewportState {
@@ -49,13 +67,10 @@ pub fn save(state: &SessionState) {
 }
 
 pub fn save_to(p: &Path, state: &SessionState) {
-    if let Some(dir) = p.parent() {
-        let _ = std::fs::create_dir_all(dir);
-    }
     let mut payload = state.clone();
     payload.version = 1;
     if let Ok(json) = serde_json::to_string_pretty(&payload) {
-        let _ = std::fs::write(p, json);
+        let _ = atomic_write_sync(p, &json);
     }
 }
 

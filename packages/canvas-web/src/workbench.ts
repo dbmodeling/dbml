@@ -1,5 +1,5 @@
 /**
- * Workbench completo do DB Modeling na Web: reproduz o shell (`crates/app/src/shell.rs`)
+ * Workbench completo do DB Modeling na Web: reproduz o shell (`crates/app/src/shell/mod.rs` + `panels.rs`)
  * e o canvas (`crates/app/src/canvas.rs`) do app desktop. Toda a geometria (layout, rotas,
  * grupos) vem do núcleo Rust/Wasm (`compute_scene`); aqui só há DOM, eventos e estado de UI.
  */

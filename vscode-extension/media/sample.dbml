@@ -1,4 +1,4 @@
-// Exemplo: e-commerce simples
+// Example: simple e-commerce
 Table users [headercolor: #8b5cf6] {
   id int [pk]
   email varchar(255) [unique, not null]
@@ -37,12 +37,12 @@ Table reviews {
 Ref: reviews.product_id > products.id
 Ref: reviews.user_id > users.id
 
-TableGroup vendas [color: #3b82f6] {
+TableGroup sales [color: #3b82f6] {
   orders
   order_items
 }
 
-TableGroup catalogo [color: #22c55e] {
+TableGroup catalog [color: #22c55e] {
   products
   reviews
 }

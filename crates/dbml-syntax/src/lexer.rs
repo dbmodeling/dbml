@@ -35,7 +35,8 @@ enum Tok {
     Colon,
 }
 
-/// Tokeniza sem perder bytes: o que o logos não reconhece vira `Other`.
+/// Losslessly tokenizes `text`; unrecognized spans become [`SyntaxKind::Other`].
+#[must_use]
 pub fn lex(text: &str) -> Vec<(SyntaxKind, &str)> {
     let mut out = Vec::new();
     for (tok, span) in Tok::lexer(text).spanned() {

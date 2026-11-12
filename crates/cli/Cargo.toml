@@ -26,3 +26,6 @@ schema.workspace = true
 dbml-syntax.workspace = true
 dbml-analysis.workspace = true
 dbml-edit.workspace = true
+
+[lints]
+workspace = true

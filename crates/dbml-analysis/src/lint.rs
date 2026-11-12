@@ -1,20 +1,28 @@
 //! Diagnostics (lint) with byte ranges for editor underlining.
 
-use dbml_syntax::{SyntaxKind, SyntaxNode, SyntaxToken, parse};
+use dbml_syntax::{SyntaxKind, SyntaxToken, descendant_tokens as sig_tokens, parse, unquote};
 use std::collections::{HashMap, HashSet};
 use std::ops::Range;
 
+/// Severity level of a [`Diagnostic`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Severity {
+    /// Syntax or semantic error that breaks schema validity.
     Error,
+    /// Non-fatal issue such as a missing primary key or type mismatch.
     Warning,
+    /// Informational hint.
     Info,
 }
 
+/// A lint diagnostic with a byte range in the DBML source text.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Diagnostic {
+    /// Byte range in the source text spanned by this diagnostic.
     pub range: Range<usize>,
+    /// Diagnostic severity.
     pub severity: Severity,
+    /// Human-readable diagnostic message.
     pub message: String,
 }
 
@@ -28,17 +36,6 @@ fn diag(range: Range<usize>, severity: Severity, message: impl Into<String>) -> 
 
 fn range(t: &SyntaxToken) -> Range<usize> {
     usize::from(t.text_range().start())..usize::from(t.text_range().end())
-}
-
-fn sig_tokens(n: &SyntaxNode) -> Vec<SyntaxToken> {
-    n.descendants_with_tokens()
-        .filter_map(|e| e.into_token())
-        .filter(|t| !t.kind().is_trivia())
-        .collect()
-}
-
-fn unquote(s: &str) -> &str {
-    s.trim_matches(|c| c == '"' || c == '\'' || c == '`')
 }
 
 /// Top-level keywords not yet modeled in the AST, but valid in DBML.
@@ -387,6 +384,8 @@ fn check_column_settings(
     }
 }
 
+/// Analyzes `text` and returns syntax and semantic [`Diagnostic`]s.
+#[must_use]
 pub fn lint(text: &str) -> Vec<Diagnostic> {
     let root = parse(text).syntax();
     let mut out = Vec::new();
@@ -399,7 +398,7 @@ pub fn lint(text: &str) -> Vec<Diagnostic> {
         let toks = sig_tokens(&t);
         let head: Vec<_> = t
             .children_with_tokens()
-            .filter_map(|e| e.into_token())
+            .filter_map(rowan::NodeOrToken::into_token)
             .filter(|k| !k.kind().is_trivia())
             .collect();
         let Some(name_tok) = head
@@ -586,7 +585,7 @@ pub fn lint(text: &str) -> Vec<Diagnostic> {
         let toks = sig_tokens(&g);
         let head: Vec<_> = g
             .children_with_tokens()
-            .filter_map(|e| e.into_token())
+            .filter_map(rowan::NodeOrToken::into_token)
             .filter(|k| !k.kind().is_trivia())
             .collect();
         let Some(gname_tok) = head

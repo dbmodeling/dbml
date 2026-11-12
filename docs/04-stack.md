@@ -85,3 +85,12 @@ Wayland, fontconfig/freetype — a lista exata vem do spike 1.
 ## Toolchain
 
 `rustc 1.99.1` instalado. Ambiente de desenvolvimento atual: **WSL2** — ver R1 em `riscos.md`.
+
+
+## Adições reais no `Cargo.toml` e Frontend
+
+- **Parsing e CST:** `rowan =0.18.0-alpha.2` (`logos =0.16.1`).
+- **WebAssembly & CLI Web:** `wasm-bindgen 0.2`, `serde-wasm-bindgen 0.6`, `axum 0.8` (`ws`), `tokio 1`, `rust-embed =8.13.0`, `clap 4.5`, `opener 0.7`, `colored 3.0`, `mime_guess 2.0`.
+- **Desktop & LSP:** `lsp-types =0.97.0`, `embed-resource =3.0.12`.
+- **Testes & Lints:** `insta =1.49.0`, `proptest =1.12.0`, `[workspace.lints]` (`clippy::pedantic`, `unsafe_op_in_unsafe_fn`).
+- **Frontend & Extensão:** `packages/canvas-web` (TypeScript 5.7, Vite 6, Vitest) e `vscode-extension/` sincronizados por `./scripts/sync-build.sh`.

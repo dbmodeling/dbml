@@ -22,10 +22,23 @@ echo "==> [1/5] Running Rust core tests..."
 cargo test -p schema -p dbml-syntax -p dbml-analysis -p dbml-edit -p layout -p dbml-wasm
 
 echo "==> [2/5] Building Wasm (dbml-wasm -> packages/canvas-web/src/wasm)..."
-if [[ "$MODE" == "--release" ]]; then
-  wasm-pack build crates/dbml-wasm --target web --release --out-dir ../../packages/canvas-web/src/wasm
+if command -v wasm-pack >/dev/null 2>&1; then
+  if [[ "$MODE" == "--release" ]]; then
+    wasm-pack build crates/dbml-wasm --target web --release --out-dir ../../packages/canvas-web/src/wasm
+  else
+    wasm-pack build crates/dbml-wasm --target web --dev --out-dir ../../packages/canvas-web/src/wasm
+  fi
+elif command -v wasm-bindgen >/dev/null 2>&1; then
+  if [[ "$MODE" == "--release" ]]; then
+    cargo build -p dbml-wasm --target wasm32-unknown-unknown --release
+    wasm-bindgen --target web --out-dir packages/canvas-web/src/wasm target/wasm32-unknown-unknown/release/dbml_wasm.wasm
+  else
+    cargo build -p dbml-wasm --target wasm32-unknown-unknown
+    wasm-bindgen --target web --out-dir packages/canvas-web/src/wasm target/wasm32-unknown-unknown/debug/dbml_wasm.wasm
+  fi
 else
-  wasm-pack build crates/dbml-wasm --target web --dev --out-dir ../../packages/canvas-web/src/wasm
+  echo "Error: neither 'wasm-pack' nor 'wasm-bindgen' was found in PATH." >&2
+  exit 1
 fi
 rm -f packages/canvas-web/src/wasm/.gitignore
 

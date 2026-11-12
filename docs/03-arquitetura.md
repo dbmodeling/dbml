@@ -131,3 +131,21 @@ e o layout. Mudanças só de layout (mover tabela) entram no mesmo histórico.
 - Propriedade-chave testada com `proptest`: *para todo comando de UI, aplicar o patch e
   reparsear produz o `Schema` esperado* e *texto sem mudança semântica é preservado byte a byte*.
 - UI: testes headless do GPUI (`TestAppContext`) para fluxos críticos.
+
+
+## Estado atual dos crates e módulos
+
+```
+crates/
+  schema/        # modelo semântico puro (#![forbid(unsafe_code)], #![deny(missing_docs)])
+  dbml-syntax/   # lexer logos + parser CST rowan + helpers compartilhados (unquote, child_tokens, descendant_tokens)
+  dbml-analysis/ # CST → Schema, lint e complete (seguro em UTF-8 + proptest)
+  dbml-edit/     # patches textuais mínimos (Patch, EditError)
+  layout/        # auto-layout Sugiyama (layered/clustered), roteamento ortogonal e geometria/paleta compartilhadas (CARD_W, HEADER_H, ROW_H, GROUP_PAD, TABLE_COLORS, compute_diagram_positions)
+  dbml-wasm/     # bindings WebAssembly + LineIndex UTF-16 + cena para Web e VS Code
+  cli/           # binário dbml (`dbml-cli`): servidor Axum/WebSocket, file watcher e escrita atômica
+  app/           # binário desktop GPUI: shell/{mod.rs,panels.rs}, canvas.rs, canvas_geom.rs, session.rs, settings.rs, glass.rs, actions.rs
+```
+
+- **Frontend Web compartilhado:** `packages/canvas-web` (TypeScript + Canvas 2D) embutido em `crates/cli/web/` e `vscode-extension/`, sincronizado via `./scripts/sync-build.sh`.
+- **Segurança e lints:** Os 6 crates de biblioteca usam `#![forbid(unsafe_code)]` e `#![deny(missing_docs)]`; o workspace aplica `clippy::pedantic` e `-D clippy::perf`.

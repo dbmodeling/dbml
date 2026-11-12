@@ -14,17 +14,9 @@ use gpui_kit::*;
 use schema::Schema;
 use std::collections::HashMap;
 
-const CARD_W: f32 = 260.;
-const HEADER_H: f32 = 44.;
-const ROW_H: f32 = 30.;
+use layout::{CARD_W, GROUP_PAD, HEADER_H, ROW_H, card_h};
 const MIN_ZOOM: f32 = 0.2;
-/// Folga entre a moldura do grupo e as tabelas (o topo leva o rótulo).
-const GROUP_PAD: f32 = 32.;
 const MAX_ZOOM: f32 = 2.5;
-
-fn card_h(rows: usize) -> f32 {
-    HEADER_H + ROW_H * rows as f32 + 8.
-}
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Tool {
@@ -322,8 +314,7 @@ impl Diagram {
                 .iter()
                 .find(|c| c.pk)
                 .or_else(|| t.columns.first())
-                .map(|c| c.name.clone())
-                .unwrap_or_else(|| "id".to_string());
+                .map_or_else(|| "id".to_string(), |c| c.name.clone());
             Some((t.name.clone(), pk_col))
         })
     }
@@ -381,24 +372,11 @@ impl Diagram {
                 &obstacles,
                 24.,
             );
-            for w in pts.windows(2) {
-                let (a, b) = (w[0], w[1]);
-                let (dx, dy) = (b.x - a.x, b.y - a.y);
-                let l2 = dx * dx + dy * dy;
-                let t_proj = if l2 < 0.001 {
-                    0.
-                } else {
-                    ((p.0 - a.x) * dx + (p.1 - a.y) * dy) / l2
-                }
-                .clamp(0., 1.);
-                let (cx, cy) = (a.x + t_proj * dx, a.y + t_proj * dy);
-                let dist = ((p.0 - cx).powi(2) + (p.1 - cy).powi(2)).sqrt();
-                if dist <= 8. / self.zoom.max(0.4) {
-                    return Some((
-                        (r.from.table.clone(), r.from.column.clone()),
-                        (r.to.table.clone(), r.to.column.clone()),
-                    ));
-                }
+            if crate::canvas_geom::point_hits_polyline(p, &pts, 8. / self.zoom.max(0.4)) {
+                return Some((
+                    (r.from.table.clone(), r.from.column.clone()),
+                    (r.to.table.clone(), r.to.column.clone()),
+                ));
             }
         }
         None
@@ -480,43 +458,27 @@ impl Diagram {
 }
 
 fn auto_layout(schema: &Schema) -> HashMap<String, (f32, f32)> {
-    let sizes: Vec<_> = schema
-        .tables
-        .iter()
-        .map(|t| layout::Size {
-            w: CARD_W,
-            h: card_h(t.columns.len()),
-        })
-        .collect();
+    let col_counts: Vec<usize> = schema.tables.iter().map(|t| t.columns.len()).collect();
     let idx = |n: &str| schema.tables.iter().position(|t| t.name == n);
     let edges: Vec<_> = schema
         .refs
         .iter()
         .filter_map(|r| Some((idx(&r.from.table)?, idx(&r.to.table)?)))
         .collect();
-    let sp = layout::Spacing {
-        gap_x: 104.,
-        gap_y: 40.,
-        margin: 0.,
-    };
-    let pos = if schema.groups.is_empty() {
-        layout::layered(&sizes, &edges, &sp)
-    } else {
-        // um bloco por grupo + um para as tabelas sem grupo
-        let mut clusters: Vec<Vec<usize>> = schema
+    let clusters = (!schema.groups.is_empty()).then(|| {
+        let mut c: Vec<Vec<usize>> = schema
             .groups
             .iter()
             .map(|g| g.tables.iter().filter_map(|t| idx(t)).collect())
             .collect();
-        clusters.push(
+        c.push(
             (0..schema.tables.len())
                 .filter(|&i| schema.group_of(&schema.tables[i].name).is_none())
                 .collect(),
         );
-        // largura de linha cresce com o esquema: blocos quebram em linhas, diagrama mais "quadrado"
-        let row = ((schema.tables.len() as f32).sqrt() * 760.).max(1650.);
-        layout::clustered(&sizes, &edges, &clusters, &sp, GROUP_PAD, row)
-    };
+        c
+    });
+    let pos = layout::compute_diagram_positions(&col_counts, &edges, clusters.as_deref());
     schema
         .tables
         .iter()
@@ -550,15 +512,6 @@ impl Diagram {
     }
 
     pub fn view(&mut self, g: &Glass, cx: &mut Context<Self>) -> AnyElement {
-        if self.needs_fit {
-            self.do_fit();
-        }
-        let z = self.zoom;
-        let (pan_x, pan_y) = self.pan;
-        let s = move |v: f32| px(v * z);
-        let schema = &self.schema;
-
-        // arestas coluna→coluna: âncoras locais ao canvas + cardinalidade + destaque
         struct Edge {
             a: Point<Pixels>,
             b: Point<Pixels>,
@@ -568,6 +521,15 @@ impl Diagram {
             lit: bool,
             ends: (&'static str, &'static str),
         }
+        if self.needs_fit {
+            self.do_fit();
+        }
+        let z = self.zoom;
+        let (pan_x, pan_y) = self.pan;
+        let s = move |v: f32| px(v * z);
+        let schema = &self.schema;
+
+        // arestas coluna→coluna: âncoras locais ao canvas + cardinalidade + destaque
         let sel = self.selected.clone();
         let edges: Vec<Edge> = schema
             .refs
@@ -792,8 +754,7 @@ impl Diagram {
                             }
                         }
                     }
-                    Some(Drag::Marquee { now: n, .. }) => *n = now,
-                    Some(Drag::Link { now: n, .. }) => *n = now,
+                    Some(Drag::Marquee { now: n, .. } | Drag::Link { now: n, .. }) => *n = now,
                     Some(Drag::Pan { last }) => {
                         this.pan.0 += f32::from(e.position.x - last.x);
                         this.pan.1 += f32::from(e.position.y - last.y);
@@ -823,7 +784,7 @@ impl Diagram {
         root = root.child(
             canvas(
                 |_, _, _| (),
-                move |bounds, _, window, cx| {
+                move |bounds, (), window, cx| {
                     // informa origem/tamanho reais ao estado (usados por zoom e fit)
                     entity.update(cx, |d, cx| {
                         if d.origin != bounds.origin || d.size != bounds.size {
@@ -951,7 +912,7 @@ impl Diagram {
                             .text_size(s(12.))
                             .font_weight(FontWeight::SEMIBOLD)
                             .text_color(c)
-                            .when(self.tool == Tool::Select, |d| d.cursor_move())
+                            .when(self.tool == Tool::Select, gpui_kit::Styled::cursor_move)
                             .on_mouse_down(
                                 MouseButton::Left,
                                 cx.listener(move |this, e: &MouseDownEvent, window, cx| {
@@ -1100,7 +1061,7 @@ impl Diagram {
                                 .border_color(g.accent)
                                 .bg(g.card)
                                 .invisible()
-                                .group_hover("col", |st| st.visible())
+                                .group_hover("col", gpui_kit::Styled::visible)
                                 .cursor_crosshair()
                                 .on_mouse_down(
                                     MouseButton::Left,
@@ -1152,7 +1113,7 @@ impl Diagram {
                     } else {
                         g.card
                     })
-                    .when(self.tool == Tool::Select, |d| d.cursor_move())
+                    .when(self.tool == Tool::Select, gpui_kit::Styled::cursor_move)
                     .on_mouse_down(
                         MouseButton::Left,
                         cx.listener(move |this, e: &MouseDownEvent, window, cx| {
@@ -1274,14 +1235,14 @@ impl Diagram {
                             .items_center()
                             .justify_center()
                             .invisible()
-                            .group_hover("card", |st| st.visible())
+                            .group_hover("card", gpui_kit::Styled::visible)
                             .hover({
                                 let a = g.accent;
                                 move |st| st.border_color(a)
                             })
                             .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
                             .on_click(cx.listener(move |_, _, _, cx| {
-                                cx.emit(DiagramEvent::AddColumn(table.clone()))
+                                cx.emit(DiagramEvent::AddColumn(table.clone()));
                             }))
                             .child(
                                 Icon::new(IconName::Plus)
@@ -1458,7 +1419,7 @@ impl Diagram {
                                     Some(actions::CANVAS),
                                 )
                                 .on_click(|_, window, cx| {
-                                    window.dispatch_action(Box::new(FitView), cx)
+                                    window.dispatch_action(Box::new(FitView), cx);
                                 }),
                         )
                         .child(tool(
@@ -1529,7 +1490,7 @@ impl Diagram {
                                     Some(actions::CTX),
                                 )
                                 .on_click(|_, window, cx| {
-                                    window.dispatch_action(Box::new(ToggleLegend), cx)
+                                    window.dispatch_action(Box::new(ToggleLegend), cx);
                                 }),
                         ),
                 )

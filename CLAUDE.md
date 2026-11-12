@@ -16,12 +16,12 @@ bidirecional texto (DBML) ↔ canvas.
 ## Status
 Workspace multi-crate integrado e funcional:
 - `schema`: modelo semântico puro com `serde` habilitado.
-- `dbml-syntax` & `dbml-analysis`: CST Rowan sem perdas e linter semântico.
-- `dbml-edit`: patches textuais mínimos sobre o buffer.
-- `layout`: auto-layout em camadas (Sugiyama) e roteamento ortogonal de arestas.
-- `dbml-wasm`: compilação Wasm (`wasm32-unknown-unknown`) e ponte UTF-16 para VS Code.
-- `cli` (`dbml-cli`): utilitário CLI e servidor Axum/WebSocket local com assets embutidos.
-- `app`: aplicação desktop GPUI com canvas interativo e docking.
+- `dbml-syntax` & `dbml-analysis`: CST Rowan sem perdas, helpers compartilhados (`unquote`, `child_tokens`, `descendant_tokens`) e linter/autocomplete semântico.
+- `dbml-edit`: patches textuais mínimos sobre o buffer (`Patch`, `EditError`).
+- `layout`: auto-layout em camadas/clusterizado (Sugiyama), roteamento ortogonal de arestas e métricas/paleta canônicas compartilhadas (`CARD_W`, `HEADER_H`, `ROW_H`, `GROUP_PAD`, `TABLE_COLORS`, `compute_diagram_positions`).
+- `dbml-wasm`: compilação Wasm (`wasm32-unknown-unknown`) e ponte UTF-16 (`LineIndex`) para Web e VS Code.
+- `cli` (`dbml-cli`): utilitário CLI e servidor Axum/WebSocket local com assets embutidos e escrita atômica.
+- `app`: aplicação desktop GPUI modularizada (`shell/mod.rs`, `shell/panels.rs`, `canvas.rs`, `canvas_geom.rs`, `session.rs`, `settings.rs`).
 - `packages/canvas-web`: motor interativo de Canvas 2D, pan/zoom, edição inline e testes em Vitest.
 - `vscode-extension`: extensão oficial VS Code (`CustomTextEditor` + Wasm bundle embutido).
 - Instaladores / Wizards: Windows Inno Setup (`.exe`), macOS (`.dmg`/`.pkg`), Debian/Ubuntu (`.deb`), Fedora (`.rpm`) e `scripts/install.sh`.

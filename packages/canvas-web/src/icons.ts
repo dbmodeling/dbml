@@ -1,6 +1,6 @@
 /**
  * Catálogo de ícones vetoriais Lucide correspondentes ao `IconName` de `gpui_kit::assets::IconName`
- * usado em `crates/app/src/canvas.rs` e `crates/app/src/shell.rs`.
+ * usado em `crates/app/src/canvas.rs` e `crates/app/src/shell/mod.rs` + `panels.rs`.
  */
 
 export type IconName =

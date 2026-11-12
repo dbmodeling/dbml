@@ -1,14 +1,19 @@
-//! CST -> Schema. Tolerante: o que não entende é ignorado; problemas viram
-//! diagnósticos em [`lint`].
+#![forbid(unsafe_code)]
+#![deny(missing_docs)]
+//! Tolerant CST-to-schema semantic analysis, autocompletion, and diagnostics ([`lint()`]).
 
 mod complete;
 mod lint;
 pub use complete::{Completion, CompletionKind, complete};
 pub use lint::{Diagnostic, Severity, lint};
 
-use dbml_syntax::{SyntaxKind, SyntaxNode, SyntaxToken, parse};
+use dbml_syntax::{
+    SyntaxKind, SyntaxNode, SyntaxToken, descendant_tokens as tokens, parse, unquote,
+};
 use schema::{Column, Endpoint, Group, Ref, RefKind, Schema, Table};
 
+/// Parses `text` into a CST and projects it into a semantic [`Schema`].
+#[must_use]
 pub fn analyze(text: &str) -> Schema {
     let root = parse(text).syntax();
     let mut schema = Schema::default();
@@ -40,22 +45,10 @@ pub fn analyze(text: &str) -> Schema {
     schema
 }
 
-fn tokens(n: &SyntaxNode) -> Vec<SyntaxToken> {
-    n.descendants_with_tokens()
-        .filter_map(|e| e.into_token())
-        .filter(|t| !t.kind().is_trivia())
-        .collect()
-}
-
-fn unquote(s: &str) -> String {
-    s.trim_matches(|c| c == '"' || c == '\'' || c == '`')
-        .to_string()
-}
-
 /// Tokens do cabeçalho (`Table nome [opções] {`), sem trivia.
 fn header(node: &SyntaxNode) -> Vec<SyntaxToken> {
     node.children_with_tokens()
-        .filter_map(|e| e.into_token())
+        .filter_map(rowan::NodeOrToken::into_token)
         .filter(|t| !t.kind().is_trivia())
         .take_while(|t| t.kind() != SyntaxKind::LBrace)
         .collect()
@@ -67,13 +60,13 @@ pub(crate) fn setting(toks: &[SyntaxToken], key: &str) -> Option<String> {
         .iter()
         .position(|t| t.text().eq_ignore_ascii_case(key))?;
     let rest = toks.get(i + 1..)?;
-    let start = usize::from(rest.first().filter(|t| t.text() == ":").is_some());
+    let start = usize::from(rest.first().as_ref().is_some_and(|t| t.text() == ":"));
     let v: String = rest[start..]
         .iter()
         .take_while(|t| !matches!(t.kind(), SyntaxKind::Comma | SyntaxKind::RBracket))
-        .map(|t| t.text())
+        .map(rowan::SyntaxToken::text)
         .collect();
-    (!v.is_empty()).then(|| unquote(&v))
+    (!v.is_empty()).then(|| unquote(&v).to_string())
 }
 
 fn table(node: &SyntaxNode, refs: &mut Vec<Ref>) -> Option<Table> {
@@ -82,7 +75,7 @@ fn table(node: &SyntaxNode, refs: &mut Vec<Ref>) -> Option<Table> {
         .iter()
         .filter(|t| matches!(t.kind(), SyntaxKind::Ident | SyntaxKind::Str))
         .nth(1)
-        .map(|t| unquote(t.text()))?;
+        .map(|t| unquote(t.text()).to_string())?;
     let color = setting(&head, "headercolor");
     let mut columns = Vec::new();
     for col in node.children().filter(|n| n.kind() == SyntaxKind::Column) {
@@ -99,7 +92,7 @@ fn table(node: &SyntaxNode, refs: &mut Vec<Ref>) -> Option<Table> {
 
 fn column(node: &SyntaxNode, table: &str, refs: &mut Vec<Ref>) -> Option<Column> {
     let toks = tokens(node);
-    let name = unquote(toks.first()?.text());
+    let name = unquote(toks.first()?.text()).to_string();
     // tipo: tokens após o nome até `[`, incluindo `(…)`, ex.: varchar(255)
     let mut ty = String::new();
     let mut i = 1;
@@ -123,7 +116,7 @@ fn column(node: &SyntaxNode, table: &str, refs: &mut Vec<Ref>) -> Option<Column>
                         .get(j + 1)
                         .is_some_and(|t| t.text().eq_ignore_ascii_case("null")) =>
                 {
-                    not_null = true
+                    not_null = true;
                 }
                 "ref" => {
                     fk = true;
@@ -133,7 +126,7 @@ fn column(node: &SyntaxNode, table: &str, refs: &mut Vec<Ref>) -> Option<Column>
                         .take_while(|t| {
                             t.kind() != SyntaxKind::Comma && t.kind() != SyntaxKind::RBracket
                         })
-                        .map(|t| t.text())
+                        .map(rowan::SyntaxToken::text)
                         .collect();
                     if let Some(r) = parse_ref_tail(
                         &rest,
@@ -166,12 +159,12 @@ fn group(node: &SyntaxNode) -> Option<Group> {
         .iter()
         .filter(|t| matches!(t.kind(), SyntaxKind::Ident | SyntaxKind::Str))
         .nth(1)
-        .map(|t| unquote(t.text()))?;
+        .map(|t| unquote(t.text()).to_string())?;
     let color = setting(&head, "color");
     let tables = node
         .children()
         .filter(|n| n.kind() == SyntaxKind::Column)
-        .filter_map(|n| tokens(&n).first().map(|t| unquote(t.text())))
+        .filter_map(|n| tokens(&n).first().map(|t| unquote(t.text()).to_string()))
         .collect();
     Some(Group {
         name,
@@ -202,8 +195,8 @@ fn kind_of(s: &str) -> Option<RefKind> {
 fn endpoint(toks: &[&str]) -> Option<Endpoint> {
     match toks {
         [t, ".", c, ..] => Some(Endpoint {
-            table: unquote(t),
-            column: unquote(c),
+            table: unquote(t).to_string(),
+            column: unquote(c).to_string(),
         }),
         _ => None,
     }
@@ -212,7 +205,7 @@ fn endpoint(toks: &[&str]) -> Option<Endpoint> {
 /// `Ref [nome]: a.b > c.d`
 fn top_level_ref(node: &SyntaxNode) -> Option<Ref> {
     let toks = tokens(node);
-    let texts: Vec<&str> = toks.iter().map(|t| t.text()).collect();
+    let texts: Vec<&str> = toks.iter().map(rowan::SyntaxToken::text).collect();
     let colon = texts.iter().position(|t| *t == ":")?;
     let body = &texts[colon + 1..];
     let from = endpoint(body)?;
@@ -297,6 +290,6 @@ Ref: posts.author_id > users.id
 
     #[test]
     fn broken_input_does_not_panic() {
-        analyze("Table {\n Table x { id\n Ref: a. > \n");
+        let _ = analyze("Table {\n Table x { id\n Ref: a. > \n");
     }
 }

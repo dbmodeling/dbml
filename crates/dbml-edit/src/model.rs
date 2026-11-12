@@ -1,19 +1,8 @@
 //! Edições estruturais feitas pela UI (canvas/inspector). Cada função devolve o texto
 //! novo tocando só o necessário; comentários e formatação do resto ficam intactos.
 
-use dbml_syntax::{SyntaxKind, SyntaxNode, SyntaxToken, parse};
+use dbml_syntax::{SyntaxKind, SyntaxNode, SyntaxToken, descendant_tokens as sig, parse, unquote};
 use std::ops::Range;
-
-fn unquote(s: &str) -> &str {
-    s.trim_matches(|c| c == '"' || c == '\'' || c == '`')
-}
-
-fn sig(n: &SyntaxNode) -> Vec<SyntaxToken> {
-    n.descendants_with_tokens()
-        .filter_map(|e| e.into_token())
-        .filter(|t| !t.kind().is_trivia())
-        .collect()
-}
 
 fn range(t: &SyntaxToken) -> Range<usize> {
     usize::from(t.text_range().start())..usize::from(t.text_range().end())
@@ -26,7 +15,7 @@ fn tables(root: &SyntaxNode) -> impl Iterator<Item = SyntaxNode> {
 /// Token do nome no cabeçalho `Table nome ...`.
 fn name_token(t: &SyntaxNode) -> Option<SyntaxToken> {
     t.children_with_tokens()
-        .filter_map(|e| e.into_token())
+        .filter_map(rowan::NodeOrToken::into_token)
         .filter(|k| matches!(k.kind(), SyntaxKind::Ident | SyntaxKind::Str))
         .nth(1)
 }
@@ -71,6 +60,7 @@ fn append_block(text: &str, block: &str) -> String {
 }
 
 /// Primeiro nome livre `base`, `base_2`, `base_3`...
+#[must_use]
 pub fn unique_table_name(text: &str, base: &str) -> String {
     let root = parse(text).syntax();
     let taken: Vec<String> = tables(&root)
@@ -78,12 +68,13 @@ pub fn unique_table_name(text: &str, base: &str) -> String {
         .map(|k| unquote(k.text()).to_string())
         .collect();
     std::iter::once(base.to_string())
-        .chain((2..).map(|i| format!("{base}_{i}")))
+        .chain((2..=taken.len() + 2).map(|i| format!("{base}_{i}")))
         .find(|n| !taken.contains(n))
-        .unwrap()
+        .unwrap_or_else(|| format!("{base}_{}", taken.len() + 2))
 }
 
 /// Primeiro nome de coluna livre na tabela.
+#[must_use]
 pub fn unique_column_name(text: &str, table: &str, base: &str) -> String {
     let root = parse(text).syntax();
     let taken: Vec<String> = find_table(&root, table)
@@ -95,11 +86,13 @@ pub fn unique_column_name(text: &str, table: &str, base: &str) -> String {
         })
         .unwrap_or_default();
     std::iter::once(base.to_string())
-        .chain((2..).map(|i| format!("{base}_{i}")))
+        .chain((2..=taken.len() + 2).map(|i| format!("{base}_{i}")))
         .find(|n| !taken.contains(n))
-        .unwrap()
+        .unwrap_or_else(|| format!("{base}_{}", taken.len() + 2))
 }
 
+/// Appends a new `Table name { id int [pk] }` block to `text`.
+#[must_use]
 pub fn add_table(text: &str, name: &str) -> String {
     append_block(text, &format!("Table {name} {{\n  id int [pk]\n}}\n"))
 }
@@ -118,7 +111,7 @@ fn parse_top_ref_endpoints(r: &SyntaxNode) -> Option<(String, String, String, St
     while k < body.len() && matches!(body[k].text(), "<" | ">" | "-") {
         k += 1;
     }
-    if body.get(k + 1).map(|t| t.text()) != Some(".") || k + 2 >= body.len() {
+    if body.get(k + 1).map(rowan::SyntaxToken::text) != Some(".") || k + 2 >= body.len() {
         return None;
     }
     let to_t = unquote(body[k].text()).to_string();
@@ -127,6 +120,7 @@ fn parse_top_ref_endpoints(r: &SyntaxNode) -> Option<(String, String, String, St
 }
 
 /// Remove a tabela, as `Ref:` de topo que a citam, as colunas FK `id_<name>` nas tabelas filhas e a sua linha em grupos.
+#[must_use]
 pub fn delete_table(text: &str, name: &str) -> String {
     let root = parse(text).syntax();
     let mut edits = Vec::new();
@@ -183,6 +177,7 @@ pub fn delete_table(text: &str, name: &str) -> String {
 }
 
 /// Renomeia a tabela no cabeçalho, em `tabela.coluna` (refs de topo e inline), colunas FK `id_<old>` e nos grupos.
+#[must_use]
 pub fn rename_table(text: &str, old: &str, new: &str) -> String {
     let root = parse(text).syntax();
     let mut edits = Vec::new();
@@ -191,7 +186,7 @@ pub fn rename_table(text: &str, old: &str, new: &str) -> String {
     }
     let toks: Vec<_> = root
         .descendants_with_tokens()
-        .filter_map(|e| e.into_token())
+        .filter_map(rowan::NodeOrToken::into_token)
         .filter(|t| !t.kind().is_trivia())
         .collect();
     for w in toks.windows(2) {
@@ -228,6 +223,8 @@ pub fn rename_table(text: &str, old: &str, new: &str) -> String {
     out
 }
 
+/// Inserts a new column `name ty` into `table`, returning `None` if `table` is missing.
+#[must_use]
 pub fn add_column(text: &str, table: &str, name: &str, ty: &str) -> Option<String> {
     let cmd = crate::Command::AddColumn {
         table: table.into(),
@@ -238,6 +235,7 @@ pub fn add_column(text: &str, table: &str, name: &str, ty: &str) -> Option<Strin
 }
 
 /// Remove a coluna e todas as `Ref:` de topo que referenciam `table.col`.
+#[must_use]
 pub fn delete_column(text: &str, table: &str, col: &str) -> Option<String> {
     let root = parse(text).syntax();
     let c = find_column(&find_table(&root, table)?, col)?;
@@ -264,6 +262,8 @@ pub fn delete_column(text: &str, table: &str, col: &str) -> Option<String> {
     Some(apply(text, edits).trim_end().to_string() + "\n")
 }
 
+/// Renames column `old` to `new` in `table` and updates all `table.old` references.
+#[must_use]
 pub fn rename_column(text: &str, table: &str, old: &str, new: &str) -> Option<String> {
     let root = parse(text).syntax();
     let c = find_column(&find_table(&root, table)?, old)?;
@@ -271,7 +271,7 @@ pub fn rename_column(text: &str, table: &str, old: &str, new: &str) -> Option<St
     // `tabela.coluna` em qualquer lugar
     let toks: Vec<_> = root
         .descendants_with_tokens()
-        .filter_map(|e| e.into_token())
+        .filter_map(rowan::NodeOrToken::into_token)
         .filter(|t| !t.kind().is_trivia())
         .collect();
     for w in toks.windows(3) {
@@ -282,6 +282,8 @@ pub fn rename_column(text: &str, table: &str, old: &str, new: &str) -> Option<St
     Some(apply(text, edits))
 }
 
+/// Updates the data type of column `col` in `table` to `ty`.
+#[must_use]
 pub fn set_column_type(text: &str, table: &str, col: &str, ty: &str) -> Option<String> {
     let root = parse(text).syntax();
     let c = find_column(&find_table(&root, table)?, col)?;
@@ -301,6 +303,7 @@ pub fn set_column_type(text: &str, table: &str, col: &str, ty: &str) -> Option<S
 }
 
 /// Liga/desliga `pk`, `not null` ou `unique` nas opções `[...]` da coluna.
+#[must_use]
 pub fn set_column_flag(text: &str, table: &str, col: &str, flag: &str, on: bool) -> Option<String> {
     let root = parse(text).syntax();
     let c = find_column(&find_table(&root, table)?, col)?;
@@ -344,6 +347,7 @@ pub fn set_column_flag(text: &str, table: &str, col: &str, flag: &str, on: bool)
 }
 
 /// `Ref: a.b > c.d` (muitos-para-um) no fim do texto.
+#[must_use]
 pub fn add_ref(text: &str, from: (&str, &str), to: (&str, &str)) -> String {
     let line = format!("Ref: {}.{} > {}.{}\n", from.0, from.1, to.0, to.1);
     let mut out = text.trim_end_matches('\n').to_string();
@@ -393,6 +397,7 @@ fn primary_key_of(root: &SyntaxNode, table: &str) -> Option<(String, String)> {
 
 /// Linka `source_table` à `target_table` criando automaticamente a coluna `id_<source_table>`
 /// (classificada como FK) em `target_table` e adicionando `Ref: target_table.id_<source_table> > source_table.<pk>`.
+#[must_use]
 pub fn link_tables(text: &str, source_table: &str, target_table: &str) -> String {
     if source_table == target_table {
         return text.to_string();
@@ -448,6 +453,7 @@ pub fn link_tables(text: &str, source_table: &str, target_table: &str) -> String
 }
 
 /// Remove a linha `Ref:` entre `from` e `to` (ou inline) e apaga também a coluna FK `from.1` da tabela `from.0`.
+#[must_use]
 pub fn delete_ref(text: &str, from: (&str, &str), to: (&str, &str)) -> String {
     let root = parse(text).syntax();
     let mut edits = Vec::new();

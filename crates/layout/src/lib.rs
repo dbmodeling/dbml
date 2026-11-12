@@ -1,26 +1,96 @@
-//! Auto-layout em camadas (Sugiyama simplificado): camadas por profundidade de
-//! referência, ordem por baricentro. Puro e determinístico.
+#![forbid(unsafe_code)]
+#![deny(missing_docs)]
+//! Deterministic layered auto-layout (simplified Sugiyama) and orthogonal edge routing.
 
+/// Default table card width in world pixels.
+pub const CARD_W: f32 = 260.0;
+/// Table card header height in world pixels.
+pub const HEADER_H: f32 = 44.0;
+/// Single column row height in world pixels.
+pub const ROW_H: f32 = 30.0;
+/// Inner padding around grouped table cards in world pixels.
+pub const GROUP_PAD: f32 = 32.0;
+
+/// Canonical 8-color palette for tables and groups (matches `crates/app/src/glass.rs`).
+pub const TABLE_COLORS: &[&str] = &[
+    "#3b82f6", // Blue
+    "#06b6d4", // Cyan
+    "#22c55e", // Green
+    "#84cc16", // Lime
+    "#f59e0b", // Amber
+    "#f97316", // Orange
+    "#ec4899", // Pink
+    "#8b5cf6", // Violet
+];
+
+/// Computes the height of a table card with `cols` columns in world pixels.
+#[must_use]
+pub fn card_h(cols: usize) -> f32 {
+    HEADER_H + ROW_H * cols as f32 + 8.0
+}
+
+/// Computes diagram positions for `table_col_counts` using canonical card dimensions,
+/// `edges`, and optional `clusters` (`TableGroup` indices + ungrouped tail cluster).
+#[must_use]
+pub fn compute_diagram_positions(
+    table_col_counts: &[usize],
+    edges: &[(usize, usize)],
+    clusters: Option<&[Vec<usize>]>,
+) -> Vec<Pos> {
+    let sizes: Vec<_> = table_col_counts
+        .iter()
+        .map(|&cols| Size {
+            w: CARD_W,
+            h: card_h(cols),
+        })
+        .collect();
+    let sp = Spacing {
+        gap_x: 104.0,
+        gap_y: 40.0,
+        margin: 0.0,
+    };
+    if let Some(clusters) = clusters {
+        let row = ((table_col_counts.len() as f32).sqrt() * 760.0).max(1650.0);
+        clustered(&sizes, edges, clusters, &sp, GROUP_PAD, row)
+    } else {
+        layered(&sizes, edges, &sp)
+    }
+}
+
+/// 2D bounding box dimensions in logical pixels.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Size {
+    /// Width in logical pixels.
     pub w: f32,
+    /// Height in logical pixels.
     pub h: f32,
 }
 
+/// 2D position in logical pixels.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Pos {
+    /// Horizontal coordinate.
     pub x: f32,
+    /// Vertical coordinate.
     pub y: f32,
 }
 
+/// Spacing parameters for layered layout.
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Spacing {
+    /// Horizontal gap between adjacent layers.
     pub gap_x: f32,
+    /// Vertical gap between nodes in the same layer.
     pub gap_y: f32,
+    /// Outer margin around the layout.
     pub margin: f32,
 }
 
-/// `edges` são pares `(origem, destino)` de índices em `sizes`; destino (a tabela
-/// referenciada) fica na camada à esquerda da origem. Retorna uma posição por nó.
+/// Computes layered positions for nodes of `sizes` connected by `edges`.
+///
+/// Each edge `(source, target)` places `target` (the referenced table) in a layer
+/// to the left of `source`. Returns one [`Pos`] per node in `sizes`.
+#[must_use]
 pub fn layered(sizes: &[Size], edges: &[(usize, usize)], sp: &Spacing) -> Vec<Pos> {
     let n = sizes.len();
     let layer = layers(n, edges);
@@ -47,7 +117,7 @@ pub fn layered(sizes: &[Size], edges: &[(usize, usize)], sp: &Spacing) -> Vec<Po
             let mut keyed: Vec<(f32, usize)> = cols[c]
                 .iter()
                 .map(|&i| {
-                    let ns: Vec<f32> = edges
+                    let (sum, count) = edges
                         .iter()
                         .filter_map(|&(a, b)| match (a == i, b == i) {
                             (true, _) => Some(b),
@@ -59,11 +129,11 @@ pub fn layered(sizes: &[Size], edges: &[(usize, usize)], sp: &Spacing) -> Vec<Po
                                 || (pass % 2 == 1 && layer[o] == c + 1)
                         })
                         .map(|o| order[o])
-                        .collect();
-                    let bary = if ns.is_empty() {
+                        .fold((0.0_f32, 0_usize), |(acc, cnt), v| (acc + v, cnt + 1));
+                    let bary = if count == 0 {
                         order[i]
                     } else {
-                        ns.iter().sum::<f32>() / ns.len() as f32
+                        sum / count as f32
                     };
                     (bary, i)
                 })
@@ -94,15 +164,6 @@ pub fn layered(sizes: &[Size], edges: &[(usize, usize)], sp: &Spacing) -> Vec<Po
 /// Camada de cada nó = maior distância até uma tabela sem dependências (arestas
 /// de retorno de ciclos são ignoradas via DFS).
 fn layers(n: usize, edges: &[(usize, usize)]) -> Vec<usize> {
-    // dependências: a -> b significa "a referencia b"; b fica antes
-    let mut deps: Vec<Vec<usize>> = vec![Vec::new(); n];
-    for &(a, b) in edges {
-        if a != b && a < n && b < n && !deps[a].contains(&b) {
-            deps[a].push(b);
-        }
-    }
-    let mut state = vec![0u8; n]; // 0 novo, 1 na pilha, 2 pronto
-    let mut layer = vec![0usize; n];
     fn visit(i: usize, deps: &[Vec<usize>], state: &mut [u8], layer: &mut [usize]) {
         state[i] = 1;
         let mut l = 0;
@@ -119,6 +180,15 @@ fn layers(n: usize, edges: &[(usize, usize)]) -> Vec<usize> {
         layer[i] = l;
         state[i] = 2;
     }
+    // dependências: a -> b significa "a referencia b"; b fica antes
+    let mut deps: Vec<Vec<usize>> = vec![Vec::new(); n];
+    for &(a, b) in edges {
+        if a != b && a < n && b < n && !deps[a].contains(&b) {
+            deps[a].push(b);
+        }
+    }
+    let mut state = vec![0u8; n]; // 0 novo, 1 na pilha, 2 pronto
+    let mut layer = vec![0usize; n];
     for i in 0..n {
         if state[i] == 0 {
             visit(i, &deps, &mut state, &mut layer);
@@ -127,9 +197,9 @@ fn layers(n: usize, edges: &[(usize, usize)]) -> Vec<usize> {
     layer
 }
 
-/// Layout em blocos: cada `cluster` (grupo de tabelas) é organizado em camadas
-/// com as próprias arestas e os blocos são dispostos em linhas de até `row_width`.
-/// `pad` é a folga interna do bloco (espaço para a moldura e o rótulo do grupo).
+/// Computes clustered layered layout for grouped tables, wrapping groups into rows
+/// up to `row_width` with internal group padding `pad`.
+#[must_use]
 pub fn clustered(
     sizes: &[Size],
     edges: &[(usize, usize)],
@@ -179,11 +249,16 @@ pub fn clustered(
     out
 }
 
+/// Axis-aligned rectangle used as an obstacle during orthogonal edge routing.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Rect {
+    /// Left edge X coordinate.
     pub x: f32,
+    /// Top edge Y coordinate.
     pub y: f32,
+    /// Rectangle width.
     pub w: f32,
+    /// Rectangle height.
     pub h: f32,
 }
 
@@ -217,14 +292,13 @@ fn length(path: &[Pos]) -> f32 {
         .sum()
 }
 
-/// Rota ortogonal de `a` (saindo pelo lado `sa`: +1 direita, -1 esquerda) até `b`
-/// (entrando pelo lado `sb`), desviando de `obstacles` (cartões, sem origem e destino).
-/// Tenta a rota em 3 segmentos; se colidir, contorna por um canal livre acima ou
-/// abaixo dos cartões no caminho.
+/// Computes an orthogonal route from `a` (exiting side `sa`: `+1.0` right, `-1.0` left)
+/// to `b` (entering side `sb`), avoiding `obstacles`.
+#[must_use]
 pub fn route(a: Pos, sa: f32, b: Pos, sb: f32, obstacles: &[Rect], gap: f32) -> Vec<Pos> {
     let facing = (sa > 0. && sb < 0. && a.x < b.x) || (sa < 0. && sb > 0. && a.x > b.x);
     let mx = if facing {
-        (a.x + b.x) / 2.
+        f32::midpoint(a.x, b.x)
     } else if sa > 0. {
         a.x.max(b.x) + gap
     } else {
@@ -281,7 +355,7 @@ mod tests {
     fn chain_and_no_overlap() {
         let edges = [(1, 0), (2, 1), (3, 1)];
         let p = layered(&sz(4), &edges, &SP);
-        assert!(p[0].x < p[1].x && p[1].x < p[2].x && p[2].x == p[3].x);
+        assert!(p[0].x < p[1].x && p[1].x < p[2].x && (p[2].x - p[3].x).abs() < f32::EPSILON);
         assert!((p[2].y - p[3].y).abs() >= 40.);
     }
 
@@ -361,8 +435,8 @@ mod tests {
 
     #[test]
     fn empty_and_isolated() {
-        assert!(layered(&[], &[], &SP).is_empty());
+        assert_eq!(layered(&[], &[], &SP), [] as [Pos; 0]);
         let p = layered(&sz(3), &[], &SP);
-        assert!(p.iter().all(|q| q.x == 10.)); // todos na camada 0, empilhados
+        assert!(p.iter().all(|q| (q.x - 10.).abs() < f32::EPSILON)); // todos na camada 0, empilhados
     }
 }

@@ -1,11 +1,19 @@
-use crate::{DbmlLang, SyntaxKind, SyntaxKind::*, SyntaxNode, lex};
+use crate::{
+    DbmlLang, SyntaxKind,
+    SyntaxKind::{Block, Column, Ident, LBrace, Newline, RBrace, Ref, Root, Table, TableGroup},
+    SyntaxNode, lex,
+};
 use rowan::GreenNodeBuilder;
 
+/// Result of parsing a DBML source string into an immutable green tree.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Parse {
     green: rowan::GreenNode,
 }
 
 impl Parse {
+    /// Returns the typed root [`SyntaxNode`] for this parse result.
+    #[must_use]
     pub fn syntax(&self) -> SyntaxNode {
         SyntaxNode::new_root(self.green.clone())
     }
@@ -17,8 +25,8 @@ struct Parser<'a> {
     b: GreenNodeBuilder<'static>,
 }
 
-/// Parser tolerante: nunca falha e nunca descarta bytes.
-/// Forma reconhecida: `Table nome { coluna... }`; o resto vira `Error`/`Block`.
+/// Lossless, error-recovering DBML parser that never fails or drops bytes.
+#[must_use]
 pub fn parse(text: &str) -> Parse {
     let mut p = Parser {
         toks: lex(text),
@@ -129,7 +137,7 @@ impl Parser<'_> {
         while let Some(k) = self.kind() {
             match k {
                 LBrace => depth += 1,
-                RBrace if depth == 0 => break,
+                RBrace | Newline if depth == 0 => break,
                 RBrace => {
                     depth -= 1;
                     if depth == 0 {
@@ -139,7 +147,6 @@ impl Parser<'_> {
                     self.bump();
                     continue;
                 }
-                Newline if depth == 0 => break,
                 _ => {}
             }
             self.bump();

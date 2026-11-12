@@ -1,4 +1,4 @@
-//! Testes baseados em propriedade (proptest) para o LineIndex e gerador de patches mínimos.
+//! Testes baseados em propriedade (proptest) para o `LineIndex` e gerador de patches mínimos.
 
 use dbml_wasm::compute_minimal_patch;
 use dbml_wasm::line_index::LineIndex;

@@ -119,6 +119,14 @@ The `scripts/` folder includes automated packaging scripts for all desktop platf
 
 ---
 
+## Code Signing & Privacy
+
+Free code signing provided by [SignPath.io](https://about.signpath.io/), using a certificate by [SignPath Foundation](https://signpath.org/).
+
+DB Modeling runs locally and does not collect telemetry or send your `.dbml` schemas to external servers. See [SECURITY.md](SECURITY.md) for our signing policy and vulnerability reporting instructions.
+
+---
+
 ## License
 
 Licensed under the [MIT License](LICENSE).
