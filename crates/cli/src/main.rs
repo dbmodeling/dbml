@@ -255,19 +255,13 @@ mod tests {
 
     #[tokio::test]
     async fn run_import_url_reads_sqlite_file_read_only() {
-        use sqlx::Connection as _;
         let dir = std::env::temp_dir();
         let db = dir.join(format!("dbml_cli_url_{}.sqlite", std::process::id()));
         let out = dir.join(format!("dbml_cli_url_{}.dbml", std::process::id()));
         let _ = std::fs::remove_file(&db);
         let _ = std::fs::remove_file(&out);
-        let mut conn =
-            sqlx::SqliteConnection::connect(&format!("sqlite:{}?mode=rwc", db.display()))
-                .await
-                .unwrap();
-        sqlx::raw_sql("CREATE TABLE t (id INTEGER PRIMARY KEY, name TEXT NOT NULL);")
-            .execute(&mut conn)
-            .await
+        let conn = rusqlite::Connection::open(&db).unwrap();
+        conn.execute_batch("CREATE TABLE t (id INTEGER PRIMARY KEY, name TEXT NOT NULL);")
             .unwrap();
         drop(conn);
         run_import_url(db.to_str().unwrap(), &[], Some(&out), false)

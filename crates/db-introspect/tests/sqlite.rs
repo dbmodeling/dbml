@@ -1,7 +1,7 @@
 //! SQLite end-to-end: real file, read-only connection, DBML that parses cleanly.
 
 use db_introspect::{Error, Options, introspect, test_connection};
-use sqlx::{Connection, SqliteConnection};
+use rusqlite::Connection;
 
 const DDL: &str = "
 CREATE TABLE users (
@@ -28,18 +28,17 @@ CREATE TABLE order_items (
 CREATE TABLE \"weird name\" (\"a b\" INT);
 ";
 
-async fn make_db(name: &str) -> std::path::PathBuf {
+fn make_db(name: &str) -> std::path::PathBuf {
     let path = std::env::temp_dir().join(format!("dbi_{name}_{}.sqlite", std::process::id()));
     let _ = std::fs::remove_file(&path);
-    let url = format!("sqlite:{}?mode=rwc", path.display());
-    let mut conn = SqliteConnection::connect(&url).await.unwrap();
-    sqlx::raw_sql(DDL).execute(&mut conn).await.unwrap();
+    let conn = Connection::open(&path).unwrap();
+    conn.execute_batch(DDL).unwrap();
     path
 }
 
 #[tokio::test]
 async fn generates_dbml_with_columns_refs_and_indexes() {
-    let path = make_db("full").await;
+    let path = make_db("full");
     let out = introspect(path.to_str().unwrap()).await.unwrap();
     let _ = std::fs::remove_file(&path);
     assert!(out.warnings.is_empty(), "{:?}", out.warnings);
@@ -77,7 +76,7 @@ async fn generates_dbml_with_columns_refs_and_indexes() {
 
 #[tokio::test]
 async fn output_is_valid_dbml_with_no_diagnostics() {
-    let path = make_db("valid").await;
+    let path = make_db("valid");
     let out = introspect(path.to_str().unwrap()).await.unwrap();
     let _ = std::fs::remove_file(&path);
     let schema = dbml_analysis::analyze(&out.dbml);
@@ -87,7 +86,7 @@ async fn output_is_valid_dbml_with_no_diagnostics() {
 
 #[tokio::test]
 async fn connection_is_read_only() {
-    let path = make_db("ro").await;
+    let path = make_db("ro");
     let before = std::fs::read(&path).unwrap();
     let _ = introspect(path.to_str().unwrap()).await.unwrap();
     assert_eq!(
@@ -118,7 +117,7 @@ async fn not_yet_supported_engines_report_unsupported() {
 
 #[tokio::test]
 async fn test_connection_reports_version_and_rejects_non_databases() {
-    let path = make_db("ping").await;
+    let path = make_db("ping");
     let ok = test_connection(path.to_str().unwrap(), &Options::default())
         .await
         .unwrap();

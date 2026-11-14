@@ -33,4 +33,4 @@ db-introspect.workspace = true
 workspace = true
 
 [dev-dependencies]
-sqlx = { version = "=0.9.0", default-features = false, features = ["runtime-tokio", "sqlite"] }
+rusqlite = { version = "=0.42.0", features = ["bundled"] }

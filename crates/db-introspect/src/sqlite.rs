@@ -1,53 +1,76 @@
 //! SQLite introspector: `sqlite_master` plus table-valued `pragma_*` functions, read-only.
+//!
+//! Uses `rusqlite` with the bundled SQLite (not `sqlx-sqlite`, whose `libsqlite3-sys` range
+//! excludes the patched releases). The blocking driver runs on tokio's blocking pool.
 
 use crate::model::{Column, ForeignKey, Index, Introspected, Table};
 use crate::{Error, sanitize};
-use sqlx::sqlite::SqliteConnectOptions;
-use sqlx::{ConnectOptions, Row, SqliteConnection};
+use rusqlite::{Connection, OpenFlags};
 use std::collections::HashMap;
-use std::str::FromStr;
 
-fn options(target: &str) -> Result<SqliteConnectOptions, Error> {
+/// `sqlite:relative.db`, `sqlite:///abs/app.db?mode=ro` or a plain path -> the file path.
+fn file_path(target: &str) -> String {
     let t = target.trim();
-    let opts = if t.to_ascii_lowercase().starts_with("sqlite:") {
-        SqliteConnectOptions::from_str(t).map_err(|e| Error::InvalidTarget(e.to_string()))?
-    } else {
-        SqliteConnectOptions::new().filename(t)
-    };
-    Ok(opts.read_only(true).create_if_missing(false))
+    if t.to_ascii_lowercase().starts_with("sqlite:") {
+        let rest = &t["sqlite:".len()..];
+        let rest = rest.strip_prefix("//").unwrap_or(rest);
+        return rest.split('?').next().unwrap_or(rest).to_owned();
+    }
+    t.to_owned()
 }
 
-fn query_err(target: &str, e: &sqlx::Error) -> Error {
+fn open(target: &str) -> Result<Connection, Error> {
+    let path = file_path(target);
+    if path.is_empty() {
+        return Err(Error::InvalidTarget("choose a SQLite database file".into()));
+    }
+    Connection::open_with_flags(
+        &path,
+        OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+    )
+    .map_err(|e| Error::Connect(sanitize(&e.to_string(), target)))
+}
+
+fn qerr(target: &str, e: &rusqlite::Error) -> Error {
     Error::Query(sanitize(&e.to_string(), target))
 }
 
-pub(crate) async fn read(target: &str) -> Result<Introspected, Error> {
-    let mut conn = options(target)?
-        .connect()
+/// Runs a blocking closure on tokio's blocking pool.
+async fn blocking<T: Send + 'static>(
+    f: impl FnOnce() -> Result<T, Error> + Send + 'static,
+) -> Result<T, Error> {
+    tokio::task::spawn_blocking(f)
         .await
-        .map_err(|e| Error::Connect(sanitize(&e.to_string(), target)))?;
-    read_conn(&mut conn, target).await
+        .map_err(|e| Error::Query(format!("worker failed: {e}")))?
+}
+
+pub(crate) async fn read(target: &str) -> Result<Introspected, Error> {
+    let target = target.to_owned();
+    blocking(move || {
+        let conn = open(&target)?;
+        read_conn(&conn, &target)
+    })
+    .await
 }
 
 pub(crate) async fn ping(target: &str) -> Result<crate::TestOutcome, Error> {
-    let mut conn = options(target)?
-        .connect()
-        .await
-        .map_err(|e| Error::Connect(sanitize(&e.to_string(), target)))?;
-    let row = sqlx::query("SELECT sqlite_version() AS v")
-        .fetch_one(&mut conn)
-        .await
-        .map_err(|e| query_err(target, &e))?;
-    let v: String = row.try_get("v").map_err(|e| query_err(target, &e))?;
-    // Opening an arbitrary non-database file succeeds lazily; this query proves it is a database.
-    sqlx::query("SELECT count(*) FROM sqlite_master")
-        .fetch_one(&mut conn)
-        .await
-        .map_err(|e| query_err(target, &e))?;
-    Ok(crate::TestOutcome {
-        server: format!("SQLite {v}"),
-        schemas: Vec::new(),
+    let target = target.to_owned();
+    blocking(move || {
+        let conn = open(&target)?;
+        let version: String = conn
+            .query_row("SELECT sqlite_version()", [], |r| r.get(0))
+            .map_err(|e| qerr(&target, &e))?;
+        // Opening an arbitrary non-database file succeeds lazily; this proves it is a database.
+        conn.query_row("SELECT count(*) FROM sqlite_master", [], |r| {
+            r.get::<_, i64>(0)
+        })
+        .map_err(|e| qerr(&target, &e))?;
+        Ok(crate::TestOutcome {
+            server: format!("SQLite {version}"),
+            schemas: Vec::new(),
+        })
     })
+    .await
 }
 
 fn action(raw: &str) -> Option<String> {
@@ -60,44 +83,55 @@ fn action(raw: &str) -> Option<String> {
     }
 }
 
-async fn read_conn(conn: &mut SqliteConnection, target: &str) -> Result<Introspected, Error> {
+struct FkRow {
+    id: i64,
+    table: String,
+    from: String,
+    to: Option<String>,
+    on_update: String,
+    on_delete: String,
+}
+
+fn read_conn(conn: &Connection, target: &str) -> Result<Introspected, Error> {
+    let e = |x: rusqlite::Error| qerr(target, &x);
     let mut db = Introspected::default();
-    let masters = sqlx::query(
-        "SELECT name, sql FROM sqlite_master \
-         WHERE type = 'table' AND name NOT LIKE 'sqlite\\_%' ESCAPE '\\' ORDER BY name",
-    )
-    .fetch_all(&mut *conn)
-    .await
-    .map_err(|e| query_err(target, &e))?;
+
+    let masters: Vec<(String, Option<String>)> = conn
+        .prepare(
+            "SELECT name, sql FROM sqlite_master \
+             WHERE type = 'table' AND name NOT LIKE 'sqlite\\_%' ESCAPE '\\' ORDER BY name",
+        )
+        .map_err(e)?
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+        .map_err(e)?
+        .collect::<Result<_, _>>()
+        .map_err(e)?;
 
     let mut pk_cols: HashMap<String, Vec<String>> = HashMap::new();
-    let mut raw_fks: Vec<(String, Vec<sqlx::sqlite::SqliteRow>)> = Vec::new();
+    let mut raw_fks: Vec<(String, Vec<FkRow>)> = Vec::new();
 
-    for m in &masters {
-        let name: String = m.try_get("name").map_err(|e| query_err(target, &e))?;
-        let ddl: Option<String> = m.try_get("sql").map_err(|e| query_err(target, &e))?;
+    for (name, ddl) in &masters {
         let autoinc = ddl
             .as_deref()
             .is_some_and(|s| s.to_ascii_uppercase().contains("AUTOINCREMENT"));
 
-        let col_rows = sqlx::query(
-            "SELECT name, type, \"notnull\", dflt_value, pk FROM pragma_table_xinfo(?) \
-             WHERE hidden != 1 ORDER BY cid",
-        )
-        .bind(&name)
-        .fetch_all(&mut *conn)
-        .await
-        .map_err(|e| query_err(target, &e))?;
+        // (name, type, notnull, default, pk position)
+        let col_rows: Vec<(String, String, i64, Option<String>, i64)> = conn
+            .prepare(
+                "SELECT name, type, \"notnull\", dflt_value, pk FROM pragma_table_xinfo(?1) \
+                 WHERE hidden != 1 ORDER BY cid",
+            )
+            .map_err(e)?
+            .query_map([name], |r| {
+                Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?))
+            })
+            .map_err(e)?
+            .collect::<Result<_, _>>()
+            .map_err(e)?;
 
         let mut columns = Vec::new();
         let mut pks: Vec<(i64, String)> = Vec::new();
-        for r in &col_rows {
-            let cname: String = r.try_get("name").map_err(|e| query_err(target, &e))?;
-            let ty: String = r.try_get("type").map_err(|e| query_err(target, &e))?;
-            let notnull: i64 = r.try_get("notnull").map_err(|e| query_err(target, &e))?;
-            let default: Option<String> =
-                r.try_get("dflt_value").map_err(|e| query_err(target, &e))?;
-            let pk: i64 = r.try_get("pk").map_err(|e| query_err(target, &e))?;
+        for (cname, ty, notnull, default, pk) in col_rows {
             if pk > 0 {
                 pks.push((pk, cname.clone()));
             }
@@ -131,29 +165,24 @@ async fn read_conn(conn: &mut SqliteConnection, target: &str) -> Result<Introspe
         }
         pk_cols.insert(name.clone(), pks.iter().map(|(_, n)| n.clone()).collect());
 
-        let idx_rows =
-            sqlx::query("SELECT name, \"unique\", origin FROM pragma_index_list(?) ORDER BY seq")
-                .bind(&name)
-                .fetch_all(&mut *conn)
-                .await
-                .map_err(|e| query_err(target, &e))?;
-        for ir in &idx_rows {
-            let iname: String = ir.try_get("name").map_err(|e| query_err(target, &e))?;
-            let unique: i64 = ir.try_get("unique").map_err(|e| query_err(target, &e))?;
-            let origin: String = ir.try_get("origin").map_err(|e| query_err(target, &e))?;
+        let idx_rows: Vec<(String, i64, String)> = conn
+            .prepare("SELECT name, \"unique\", origin FROM pragma_index_list(?1) ORDER BY seq")
+            .map_err(e)?
+            .query_map([name], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+            .map_err(e)?
+            .collect::<Result<_, _>>()
+            .map_err(e)?;
+        for (iname, unique, origin) in idx_rows {
             if origin == "pk" {
                 continue;
             }
-            let cols: Vec<Option<String>> =
-                sqlx::query("SELECT name FROM pragma_index_info(?) ORDER BY seqno")
-                    .bind(&iname)
-                    .fetch_all(&mut *conn)
-                    .await
-                    .map_err(|e| query_err(target, &e))?
-                    .iter()
-                    .map(|r| r.try_get("name"))
-                    .collect::<Result<_, _>>()
-                    .map_err(|e| query_err(target, &e))?;
+            let cols: Vec<Option<String>> = conn
+                .prepare("SELECT name FROM pragma_index_info(?1) ORDER BY seqno")
+                .map_err(e)?
+                .query_map([&iname], |r| r.get(0))
+                .map_err(e)?
+                .collect::<Result<_, _>>()
+                .map_err(e)?;
             let Some(cols) = cols.into_iter().collect::<Option<Vec<String>>>() else {
                 db.warnings.push(format!(
                     "{name}: index `{iname}` uses an expression and was skipped"
@@ -178,60 +207,64 @@ async fn read_conn(conn: &mut SqliteConnection, target: &str) -> Result<Introspe
             });
         }
 
-        let fk_rows = sqlx::query(
-            "SELECT id, seq, \"table\", \"from\", \"to\", on_update, on_delete \
-             FROM pragma_foreign_key_list(?) ORDER BY id, seq",
-        )
-        .bind(&name)
-        .fetch_all(&mut *conn)
-        .await
-        .map_err(|e| query_err(target, &e))?;
+        let fk_rows: Vec<FkRow> = conn
+            .prepare(
+                "SELECT id, \"table\", \"from\", \"to\", on_update, on_delete \
+                 FROM pragma_foreign_key_list(?1) ORDER BY id, seq",
+            )
+            .map_err(e)?
+            .query_map([name], |r| {
+                Ok(FkRow {
+                    id: r.get(0)?,
+                    table: r.get(1)?,
+                    from: r.get(2)?,
+                    to: r.get(3)?,
+                    on_update: r.get(4)?,
+                    on_delete: r.get(5)?,
+                })
+            })
+            .map_err(e)?
+            .collect::<Result<_, _>>()
+            .map_err(e)?;
         raw_fks.push((name.clone(), fk_rows));
 
         db.tables.push(Table {
             schema: None,
-            name,
+            name: name.clone(),
             columns,
             indexes,
             comment: None,
         });
     }
 
-    for (from_table, rows) in &raw_fks {
-        let mut groups: Vec<(i64, ForeignKey)> = Vec::new();
-        let mut wildcard: Vec<bool> = Vec::new();
+    for (from_table, rows) in raw_fks {
+        let mut groups: Vec<(i64, ForeignKey, bool)> = Vec::new();
         for r in rows {
-            let id: i64 = r.try_get("id").map_err(|e| query_err(target, &e))?;
-            let to_table: String = r.try_get("table").map_err(|e| query_err(target, &e))?;
-            let from: String = r.try_get("from").map_err(|e| query_err(target, &e))?;
-            let to: Option<String> = r.try_get("to").map_err(|e| query_err(target, &e))?;
-            let on_update: String = r.try_get("on_update").map_err(|e| query_err(target, &e))?;
-            let on_delete: String = r.try_get("on_delete").map_err(|e| query_err(target, &e))?;
-            if let Some(pos) = groups.iter().position(|(gid, _)| *gid == id) {
-                let fk = &mut groups[pos].1;
-                fk.from_cols.push(from);
-                if let Some(t) = to {
-                    fk.to_cols.push(t);
+            if let Some(g) = groups.iter_mut().find(|(gid, _, _)| *gid == r.id) {
+                g.1.from_cols.push(r.from);
+                if let Some(t) = r.to {
+                    g.1.to_cols.push(t);
                 }
             } else {
-                wildcard.push(to.is_none());
+                let wildcard = r.to.is_none();
                 groups.push((
-                    id,
+                    r.id,
                     ForeignKey {
                         from_schema: None,
                         from_table: from_table.clone(),
-                        from_cols: vec![from],
+                        from_cols: vec![r.from],
                         to_schema: None,
-                        to_table,
-                        to_cols: to.into_iter().collect(),
-                        on_delete: action(&on_delete),
-                        on_update: action(&on_update),
+                        to_table: r.table,
+                        to_cols: r.to.into_iter().collect(),
+                        on_delete: action(&r.on_delete),
+                        on_update: action(&r.on_update),
                     },
+                    wildcard,
                 ));
             }
         }
-        for ((_, mut fk), is_wildcard) in groups.into_iter().zip(wildcard) {
-            if is_wildcard || fk.to_cols.is_empty() {
+        for (_, mut fk, wildcard) in groups {
+            if wildcard || fk.to_cols.is_empty() {
                 // `REFERENCES parent` without columns targets the parent's primary key.
                 fk.to_cols = pk_cols.get(&fk.to_table).cloned().unwrap_or_default();
             }
@@ -246,4 +279,18 @@ async fn read_conn(conn: &mut SqliteConnection, target: &str) -> Result<Introspe
         }
     }
     Ok(db)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::file_path;
+
+    #[test]
+    fn extracts_the_file_path() {
+        assert_eq!(file_path("/data/app.db"), "/data/app.db");
+        assert_eq!(file_path("sqlite:app.db"), "app.db");
+        assert_eq!(file_path("sqlite:///abs/app.db?mode=ro"), "/abs/app.db");
+        assert_eq!(file_path("SQLITE:rel/app.db"), "rel/app.db");
+        assert_eq!(file_path("  ./x.db  "), "./x.db");
+    }
 }
