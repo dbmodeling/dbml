@@ -7,10 +7,12 @@ const PG: &str = include_str!("fixtures/postgres.sql");
 const MYSQL: &str = include_str!("fixtures/mysql.sql");
 const SQLITE: &str = include_str!("fixtures/sqlite.sql");
 
-const ALL: [(SqlDialect, ExportDialect); 3] = [
+const ALL: [(SqlDialect, ExportDialect); 5] = [
     (SqlDialect::Postgres, ExportDialect::Postgres),
     (SqlDialect::Mysql, ExportDialect::Mysql),
     (SqlDialect::Sqlite, ExportDialect::Sqlite),
+    (SqlDialect::SqlServer, ExportDialect::SqlServer),
+    (SqlDialect::Oracle, ExportDialect::Oracle),
 ];
 
 const ROUND_TRIP_SAMPLE: &str = "\
@@ -283,11 +285,13 @@ fn round_trip_should_preserve_composite_primary_key() {
 fn round_trip_should_preserve_referential_actions() {
     for (import, export) in ALL {
         let out = import_sql_ddl(&export_sql_ddl(ROUND_TRIP_SAMPLE, export), import);
-        assert!(
-            out.dbml.contains("[delete: cascade, update: no action]"),
-            "{import}\n{}",
-            out.dbml
-        );
+        // Oracle não tem ON UPDATE: o exportador só deixa um comentário, então só o delete volta
+        let expected = if import == SqlDialect::Oracle {
+            "[delete: cascade]"
+        } else {
+            "[delete: cascade, update: no action]"
+        };
+        assert!(out.dbml.contains(expected), "{import}\n{}", out.dbml);
     }
 }
 

@@ -52,6 +52,10 @@ export type ActionId =
 
 export type KeyContext = 'Shell' | 'Canvas';
 
+/** Grupos dos dropdowns de exportação (iguais aos de `crates/app/src/actions.rs`). */
+export const GROUP_EXPORT_CODE = 'Export Code';
+export const GROUP_EXPORT_IMAGE = 'Export Image';
+
 export interface ActionEntry {
   id: ActionId;
   key: string;
@@ -127,15 +131,15 @@ export function catalog(): ActionEntry[] {
     e('alt-shift-f', ['Alt', 'Shift', 'F'], 'FormatDocument', 'Editor', 'Format Document'),
     e('alt-up', ['Alt', '↑'], 'MoveLineUp', 'Editor', 'Move Line Up'),
     e('alt-down', ['Alt', '↓'], 'MoveLineDown', 'Editor', 'Move Line Down'),
-    e('', [], 'ExportSvg', 'Export', 'Export diagram as vector SVG'),
-    e('', [], 'ExportPng', 'Export', 'Export diagram as PNG image'),
-    e('', [], 'ExportJpeg', 'Export', 'Export diagram as JPEG image'),
-    e('', [], 'ExportMermaid', 'Export', 'Export diagram as Mermaid erDiagram'),
-    e('', [], 'ExportSqlPostgres', 'Export', 'Export SQL DDL (PostgreSQL)'),
-    e('', [], 'ExportSqlMysql', 'Export', 'Export SQL DDL (MySQL)'),
-    e('', [], 'ExportSqlSqlite', 'Export', 'Export SQL DDL (SQLite)'),
-    e('', [], 'ExportSqlSqlServer', 'Export', 'Export SQL DDL (SQL Server)'),
-    e('', [], 'ExportSqlOracle', 'Export', 'Export SQL DDL (Oracle)'),
+    e('', [], 'ExportSqlPostgres', GROUP_EXPORT_CODE, 'Export Code: PostgreSQL (.sql)'),
+    e('', [], 'ExportSqlMysql', GROUP_EXPORT_CODE, 'Export Code: MySQL (.sql)'),
+    e('', [], 'ExportSqlSqlite', GROUP_EXPORT_CODE, 'Export Code: SQLite (.sql)'),
+    e('', [], 'ExportSqlSqlServer', GROUP_EXPORT_CODE, 'Export Code: SQL Server (.sql)'),
+    e('', [], 'ExportSqlOracle', GROUP_EXPORT_CODE, 'Export Code: Oracle (.sql)'),
+    e('', [], 'ExportMermaid', GROUP_EXPORT_CODE, 'Export Code: Mermaid erDiagram (.mmd)'),
+    e('', [], 'ExportPng', GROUP_EXPORT_IMAGE, 'Export Image: PNG'),
+    e('', [], 'ExportJpeg', GROUP_EXPORT_IMAGE, 'Export Image: JPEG'),
+    e('', [], 'ExportSvg', GROUP_EXPORT_IMAGE, 'Export Image: Vector SVG'),
     e('ctrl-k', ['Ctrl', 'K'], 'OpenPalette', 'Help', 'Command Palette'),
     e('ctrl-/', ['Ctrl', '/'], 'ShowShortcuts', 'Help', 'Keyboard Shortcuts'),
   ];

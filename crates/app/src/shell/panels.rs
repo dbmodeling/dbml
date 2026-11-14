@@ -226,6 +226,18 @@ impl Shell {
                         }),
                 ),
             )
+            .child(export_dropdown(
+                "export-code-btn",
+                IconName::Database,
+                "Export code (SQL / Mermaid)…",
+                actions::GROUP_EXPORT_CODE,
+            ))
+            .child(export_dropdown(
+                "export-image-btn",
+                IconName::File,
+                "Export image (PNG / JPEG / SVG)…",
+                actions::GROUP_EXPORT_IMAGE,
+            ))
             .child(
                 div().flex_none().child(
                     Button::new("theme-toggle")
@@ -2728,4 +2740,30 @@ impl Shell {
                 "Light"
             })
     }
+}
+
+/// Botão da titlebar com dropdown gerado do catálogo de ações (um grupo por botão), para a barra
+/// e a command palette nunca divergirem.
+fn export_dropdown(
+    id: &'static str,
+    icon: IconName,
+    tip: &'static str,
+    group: &'static str,
+) -> Div {
+    div().flex_none().child(
+        Button::new(id)
+            .ghost()
+            .small()
+            .icon(icon)
+            .tooltip(tip)
+            .dropdown_menu(move |mut menu, _, _| {
+                menu = menu.label(group);
+                for e in actions::catalog() {
+                    if e.group == group {
+                        menu = menu.menu(e.label, e.action);
+                    }
+                }
+                menu
+            }),
+    )
 }

@@ -52,9 +52,18 @@ actions!(
         ExportSqlSqlite,
         ExportSqlSqlServer,
         ExportSqlOracle,
+        ExportMermaid,
+        ExportPng,
+        ExportJpeg,
+        ExportSvg,
         ImportSqlDdl,
     ]
 );
+
+/// Grupo do catálogo / dropdown da barra: exportação de código (SQL por banco, Mermaid).
+pub const GROUP_EXPORT_CODE: &str = "Export Code";
+/// Grupo do catálogo / dropdown da barra: exportação de imagem (PNG, JPEG, SVG).
+pub const GROUP_EXPORT_IMAGE: &str = "Export Image";
 
 /// Contexto de teclado do shell (atalhos com modificador valem na janela toda).
 pub const CTX: &str = "Shell";
@@ -159,11 +168,50 @@ pub fn catalog() -> Vec<Entry> {
         e("alt-down", MoveLineDown, "Editor", "Move Line Down"),
         e("ctrl-k", OpenPalette, "Help", "Command Palette"),
         e("ctrl-/", ShowShortcuts, "Help", "Keyboard Shortcuts"),
-        e("", ExportSqlPostgres, "Export", "Export SQL (PostgreSQL)"),
-        e("", ExportSqlMysql, "Export", "Export SQL (MySQL)"),
-        e("", ExportSqlSqlite, "Export", "Export SQL (SQLite)"),
-        e("", ExportSqlSqlServer, "Export", "Export SQL (SQL Server)"),
-        e("", ExportSqlOracle, "Export", "Export SQL (Oracle)"),
+        e(
+            "",
+            ExportSqlPostgres,
+            GROUP_EXPORT_CODE,
+            "Export Code: PostgreSQL (.sql)",
+        ),
+        e(
+            "",
+            ExportSqlMysql,
+            GROUP_EXPORT_CODE,
+            "Export Code: MySQL (.sql)",
+        ),
+        e(
+            "",
+            ExportSqlSqlite,
+            GROUP_EXPORT_CODE,
+            "Export Code: SQLite (.sql)",
+        ),
+        e(
+            "",
+            ExportSqlSqlServer,
+            GROUP_EXPORT_CODE,
+            "Export Code: SQL Server (.sql)",
+        ),
+        e(
+            "",
+            ExportSqlOracle,
+            GROUP_EXPORT_CODE,
+            "Export Code: Oracle (.sql)",
+        ),
+        e(
+            "",
+            ExportMermaid,
+            GROUP_EXPORT_CODE,
+            "Export Code: Mermaid erDiagram (.mmd)",
+        ),
+        e("", ExportPng, GROUP_EXPORT_IMAGE, "Export Image: PNG"),
+        e("", ExportJpeg, GROUP_EXPORT_IMAGE, "Export Image: JPEG"),
+        e(
+            "",
+            ExportSvg,
+            GROUP_EXPORT_IMAGE,
+            "Export Image: Vector SVG",
+        ),
         e("", ImportSqlDdl, "File", "Import SQL DDL…"),
     ]
 }

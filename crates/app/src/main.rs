@@ -20,7 +20,11 @@ use gpui_kit::*;
 use std::borrow::Cow;
 use std::path::PathBuf;
 
-const FONTS: [&[u8]; 4] = [
+/// Identificador da app no Linux (Wayland `app_id` / X11 `WM_CLASS`). Deve ser igual ao
+/// nome do `.desktop` instalado pelos pacotes (`scripts/build-deb.sh`, `scripts/build-fedora.sh`).
+const APP_ID: &str = "db-modeling";
+
+pub(crate) const FONTS: [&[u8]; 4] = [
     include_bytes!("../assets/fonts/Inter-Light.ttf"),
     include_bytes!("../assets/fonts/Inter-Regular.ttf"),
     include_bytes!("../assets/fonts/Inter-Medium.ttf"),
@@ -85,6 +89,9 @@ fn main() {
                 appears_transparent: cfg!(windows),
                 ..Default::default()
             }),
+            // Wayland: app_id precisa casar com `db-modeling.desktop` (e com
+            // `StartupWMClass`), senão o GNOME/KDE mostra "Unknown" e ícone genérico.
+            app_id: Some(APP_ID.into()),
             ..Default::default()
         };
         let (win, shell) = gpui_kit::open_window(opts, cx, |window, cx| {
@@ -104,6 +111,8 @@ fn main() {
             let shell = cx.new(|cx| shell::Shell::new(start, mode, translucent, window, cx));
             let focus = shell.focus_handle(cx);
             window.focus(&focus, cx);
+            // X11: WM_CLASS só é definido via set_app_id (WindowOptions.app_id é ignorado lá)
+            window.set_app_id(APP_ID);
             shell
         })
         .expect("failed to open window");

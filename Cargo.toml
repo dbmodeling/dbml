@@ -15,6 +15,7 @@ dbml-syntax = { path = "crates/dbml-syntax" }
 dbml-analysis = { path = "crates/dbml-analysis" }
 dbml-edit = { path = "crates/dbml-edit" }
 layout = { path = "crates/layout" }
+diagram-export = { path = "crates/diagram-export" }
 sql-import = { path = "crates/sql-import" }
 
 # Parsing & CST

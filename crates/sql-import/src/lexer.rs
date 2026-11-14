@@ -144,7 +144,7 @@ impl<'a> Lexer<'a> {
             '"' if mysql => Some(TokenKind::Str(self.delimited('"', true))),
             '"' => Some(TokenKind::Quoted(self.delimited('"', false))),
             '`' if mysql => Some(TokenKind::Quoted(self.delimited('`', false))),
-            '[' if self.dialect == SqlDialect::Sqlite => {
+            '[' if matches!(self.dialect, SqlDialect::Sqlite | SqlDialect::SqlServer) => {
                 Some(TokenKind::Quoted(self.delimited(']', false)))
             }
             '$' if postgres => Some(self.dollar()),
@@ -256,7 +256,13 @@ mod tests {
     use super::*;
     use proptest::prelude::*;
 
-    const ALL: [SqlDialect; 3] = [SqlDialect::Postgres, SqlDialect::Mysql, SqlDialect::Sqlite];
+    const ALL: [SqlDialect; 5] = [
+        SqlDialect::Postgres,
+        SqlDialect::Mysql,
+        SqlDialect::Sqlite,
+        SqlDialect::SqlServer,
+        SqlDialect::Oracle,
+    ];
 
     fn kinds(src: &str, d: SqlDialect) -> Vec<TokenKind<'_>> {
         lex(src, d).into_iter().map(|t| t.kind).collect()

@@ -131,27 +131,36 @@ impl Diagram {
         d
     }
 
-    /// Troca o esquema mantendo a posição das tabelas que já existiam; novas ganham auto-layout.
+    /// Troca o esquema mantendo a posição dos cartões que já existiam. Os novos partem do slot
+    /// do auto-layout e são afastados (`layout::place_without_overlap`) se caírem em cima de
+    /// um cartão que o usuário já posicionou.
     pub fn set_schema(&mut self, schema: Schema) {
         let auto = auto_layout(&schema);
         let old = std::mem::take(&mut self.pos);
-        for t in &schema.tables {
-            let qname = t.qualified_name();
-            let p = old
-                .get(&qname)
-                .or_else(|| auto.get(&qname))
-                .copied()
-                .unwrap_or((0., 0.));
-            self.pos.insert(qname, p);
+        let cards = schema
+            .tables
+            .iter()
+            .map(|t| (t.qualified_name(), CARD_W, card_h(t.columns.len())))
+            .chain(
+                schema
+                    .enums
+                    .iter()
+                    .map(|e| (enum_key(e), ENUM_W, enum_h(e))),
+            );
+        let (mut fixed, mut incoming, mut incoming_keys) = (Vec::new(), Vec::new(), Vec::new());
+        for (key, w, h) in cards {
+            if let Some(&(x, y)) = old.get(&key) {
+                fixed.push(layout::Rect { x, y, w, h });
+                self.pos.insert(key, (x, y));
+            } else {
+                let (x, y) = auto.get(&key).copied().unwrap_or((0., 0.));
+                incoming.push(layout::Rect { x, y, w, h });
+                incoming_keys.push(key);
+            }
         }
-        for e in &schema.enums {
-            let key = format!("enum:{}", e.qualified_name());
-            let p = old
-                .get(&key)
-                .or_else(|| auto.get(&key))
-                .copied()
-                .unwrap_or((0., 0.));
-            self.pos.insert(key, p);
+        let placed = layout::place_without_overlap(&fixed, &incoming, PLACE_GAP);
+        for (key, p) in incoming_keys.into_iter().zip(placed) {
+            self.pos.insert(key, (p.x, p.y));
         }
         self.schema = schema;
     }
@@ -242,7 +251,7 @@ impl Diagram {
         let Some(en) = self.schema.enums.iter().find(|e| e.name == name) else {
             return;
         };
-        let key = format!("enum:{name}");
+        let key = enum_key(en);
         let (x, y) = self.pos.get(&key).copied().unwrap_or((0., 0.));
         let (w, h) = (f32::from(self.size.width), f32::from(self.size.height));
         let eh = HEADER_H + (en.values.len().min(6) as f32) * 20. + 16.;
@@ -630,20 +639,62 @@ fn auto_layout(schema: &Schema) -> HashMap<String, (f32, f32)> {
         .zip(pos)
         .map(|(t, p)| (t.qualified_name(), (p.x, p.y)))
         .collect();
-    let max_y = map
-        .values()
-        .zip(&schema.tables)
-        .map(|((_, y), t)| y + card_h(t.columns.len()))
+    // enums: uma fileira abaixo da tabela mais baixa (altura pareada pela chave, não pela
+    // ordem de iteração do HashMap), sem encostar em nenhum cartão
+    let table_rects: Vec<layout::Rect> = schema
+        .tables
+        .iter()
+        .filter_map(|t| {
+            let &(x, y) = map.get(&t.qualified_name())?;
+            Some(layout::Rect {
+                x,
+                y,
+                w: CARD_W,
+                h: card_h(t.columns.len()),
+            })
+        })
+        .collect();
+    let max_y = table_rects
+        .iter()
+        .map(|r| r.y + r.h)
         .fold(0.0_f32, f32::max);
     let enum_y = if schema.tables.is_empty() {
         0.0
     } else {
         max_y + 64.0
     };
-    for (i, en) in schema.enums.iter().enumerate() {
-        map.insert(format!("enum:{}", en.name), (i as f32 * 232.0, enum_y));
+    let enum_rects: Vec<layout::Rect> = schema
+        .enums
+        .iter()
+        .enumerate()
+        .map(|(i, en)| layout::Rect {
+            x: i as f32 * (ENUM_W + 32.0),
+            y: enum_y,
+            w: ENUM_W,
+            h: enum_h(en),
+        })
+        .collect();
+    let placed = layout::place_without_overlap(&table_rects, &enum_rects, PLACE_GAP);
+    for (en, p) in schema.enums.iter().zip(placed) {
+        map.insert(enum_key(en), (p.x, p.y));
     }
     map
+}
+
+/// Largura do cartão de enum em pixels de mundo.
+const ENUM_W: f32 = 200.0;
+/// Folga mínima entre cartões reposicionados para evitar sobreposição.
+const PLACE_GAP: f32 = 40.0;
+
+/// Chave de posição de um enum (`enum:<schema.nome>`), igual à do sidecar da Web.
+fn enum_key(en: &schema::EnumDef) -> String {
+    format!("enum:{}", en.qualified_name())
+}
+
+/// Altura do cartão de enum: cabeçalho + até 6 valores (+ linha "+N more").
+fn enum_h(en: &schema::EnumDef) -> f32 {
+    let rows = en.values.len().min(6) + usize::from(en.values.len() > 6);
+    HEADER_H + rows as f32 * 20. + 16.
 }
 
 /// O canvas renderiza sozinho: arrastar/zoom não redesenha a janela inteira.
@@ -923,7 +974,13 @@ impl Diagram {
                     Some(Drag::Enum { name, last }) => {
                         let (dx, dy) = (now.0 - last.0, now.1 - last.1);
                         *last = now;
-                        if let Some(p) = this.pos.get_mut(&format!("enum:{name}")) {
+                        let key = this
+                            .schema
+                            .enums
+                            .iter()
+                            .find(|e| e.name == *name)
+                            .map_or_else(|| format!("enum:{name}"), enum_key);
+                        if let Some(p) = this.pos.get_mut(&key) {
                             p.0 += dx;
                             p.1 += dy;
                         }
@@ -1481,7 +1538,7 @@ impl Diagram {
         }
         let selected_table = self.selected().cloned();
         for en in &self.schema.enums {
-            let key = format!("enum:{}", en.name);
+            let key = enum_key(en);
             let Some(&(x, y)) = self.pos.get(&key) else {
                 continue;
             };
@@ -1995,6 +2052,56 @@ mod tests {
                     || pa.1 + ha <= pb.1
                     || pb.1 + hb <= pa.1;
                 assert!(apart, "{} e {} se sobrepõem: {p:?}", a.name, b.name);
+            }
+        }
+    }
+    /// Importação de SQL com enums: nenhum cartão (tabela ou enum) pode ficar sobre outro, e
+    /// enum com schema precisa receber posição sob a chave qualificada usada na renderização.
+    #[::core::prelude::v1::test]
+    fn imported_schema_with_enums_has_no_overlapping_cards() {
+        use std::fmt::Write as _;
+        let mut dbml = String::new();
+        for i in 0..24 {
+            let _ = write!(dbml, "Table t{i} {{\n  id int [pk]\n");
+            for c in 0..(i * 7 % 23) {
+                let _ = writeln!(dbml, "  c{c} int");
+            }
+            if i > 0 {
+                let _ = writeln!(dbml, "  parent int [ref: > t{}.id]", i / 3);
+            }
+            dbml.push_str("}\n");
+        }
+        for i in 0..6 {
+            let _ = write!(
+                dbml,
+                "Enum app.kind{i} {{\n  a\n  b\n  c\n  d\n  e\n  f\n  g\n  h\n}}\n"
+            );
+        }
+        let s = dbml_analysis::analyze(&dbml);
+        assert_eq!((s.tables.len(), s.enums.len()), (24, 6));
+        let p = auto_layout(&s);
+        let mut rects: Vec<layout::Rect> = Vec::new();
+        for t in &s.tables {
+            let (x, y) = p[&t.qualified_name()];
+            rects.push(layout::Rect {
+                x,
+                y,
+                w: CARD_W,
+                h: card_h(t.columns.len()),
+            });
+        }
+        for e in &s.enums {
+            let (x, y) = p[&format!("enum:app.{}", e.name)];
+            rects.push(layout::Rect {
+                x,
+                y,
+                w: ENUM_W,
+                h: enum_h(e),
+            });
+        }
+        for (i, a) in rects.iter().enumerate() {
+            for b in &rects[i + 1..] {
+                assert!(!a.intersects(b), "{a:?} sobrepõe {b:?}");
             }
         }
     }

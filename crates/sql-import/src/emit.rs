@@ -153,6 +153,42 @@ fn strip_outer_parens(s: &str) -> &str {
     }
 }
 
+/// SQL Server / Oracle spellings that the exporter emits, mapped back to canonical DBML types so
+/// `import(export(x))` is stable. `None` leaves the type to the generic mapping.
+fn proprietary_type(ty: &str, dialect: SqlDialect) -> Option<String> {
+    let compact: String = ty
+        .chars()
+        .filter(|c| !c.is_whitespace())
+        .collect::<String>()
+        .to_ascii_lowercase();
+    let (base, params) = match compact.find('(') {
+        Some(i) => compact.split_at(i),
+        None => (compact.as_str(), ""),
+    };
+    let mapped = match dialect {
+        SqlDialect::SqlServer => match (base, params) {
+            ("nvarchar" | "varchar", "(max)") | ("ntext", _) => "text".to_owned(),
+            ("nvarchar", p) => format!("varchar{p}"),
+            ("nchar", p) => format!("char{p}"),
+            ("datetime2" | "datetime" | "smalldatetime", _) => "timestamp".to_owned(),
+            ("bit", _) => "boolean".to_owned(),
+            ("uniqueidentifier", _) => "uuid".to_owned(),
+            _ => return None,
+        },
+        SqlDialect::Oracle => match (base, params) {
+            ("varchar2" | "nvarchar2", p) => format!("varchar{p}"),
+            ("clob" | "nclob", _) => "text".to_owned(),
+            ("number", "(10)") => "integer".to_owned(),
+            ("number", "(19)") => "bigint".to_owned(),
+            ("number", "(1)") => "boolean".to_owned(),
+            ("raw", "(16)") => "uuid".to_owned(),
+            _ => return None,
+        },
+        _ => return None,
+    };
+    Some(mapped)
+}
+
 fn dbml_type(ty: &str, dialect: SqlDialect, enum_names: &[String]) -> String {
     let ty = ty.trim();
     if ty.is_empty() {
@@ -160,6 +196,9 @@ fn dbml_type(ty: &str, dialect: SqlDialect, enum_names: &[String]) -> String {
     }
     if dialect == SqlDialect::Mysql && ty.eq_ignore_ascii_case("tinyint(1)") {
         return "boolean".to_owned();
+    }
+    if let Some(mapped) = proprietary_type(ty, dialect) {
+        return mapped;
     }
     let split = ty.find(['(', '[']).unwrap_or(ty.len());
     let (base, suffix) = ty.split_at(split);

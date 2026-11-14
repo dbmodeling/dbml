@@ -80,11 +80,11 @@ fn find_table(tables: &[RTable<'_>], target: &Name<'_>) -> Option<usize> {
         })
 }
 
-fn strip_public(name: &mut Name<'_>) {
+fn strip_public(name: &mut Name<'_>, default_schema: &str) {
     if name
         .schema
         .as_deref()
-        .is_some_and(|s| s.eq_ignore_ascii_case("public"))
+        .is_some_and(|s| s.eq_ignore_ascii_case(default_schema))
     {
         name.schema = None;
     }
@@ -101,34 +101,39 @@ fn strip_public_type(ty: &mut String) {
     }
 }
 
-/// PostgreSQL's default `public` schema is noise in DBML: drop the qualifier everywhere.
-fn strip_public_schema(ir: &mut Ir<'_>) {
-    fn fk(f: &mut Fk<'_>) {
-        strip_public(&mut f.to_table);
+/// The default schema (`public` on PostgreSQL, `dbo` on SQL Server) is noise in DBML: drop the
+/// qualifier everywhere.
+fn strip_public_schema(ir: &mut Ir<'_>, default_schema: &str) {
+    fn fk(f: &mut Fk<'_>, d: &str) {
+        strip_public(&mut f.to_table, d);
     }
-    fn constraint(k: &mut TableConstraint<'_>) {
+    fn constraint(k: &mut TableConstraint<'_>, d: &str) {
         if let TableConstraint::ForeignKey(f) = k {
-            fk(f);
+            fk(f, d);
         }
     }
     for t in &mut ir.tables {
-        strip_public(&mut t.name);
-        t.constraints.iter_mut().for_each(constraint);
+        strip_public(&mut t.name, default_schema);
+        t.constraints
+            .iter_mut()
+            .for_each(|k| constraint(k, default_schema));
         for c in &mut t.columns {
             strip_public_type(&mut c.ty);
-            c.references.iter_mut().for_each(fk);
+            c.references.iter_mut().for_each(|f| fk(f, default_schema));
         }
     }
-    ir.enums.iter_mut().for_each(|e| strip_public(&mut e.name));
+    ir.enums
+        .iter_mut()
+        .for_each(|e| strip_public(&mut e.name, default_schema));
     ir.indexes
         .iter_mut()
-        .for_each(|i| strip_public(&mut i.table));
+        .for_each(|i| strip_public(&mut i.table, default_schema));
     ir.comments
         .iter_mut()
-        .for_each(|c| strip_public(&mut c.table));
+        .for_each(|c| strip_public(&mut c.table, default_schema));
     for a in &mut ir.alter_constraints {
-        strip_public(&mut a.table);
-        constraint(&mut a.constraint);
+        strip_public(&mut a.table, default_schema);
+        constraint(&mut a.constraint, default_schema);
     }
 }
 
@@ -356,8 +361,10 @@ fn resolve_fk<'a>(
 
 /// Binds late constraints, indexes and comments, then validates every reference.
 pub(crate) fn resolve<'a>(mut ir: Ir<'a>, dialect: SqlDialect) -> Resolved<'a> {
-    if dialect == SqlDialect::Postgres {
-        strip_public_schema(&mut ir);
+    match dialect {
+        SqlDialect::Postgres => strip_public_schema(&mut ir, "public"),
+        SqlDialect::SqlServer => strip_public_schema(&mut ir, "dbo"),
+        _ => {}
     }
     let Ir {
         tables,

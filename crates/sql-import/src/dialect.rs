@@ -13,6 +13,10 @@ pub enum SqlDialect {
     Mysql,
     /// SQLite (`.schema`).
     Sqlite,
+    /// Microsoft SQL Server (T-SQL, `[ident]`, `IDENTITY`, `GO`).
+    SqlServer,
+    /// Oracle Database (`"IDENT"`, `VARCHAR2`, `NUMBER`, `/`).
+    Oracle,
 }
 
 impl SqlDialect {
@@ -23,6 +27,8 @@ impl SqlDialect {
             Self::Postgres => "postgres",
             Self::Mysql => "mysql",
             Self::Sqlite => "sqlite",
+            Self::SqlServer => "sqlserver",
+            Self::Oracle => "oracle",
         }
     }
 }
@@ -41,7 +47,7 @@ impl fmt::Display for UnknownDialect {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             f,
-            "unknown SQL dialect `{}` (expected postgres, mysql or sqlite)",
+            "unknown SQL dialect `{}` (expected postgres, mysql, sqlite, sqlserver or oracle)",
             self.0
         )
     }
@@ -57,6 +63,8 @@ impl FromStr for SqlDialect {
             "postgres" | "postgresql" | "pg" => Ok(Self::Postgres),
             "mysql" | "mariadb" => Ok(Self::Mysql),
             "sqlite" | "sqlite3" => Ok(Self::Sqlite),
+            "sqlserver" | "mssql" | "tsql" => Ok(Self::SqlServer),
+            "oracle" | "ora" => Ok(Self::Oracle),
             _ => Err(UnknownDialect(s.to_owned())),
         }
     }
@@ -87,14 +95,20 @@ mod tests {
     #[test]
     fn dialect_should_reject_unknown_name() {
         assert_eq!(
-            "oracle".parse::<SqlDialect>(),
-            Err(UnknownDialect("oracle".to_owned()))
+            "nosql".parse::<SqlDialect>(),
+            Err(UnknownDialect("nosql".to_owned()))
         );
     }
 
     #[test]
     fn dialect_display_should_round_trip_through_from_str() {
-        for d in [SqlDialect::Postgres, SqlDialect::Mysql, SqlDialect::Sqlite] {
+        for d in [
+            SqlDialect::Postgres,
+            SqlDialect::Mysql,
+            SqlDialect::Sqlite,
+            SqlDialect::SqlServer,
+            SqlDialect::Oracle,
+        ] {
             assert_eq!(d.to_string().parse::<SqlDialect>(), Ok(d));
         }
     }

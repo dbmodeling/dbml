@@ -872,32 +872,23 @@ impl Shell {
         }
     }
 
-    fn export_sql(
+    /// Abre o diálogo de salvar (com fallback no Linux) e grava `bytes`. `build` roda depois que o
+    /// usuário escolhe o arquivo, para cancelar não custar nada. Sempre avisa sucesso ou falha.
+    fn save_export(
         &mut self,
-        dialect: dbml_analysis::SqlDialect,
+        suggested: &str,
+        what: String,
+        build: impl FnOnce() -> Result<Vec<u8>, String> + 'static,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let Some(doc) = self.doc() else { return };
-        let text = doc.editor.read(cx).value().to_string();
-        let sql = dbml_analysis::export_sql_ddl(&text, dialect);
-        let stem = std::path::Path::new(&doc.title)
-            .file_stem()
-            .and_then(|s| s.to_str())
-            .filter(|s| !s.is_empty())
-            .unwrap_or("schema");
-        let suggested = format!("{stem}.{}.sql", dialect.as_str());
-        let dir = self
-            .project
-            .clone()
-            .or_else(|| {
-                std::env::var_os("HOME")
-                    .or_else(|| std::env::var_os("USERPROFILE"))
-                    .map(PathBuf::from)
-            })
-            .unwrap_or_else(|| std::env::current_dir().unwrap_or_default());
-        let rx = cx.prompt_for_new_path(&dir, Some(&suggested));
-        let fallback_default = dir.join(&suggested);
+        let dir = Self::resolve_export_dir(
+            self.project.as_ref(),
+            std::env::var_os("HOME").as_deref(),
+            std::env::var_os("USERPROFILE").as_deref(),
+        );
+        let rx = cx.prompt_for_new_path(&dir, Some(suggested));
+        let fallback_default = dir.join(suggested);
         cx.spawn_in(window, async move |_, cx| {
             let path = match rx.await {
                 Ok(Ok(Some(path))) => path,
@@ -916,17 +907,102 @@ impl Shell {
                     }
                 }
             };
-            let res = std::fs::write(&path, sql);
+            let res =
+                build().and_then(|bytes| std::fs::write(&path, bytes).map_err(|e| e.to_string()));
             cx.update(|window, cx| match res {
-                Ok(()) => window.push_notification(
-                    format!("Exported SQL ({}) to {}", dialect.as_str(), path.display()),
-                    cx,
-                ),
-                Err(e) => window.push_notification(format!("Failed to export SQL: {e}"), cx),
+                Ok(()) => {
+                    window.push_notification(format!("Exported {what} to {}", path.display()), cx);
+                }
+                Err(e) => window.push_notification(format!("Failed to export {what}: {e}"), cx),
             })
             .ok();
         })
         .detach();
+    }
+
+    fn export_stem(&self) -> String {
+        self.doc()
+            .and_then(|d| {
+                std::path::Path::new(&d.title)
+                    .file_stem()
+                    .and_then(|s| s.to_str())
+                    .filter(|s| !s.is_empty())
+                    .map(str::to_owned)
+            })
+            .unwrap_or_else(|| "schema".to_owned())
+    }
+
+    fn export_sql(
+        &mut self,
+        dialect: dbml_analysis::SqlDialect,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(doc) = self.doc() else { return };
+        let text = doc.editor.read(cx).value().to_string();
+        let suggested = format!("{}.{}.sql", self.export_stem(), dialect.as_str());
+        self.save_export(
+            &suggested,
+            format!("SQL ({})", dialect.as_str()),
+            move || Ok(dbml_analysis::export_sql_ddl(&text, dialect).into_bytes()),
+            window,
+            cx,
+        );
+    }
+
+    fn export_mermaid(&mut self, _: &ExportMermaid, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(doc) = self.doc() else { return };
+        let schema = doc.diagram.read(cx).schema().clone();
+        let suggested = format!("{}.mmd", self.export_stem());
+        self.save_export(
+            &suggested,
+            "Mermaid".into(),
+            move || Ok(diagram_export::to_mermaid(&schema).into_bytes()),
+            window,
+            cx,
+        );
+    }
+
+    fn export_image(&mut self, kind: ImageKind, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(doc) = self.doc() else { return };
+        let (schema, pos) = {
+            let d = doc.diagram.read(cx);
+            (d.schema().clone(), d.positions().clone())
+        };
+        let theme = if self.mode == Mode::Dark {
+            diagram_export::Theme::dark()
+        } else {
+            diagram_export::Theme::light()
+        };
+        let suggested = format!("{}.{}", self.export_stem(), kind.extension());
+        self.save_export(
+            &suggested,
+            kind.label().into(),
+            move || {
+                let svg = diagram_export::to_svg(&schema, &pos, &theme);
+                let fonts: Vec<&[u8]> = crate::FONTS.to_vec();
+                match kind {
+                    ImageKind::Svg => Ok(svg.into_bytes()),
+                    ImageKind::Png => diagram_export::svg_to_png(&svg, &fonts, 2.0),
+                    ImageKind::Jpeg => diagram_export::svg_to_jpeg(&svg, &fonts, 2.0, 92),
+                }
+                .map_err(|e| e.to_string())
+            },
+            window,
+            cx,
+        );
+    }
+
+    fn export_png(&mut self, _: &ExportPng, w: &mut Window, cx: &mut Context<Self>) {
+        self.export_image(ImageKind::Png, w, cx);
+    }
+
+    fn export_jpeg(&mut self, _: &ExportJpeg, w: &mut Window, cx: &mut Context<Self>) {
+        self.export_image(ImageKind::Jpeg, w, cx);
+    }
+
+    fn export_svg(&mut self, _: &ExportSvg, w: &mut Window, cx: &mut Context<Self>) {
+        self.export_image(ImageKind::Svg, w, cx);
     }
 
     fn export_sql_postgres(
@@ -957,6 +1033,17 @@ impl Shell {
 
     fn export_sql_oracle(&mut self, _: &ExportSqlOracle, w: &mut Window, cx: &mut Context<Self>) {
         self.export_sql(dbml_analysis::SqlDialect::Oracle, w, cx);
+    }
+
+    fn resolve_export_dir(
+        project: Option<&PathBuf>,
+        home: Option<&std::ffi::OsStr>,
+        userprofile: Option<&std::ffi::OsStr>,
+    ) -> PathBuf {
+        project
+            .cloned()
+            .or_else(|| home.or(userprofile).map(PathBuf::from))
+            .unwrap_or_else(|| std::env::current_dir().unwrap_or_default())
     }
 
     #[cfg(target_os = "linux")]
@@ -1102,9 +1189,17 @@ impl Shell {
                             }
                             let current = model.read(cx).clone();
                             shell_entity.update(cx, |s, cx| {
-                                s.edit_text(true, window, cx, move |existing| {
+                                // replace refaz o layout; append mantém os cartões existentes
+                                // e o canvas coloca os novos em área livre
+                                s.edit_text(replace, window, cx, move |existing| {
                                     Some(current.build_merged_source(existing, replace))
                                 });
+                                if let Some(doc) = s.doc() {
+                                    doc.diagram.update(cx, |d, cx| {
+                                        d.fit();
+                                        cx.notify();
+                                    });
+                                }
                             });
                             window.close_dialog(cx);
                         })
@@ -1124,17 +1219,21 @@ impl Shell {
                             .child(
                                 div()
                                     .flex()
+                                    .flex_wrap()
                                     .items_center()
                                     .justify_between()
                                     .gap(SP_SM)
                                     .child(
                                         div()
                                             .flex()
+                                            .flex_wrap()
                                             .items_center()
                                             .gap(px(6.))
                                             .child(dialect_btn("imp-pg", "PostgreSQL", sql_import::SqlDialect::Postgres))
                                             .child(dialect_btn("imp-my", "MySQL", sql_import::SqlDialect::Mysql))
-                                            .child(dialect_btn("imp-sq", "SQLite", sql_import::SqlDialect::Sqlite)),
+                                            .child(dialect_btn("imp-sq", "SQLite", sql_import::SqlDialect::Sqlite))
+                                            .child(dialect_btn("imp-ms", "SQL Server", sql_import::SqlDialect::SqlServer))
+                                            .child(dialect_btn("imp-or", "Oracle", sql_import::SqlDialect::Oracle)),
                                     )
                                     .child(pick_btn),
                             )
@@ -1950,6 +2049,32 @@ impl Shell {
 
 /// Ações disparadas de camadas fora do shell (paleta de comandos, menus, diálogos)
 /// não passam pelos handlers do elemento; estes handlers globais as encaminham ao shell.
+/// Formatos de exportação de imagem.
+#[derive(Clone, Copy)]
+enum ImageKind {
+    Png,
+    Jpeg,
+    Svg,
+}
+
+impl ImageKind {
+    const fn extension(self) -> &'static str {
+        match self {
+            Self::Png => "png",
+            Self::Jpeg => "jpg",
+            Self::Svg => "svg",
+        }
+    }
+
+    const fn label(self) -> &'static str {
+        match self {
+            Self::Png => "PNG",
+            Self::Jpeg => "JPEG",
+            Self::Svg => "SVG",
+        }
+    }
+}
+
 macro_rules! forward_actions {
     ($cx:ident, $win:ident, $shell:ident; $($a:ident => $m:ident),* $(,)?) => {
         $({
@@ -1983,6 +2108,10 @@ pub fn register_global_actions(win: AnyWindowHandle, shell: &Entity<Shell>, cx: 
         ExportSqlSqlite => export_sql_sqlite,
         ExportSqlSqlServer => export_sql_sqlserver,
         ExportSqlOracle => export_sql_oracle,
+        ExportMermaid => export_mermaid,
+        ExportPng => export_png,
+        ExportJpeg => export_jpeg,
+        ExportSvg => export_svg,
         ImportSqlDdl => import_sql_ddl,
         MoveLineUp => move_line_up,
         MoveLineDown => move_line_down,
@@ -2173,6 +2302,15 @@ impl Render for Shell {
             .on_action(cx.listener(Self::move_line_down))
             .on_action(cx.listener(Self::open_palette))
             .on_action(cx.listener(Self::import_sql_ddl))
+            .on_action(cx.listener(Self::export_sql_postgres))
+            .on_action(cx.listener(Self::export_sql_mysql))
+            .on_action(cx.listener(Self::export_sql_sqlite))
+            .on_action(cx.listener(Self::export_sql_sqlserver))
+            .on_action(cx.listener(Self::export_sql_oracle))
+            .on_action(cx.listener(Self::export_mermaid))
+            .on_action(cx.listener(Self::export_png))
+            .on_action(cx.listener(Self::export_jpeg))
+            .on_action(cx.listener(Self::export_svg))
             .on_action(cx.listener(Self::show_shortcuts))
             .on_action(cx.listener(Self::toggle_theme))
             .on_action(cx.listener(Self::toggle_card_transparency))
@@ -2215,5 +2353,66 @@ impl Render for Shell {
                     .child(right_rail),
             )
             .child(statusbar)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Shell;
+    use std::ffi::OsStr;
+    use std::path::PathBuf;
+
+    #[test]
+    fn resolve_export_dir_prefers_project_then_home_then_userprofile() {
+        let proj = PathBuf::from("/tmp/project");
+        assert_eq!(
+            Shell::resolve_export_dir(
+                Some(&proj),
+                Some(OsStr::new("/home/u")),
+                Some(OsStr::new("C:\\Users\\u")),
+            ),
+            proj
+        );
+        assert_eq!(
+            Shell::resolve_export_dir(
+                None,
+                Some(OsStr::new("/home/u")),
+                Some(OsStr::new("C:\\Users\\u")),
+            ),
+            PathBuf::from("/home/u")
+        );
+        assert_eq!(
+            Shell::resolve_export_dir(None, None, Some(OsStr::new("C:\\Users\\u"))),
+            PathBuf::from("C:\\Users\\u")
+        );
+    }
+
+    #[test]
+    fn all_catalog_sql_export_actions_are_bound_in_shell_render() {
+        let src = include_str!("mod.rs");
+        for handler in [
+            "Self::export_sql_postgres",
+            "Self::export_sql_mysql",
+            "Self::export_sql_sqlite",
+            "Self::export_sql_sqlserver",
+            "Self::export_sql_oracle",
+            "Self::export_mermaid",
+            "Self::export_png",
+            "Self::export_jpeg",
+            "Self::export_svg",
+        ] {
+            assert!(
+                src.contains(&format!(".on_action(cx.listener({handler}))")),
+                "Missing Shell::render .on_action listener for {handler}"
+            );
+        }
+        let count = |group: &str| {
+            crate::actions::catalog()
+                .into_iter()
+                .filter(|e| e.group == group)
+                .count()
+        };
+        assert_eq!(count(crate::actions::GROUP_EXPORT_CODE), 6); // 5 bancos + Mermaid
+        assert_eq!(count(crate::actions::GROUP_EXPORT_IMAGE), 3); // PNG, JPEG, SVG
     }
 }

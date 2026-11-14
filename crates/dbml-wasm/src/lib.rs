@@ -204,6 +204,9 @@ pub fn auto_layout_schema(schema: &Schema) -> HashMap<String, NodeCoordinate> {
         .collect()
 }
 
+/// Folga mínima entre cartões reposicionados para evitar sobreposição.
+const PLACE_GAP: f32 = 40.0;
+
 /// Gera a string de path SVG (`M ... L ... Q ...`) para uma polilinha ortogonal com cantos arredondados
 /// em coordenadas de mundo (`z = 1.0`, raio `8.0`), usando a matemática exata de `polyline()` de `canvas.rs`.
 #[must_use]
@@ -253,10 +256,60 @@ pub fn compute_scene_internal(
     provided_positions: Option<&HashMap<String, NodeCoordinate>>,
 ) -> SceneGeometry {
     let mut pos = auto_layout_schema(schema);
+    // Tabelas com posição informada ficam fixas; as demais partem do slot do auto-layout e são
+    // afastadas se caírem em cima de um cartão já posicionado (ex.: import em modo append).
+    let mut fixed: Vec<layout::Rect> = Vec::new();
     if let Some(custom) = provided_positions {
+        let mut provided: HashSet<String> = HashSet::new();
         for (k, v) in custom {
             if let Some(tbl) = schema.table(k) {
-                pos.insert(tbl.qualified_name(), *v);
+                let qname = tbl.qualified_name();
+                fixed.push(layout::Rect {
+                    x: v.x,
+                    y: v.y,
+                    w: CARD_W,
+                    h: card_h(tbl.columns.len()),
+                });
+                pos.insert(qname.clone(), *v);
+                provided.insert(qname);
+            }
+        }
+        let (mut names, mut incoming) = (Vec::new(), Vec::new());
+        for t in &schema.tables {
+            let qname = t.qualified_name();
+            if provided.contains(&qname) {
+                continue;
+            }
+            let p = pos
+                .get(&qname)
+                .copied()
+                .unwrap_or(NodeCoordinate { x: 0.0, y: 0.0 });
+            incoming.push(layout::Rect {
+                x: p.x,
+                y: p.y,
+                w: CARD_W,
+                h: card_h(t.columns.len()),
+            });
+            names.push(qname);
+        }
+        let placed = layout::place_without_overlap(&fixed, &incoming, PLACE_GAP);
+        for ((qname, p), r) in names.into_iter().zip(placed).zip(&incoming) {
+            fixed.push(layout::Rect {
+                x: p.x,
+                y: p.y,
+                ..*r
+            });
+            pos.insert(qname, NodeCoordinate { x: p.x, y: p.y });
+        }
+    } else {
+        for t in &schema.tables {
+            if let Some(p) = pos.get(&t.qualified_name()) {
+                fixed.push(layout::Rect {
+                    x: p.x,
+                    y: p.y,
+                    w: CARD_W,
+                    h: card_h(t.columns.len()),
+                });
             }
         }
     }
@@ -274,17 +327,48 @@ pub fn compute_scene_internal(
     } else {
         max_table_bottom + 72.0
     };
-    let mut enums = Vec::with_capacity(schema.enums.len());
+    // Enums: os com posição informada ficam fixos; os demais vão para uma grade de 4 colunas
+    // abaixo das tabelas e são afastados de qualquer cartão que já ocupe o lugar.
+    let enum_h = |e: &schema::EnumDef| card_h(e.values.len().max(1));
+    let mut enum_pos: Vec<Option<NodeCoordinate>> = Vec::with_capacity(schema.enums.len());
+    let (mut pending, mut pending_rects) = (Vec::new(), Vec::new());
+    let mut row_y = enum_base_y;
+    let mut row_h = 0.0_f32;
     for (idx, e) in schema.enums.iter().enumerate() {
+        let key = format!("enum:{}", e.qualified_name());
+        if idx > 0 && idx % 4 == 0 {
+            row_y += row_h + PLACE_GAP;
+            row_h = 0.0;
+        }
+        row_h = row_h.max(enum_h(e));
+        if let Some(c) = provided_positions.and_then(|custom| custom.get(&key).copied()) {
+            fixed.push(layout::Rect {
+                x: c.x,
+                y: c.y,
+                w: CARD_W,
+                h: enum_h(e),
+            });
+            enum_pos.push(Some(c));
+        } else {
+            pending.push(idx);
+            pending_rects.push(layout::Rect {
+                x: (idx % 4) as f32 * (CARD_W + 48.0),
+                y: row_y,
+                w: CARD_W,
+                h: enum_h(e),
+            });
+            enum_pos.push(None);
+        }
+    }
+    let placed = layout::place_without_overlap(&fixed, &pending_rects, PLACE_GAP);
+    for (idx, p) in pending.into_iter().zip(placed) {
+        enum_pos[idx] = Some(NodeCoordinate { x: p.x, y: p.y });
+    }
+    let mut enums = Vec::with_capacity(schema.enums.len());
+    for (e, coord) in schema.enums.iter().zip(enum_pos) {
         let eq = e.qualified_name();
         let key = format!("enum:{eq}");
-        let default_coord = NodeCoordinate {
-            x: (idx % 4) as f32 * (CARD_W + 48.0),
-            y: enum_base_y + (idx / 4) as f32 * 220.0,
-        };
-        let coord = provided_positions
-            .and_then(|custom| custom.get(&key).copied())
-            .unwrap_or(default_coord);
+        let coord = coord.unwrap_or(NodeCoordinate { x: 0.0, y: 0.0 });
         pos.insert(key, coord);
         let referenced_by = schema
             .tables
@@ -293,7 +377,7 @@ pub fn compute_scene_internal(
             .map(schema::Table::qualified_name)
             .collect();
         let values: Vec<String> = e.values.iter().map(|v| v.name.clone()).collect();
-        let h = card_h(values.len().max(1));
+        let h = enum_h(e);
         enums.push(EnumVisual {
             name: eq,
             x: coord.x,
@@ -1000,7 +1084,7 @@ mod tests {
 
     #[test]
     fn import_sql_ddl_inner_should_return_dbml_for_each_dialect() {
-        for dialect in ["postgres", "mysql", "sqlite"] {
+        for dialect in ["postgres", "mysql", "sqlite", "sqlserver", "oracle"] {
             let out =
                 import_sql_ddl_inner("CREATE TABLE users (id int PRIMARY KEY);", dialect).unwrap();
             assert!(
@@ -1013,8 +1097,128 @@ mod tests {
 
     #[test]
     fn import_sql_ddl_inner_should_reject_unknown_dialect() {
-        let err = import_sql_ddl_inner("CREATE TABLE a (id int);", "oracle").unwrap_err();
+        let err = import_sql_ddl_inner("CREATE TABLE a (id int);", "nosql").unwrap_err();
         assert!(err.to_string().contains("unknown SQL dialect"));
+    }
+
+    const ROUND_TRIP_DBML: &str = "\
+Enum status {
+  active
+  gone
+}
+
+Table users {
+  id int [pk, increment]
+  email varchar(120) [unique, not null]
+  st status [default: 'active']
+  price decimal(10,2)
+  ok boolean
+  uid uuid
+  bio text
+  created timestamp
+}
+
+Table posts {
+  id int [pk, increment]
+  user_id int [not null, ref: > users.id]
+  title varchar(200)
+}
+";
+
+    /// `import(export(dbml, d), d)` keeps tables, columns, refs and enums for every dialect the
+    /// exporter supports, so the two directions can never drift apart.
+    #[test]
+    fn sql_round_trip_preserves_schema_for_every_export_dialect() {
+        let original = dbml_analysis::analyze(ROUND_TRIP_DBML);
+        assert_eq!(
+            (
+                original.tables.len(),
+                original.refs.len(),
+                original.enums.len()
+            ),
+            (2, 1, 1)
+        );
+        for dialect in ["postgres", "mysql", "sqlite", "sqlserver", "oracle"] {
+            let sql = export_sql_ddl_str(ROUND_TRIP_DBML, dialect).unwrap();
+            let out =
+                import_sql_ddl_inner(&sql, dialect).unwrap_or_else(|e| panic!("{dialect}: {e}"));
+            let back = dbml_analysis::analyze(&out.dbml);
+            let ctx = format!(
+                "{dialect}\n{sql}\n{}\n{:?}",
+                out.dbml,
+                out.warnings.iter().map(|w| &w.message).collect::<Vec<_>>()
+            );
+            assert_eq!(back.tables.len(), original.tables.len(), "{ctx}");
+            assert_eq!(back.refs.len(), 1, "{ctx}");
+            assert_eq!(back.enums.len(), 1, "{ctx}");
+            assert_eq!(back.enums[0].values.len(), 2, "{ctx}");
+            for t in &original.tables {
+                let b = back.table(&t.name).unwrap_or_else(|| panic!("{ctx}"));
+                let names = |t: &schema::Table| {
+                    t.columns.iter().map(|c| c.name.clone()).collect::<Vec<_>>()
+                };
+                assert_eq!(names(b), names(t), "{ctx}");
+                for (cb, co) in b.columns.iter().zip(&t.columns) {
+                    assert_eq!(cb.pk, co.pk, "{} {ctx}", co.name);
+                    assert_eq!(cb.not_null, co.not_null, "{} {ctx}", co.name);
+                    assert_eq!(cb.increment, co.increment, "{} {ctx}", co.name);
+                    assert_eq!(cb.unique, co.unique, "{} {ctx}", co.name);
+                }
+            }
+            // a coluna `st` voltou a usar o enum
+            let st = back
+                .table("users")
+                .unwrap()
+                .columns
+                .iter()
+                .find(|c| c.name == "st")
+                .unwrap();
+            // só o Postgres tem tipo enum nomeado; nos outros o SQL guarda apenas os valores
+            // (ENUM inline / CHECK IN), então o nome volta derivado (`tabela_coluna`)
+            if dialect == "postgres" {
+                assert_eq!(st.ty, "status", "{ctx}");
+            }
+        }
+    }
+
+    /// Import accepts exactly the dialect names that export accepts.
+    #[test]
+    fn import_accepts_every_dialect_name_export_accepts() {
+        for name in [
+            "postgres",
+            "mysql",
+            "sqlite",
+            "sqlserver",
+            "mssql",
+            "tsql",
+            "oracle",
+        ] {
+            export_sql_ddl_str("Table t { id int }", name).unwrap();
+            import_sql_ddl_inner("CREATE TABLE t (id int);", name).unwrap();
+        }
+    }
+
+    #[test]
+    fn sqlserver_import_handles_ssms_script_with_go_and_set_noise() {
+        let sql = "SET ANSI_NULLS ON\nGO\nCREATE TABLE [dbo].[users] (\n  [id] INT IDENTITY(1,1) NOT NULL PRIMARY KEY CLUSTERED,\n  [name] NVARCHAR(MAX) NULL\n)\nGO\nCREATE TABLE [dbo].[posts] ([id] INT NOT NULL, [uid] INT NOT NULL)\nGO\nALTER TABLE [dbo].[posts] WITH CHECK ADD CONSTRAINT [fk] FOREIGN KEY ([uid]) REFERENCES [dbo].[users] ([id])\nGO\nCREATE VIEW v AS SELECT 1\nGO\n";
+        let out = import_sql_ddl_inner(sql, "sqlserver").unwrap();
+        let s = dbml_analysis::analyze(&out.dbml);
+        assert_eq!(s.tables.len(), 2, "{}", out.dbml);
+        assert_eq!(s.refs.len(), 1, "{}", out.dbml);
+        assert!(out.dbml.contains("Table users {"), "{}", out.dbml);
+        assert!(out.dbml.contains("increment"), "{}", out.dbml);
+        assert_eq!(out.warnings.len(), 1, "{:?}", out.warnings); // só o CREATE VIEW; SET é ignorado em silêncio
+    }
+
+    #[test]
+    fn oracle_import_handles_sqlplus_slash_and_identity() {
+        let sql = "CREATE TABLE \"USERS\" (\n  \"ID\" NUMBER(10) GENERATED BY DEFAULT ON NULL AS IDENTITY PRIMARY KEY,\n  \"NAME\" VARCHAR2(50) NOT NULL\n) TABLESPACE users\n/\nCREATE TABLE \"P\" (\"ID\" NUMBER(10), \"U\" NUMBER(10) REFERENCES \"USERS\"(\"ID\"))\n/\n";
+        let out = import_sql_ddl_inner(sql, "oracle").unwrap();
+        let s = dbml_analysis::analyze(&out.dbml);
+        assert_eq!(s.tables.len(), 2, "{}", out.dbml);
+        assert_eq!(s.refs.len(), 1, "{}", out.dbml);
+        assert!(out.dbml.contains("integer"), "{}", out.dbml);
+        assert!(out.dbml.contains("increment"), "{}", out.dbml);
     }
 
     #[test]
@@ -1077,5 +1281,97 @@ TableGroup ident {
         assert_eq!(scene.edges.len(), 1);
         assert_eq!(scene.edges[0].from_table, "billing.invoices");
         assert_eq!(scene.edges[0].to_table, "auth.users");
+    }
+    fn scene_rects(schema: &Schema, scene: &SceneGeometry) -> Vec<(String, layout::Rect)> {
+        let mut rects = Vec::new();
+        for t in &schema.tables {
+            let p = scene.positions[&t.qualified_name()];
+            rects.push((
+                t.qualified_name(),
+                layout::Rect {
+                    x: p.x,
+                    y: p.y,
+                    w: CARD_W,
+                    h: card_h(t.columns.len()),
+                },
+            ));
+        }
+        for e in &scene.enums {
+            rects.push((
+                format!("enum:{}", e.name),
+                layout::Rect {
+                    x: e.x,
+                    y: e.y,
+                    w: e.w,
+                    h: e.h,
+                },
+            ));
+        }
+        rects
+    }
+
+    fn assert_no_overlap(rects: &[(String, layout::Rect)]) {
+        for (i, (an, a)) in rects.iter().enumerate() {
+            for (bn, b) in &rects[i + 1..] {
+                assert!(!a.intersects(b), "{an} {a:?} sobrepõe {bn} {b:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn scene_places_appended_import_without_overlapping_moved_tables() {
+        // diagrama existente: 3 tabelas que o usuário arrastou para cima dos slots do auto-layout
+        let mut src = String::from(
+            "Table a { id int [pk] }\nTable b { id int [pk] }\nTable c { id int [pk] }\n",
+        );
+        let mut known = HashMap::new();
+        for (i, n) in ["a", "b", "c"].iter().enumerate() {
+            known.insert(
+                (*n).to_string(),
+                NodeCoordinate {
+                    x: i as f32 * 300.0,
+                    y: 0.0,
+                },
+            );
+        }
+        // importação em modo append: 12 tabelas novas com relações + enums grandes
+        let mut sql = String::new();
+        for i in 0..12 {
+            let _ = write!(sql, "CREATE TABLE n{i} (id int PRIMARY KEY, x int, y int");
+            if i > 0 {
+                let _ = write!(sql, ", p int REFERENCES n{}(id)", i / 2);
+            }
+            sql.push_str(");\n");
+        }
+        for i in 0..6 {
+            let _ = writeln!(
+                sql,
+                "CREATE TYPE kind{i} AS ENUM ('a','b','c','d','e','f','g','h');"
+            );
+        }
+        src.push_str(&import_sql_ddl_inner(&sql, "postgres").unwrap().dbml);
+        let schema = dbml_analysis::analyze(&src);
+        assert_eq!((schema.tables.len(), schema.enums.len()), (15, 6));
+        let scene = compute_scene_internal(&schema, Some(&known));
+        assert_no_overlap(&scene_rects(&schema, &scene));
+        // as tabelas que já existiam não se movem
+        for (n, p) in &known {
+            assert_eq!(scene.positions[n], *p);
+        }
+    }
+
+    #[test]
+    fn scene_default_enum_grid_has_no_overlap() {
+        let mut src = String::from("Table t { id int [pk] }\n");
+        for i in 0..9 {
+            let _ = writeln!(src, "Enum e{i} {{");
+            for v in 0..(4 + i * 3) {
+                let _ = writeln!(src, "  v{v}");
+            }
+            src.push_str("}\n");
+        }
+        let schema = dbml_analysis::analyze(&src);
+        let scene = compute_scene_internal(&schema, None);
+        assert_no_overlap(&scene_rects(&schema, &scene));
     }
 }

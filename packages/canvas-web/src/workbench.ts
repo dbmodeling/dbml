@@ -32,10 +32,10 @@ import {
   Mode,
 } from './glass';
 import { iconSvg, IconName } from './icons';
-import { ActionId, catalog } from './actions';
+import { ActionId, GROUP_EXPORT_CODE, GROUP_EXPORT_IMAGE, catalog } from './actions';
 import { WORKBENCH_CSS } from './workbench-css';
 import { exportToMermaid, exportToSvg, exportSvgStringToRasterBlob } from './export';
-import { ImportDialect, ImportSqlModel, ImportSqlResult } from './import-sql';
+import { IMPORT_DIALECTS, ImportDialect, ImportSqlModel, ImportSqlResult } from './import-sql';
 
 type Pt = { x: number; y: number };
 type Pane = 'files' | 'schema' | 'problems';
@@ -865,7 +865,8 @@ export class Workbench {
       <div class="sep"></div>
       ${this.btn('ToggleEditor', 'Braces', 'DBML Editor (Ctrl+E)', this.editorOpen)}
       ${this.btn('ImportSqlDdl', 'Upload', 'Import SQL DDL…')}
-      <button class="ib" data-act="menu:export" title="Export">${ICON('Download', 16)}</button>`;
+      <button class="ib" data-act="menu:export-code" title="Export code (SQL / Mermaid)">${ICON('Braces', 16)}</button>
+      <button class="ib" data-act="menu:export-image" title="Export image (PNG / JPEG / SVG)">${ICON('Download', 16)}</button>`;
     this.els['zoomi'].innerHTML = `${this.btn('ZoomOut', 'ZoomOut', 'Zoom Out (Ctrl+-)')}
       <button class="pct" data-act="FitView" title="Fit to Screen">${Math.round(this.zoom * 100)}%</button>
       ${this.btn('ZoomIn', 'ZoomIn', 'Zoom In (Ctrl+=)')}`;
@@ -1393,18 +1394,13 @@ export class Workbench {
       <button class="mi" data-act="ToggleCardTransparency">${ck(p.translucent)}Translucent cards</button>`);
   }
 
-  private exportMenu(anchor: HTMLElement): void {
-    this.openMenu(anchor, `
-      <button class="mi" data-act="ExportPng"><span class="ck"></span>PNG</button>
-      <button class="mi" data-act="ExportJpeg"><span class="ck"></span>JPEG</button>
-      <button class="mi" data-act="ExportSvg"><span class="ck"></span>Vector SVG</button>
-      <button class="mi" data-act="ExportMermaid"><span class="ck"></span>Mermaid erDiagram</button><hr>
-      <div class="lb">SQL DDL</div>
-      <button class="mi" data-act="ExportSqlPostgres"><span class="ck"></span>PostgreSQL (.sql)</button>
-      <button class="mi" data-act="ExportSqlMysql"><span class="ck"></span>MySQL (.sql)</button>
-      <button class="mi" data-act="ExportSqlSqlite"><span class="ck"></span>SQLite (.sql)</button>
-      <button class="mi" data-act="ExportSqlSqlServer"><span class="ck"></span>SQL Server (.sql)</button>
-      <button class="mi" data-act="ExportSqlOracle"><span class="ck"></span>Oracle (.sql)</button>`);
+  /** Dropdown gerado do catálogo (um grupo por botão): barra e command palette não divergem. */
+  private exportMenu(anchor: HTMLElement, group: string): void {
+    const items = catalog()
+      .filter((e) => e.group === group)
+      .map((e) => `<button class="mi" data-act="${e.id}"><span class="ck"></span>${e.label}</button>`)
+      .join('');
+    this.openMenu(anchor, `<div class="lb">${group}</div>${items}`);
   }
 
   private modal(inner: string): HTMLElement {
@@ -1442,9 +1438,7 @@ export class Workbench {
           <div style="display:flex;align-items:center;gap:8px">
             <label for="imp-dialect" style="font-size:12px;color:var(--muted)">Dialect</label>
             <select id="imp-dialect" class="btn" style="padding:4px 8px">
-              <option value="postgres"${model.dialect === 'postgres' ? ' selected' : ''}>PostgreSQL</option>
-              <option value="mysql"${model.dialect === 'mysql' ? ' selected' : ''}>MySQL</option>
-              <option value="sqlite"${model.dialect === 'sqlite' ? ' selected' : ''}>SQLite</option>
+              ${IMPORT_DIALECTS.map((d) => `<option value="${d.value}"${model.dialect === d.value ? ' selected' : ''}>${d.label}</option>`).join('')}
             </select>
             <input id="imp-file" type="file" accept=".sql,.ddl,text/plain" style="display:none">
             <button class="btn" id="imp-pick" type="button">Choose .sql file…</button>
@@ -1508,7 +1502,16 @@ export class Workbench {
       const next = model.buildMergedSource(this.source, mode);
       this.closeModal();
       this.applyPatch(this.fullReplace(next));
-      this.relayout(true, false);
+      if (mode === 'replace') {
+        this.relayout(true, false);
+      } else {
+        // append: quem já estava no canvas não se move; o wasm coloca os cartões novos
+        // em área livre (layout::place_without_overlap)
+        this.computeScene();
+        this.fit();
+        this.queueSaveLayout();
+        this.scheduleRender();
+      }
     };
 
     let timer: number | undefined;
@@ -1712,7 +1715,8 @@ export class Workbench {
     const d = el.dataset;
     switch (act) {
       case 'menu:appearance': this.appearanceMenu(el); return;
-      case 'menu:export': this.exportMenu(el); return;
+      case 'menu:export-code': this.exportMenu(el, GROUP_EXPORT_CODE); return;
+      case 'menu:export-image': this.exportMenu(el, GROUP_EXPORT_IMAGE); return;
       case 'set-mode': this.prefs.mode = d.mode as Mode; break;
       case 'set-ui': this.prefs.uiScale = parseFloat(d.ui || '1'); break;
       case 'open-file':

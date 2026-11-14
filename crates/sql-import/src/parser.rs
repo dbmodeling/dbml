@@ -48,7 +48,7 @@ type PResult<T> = Result<T, ParseError>;
 /// Parses `tokens` into an [`Ir`], collecting warnings for anything it cannot represent.
 pub(crate) fn parse<'a>(tokens: &[Token<'a>], dialect: SqlDialect) -> Ir<'a> {
     let mut ir = Ir::default();
-    for stmt in statements(tokens) {
+    for stmt in statements(tokens, dialect) {
         let mut cur = Cursor::new(stmt);
         if let Err(e) = statement(&mut ir, &mut cur, dialect) {
             ir.warn(e.line, e.col, e.message);
@@ -57,11 +57,29 @@ pub(crate) fn parse<'a>(tokens: &[Token<'a>], dialect: SqlDialect) -> Ir<'a> {
     ir
 }
 
-fn statements<'t, 'a>(tokens: &'t [Token<'a>]) -> Vec<&'t [Token<'a>]> {
+/// `GO` (T-SQL) and `/` (Oracle SQL*Plus) end a batch only when they sit alone on their line.
+fn is_batch_separator(tokens: &[Token<'_>], i: usize, dialect: SqlDialect) -> bool {
+    let Some(t) = tokens.get(i) else {
+        return false;
+    };
+    let word = match (&t.kind, dialect) {
+        (TokenKind::Ident(w), SqlDialect::SqlServer) => w.eq_ignore_ascii_case("go"),
+        (TokenKind::Punct('/'), SqlDialect::Oracle) => true,
+        _ => false,
+    };
+    word && i
+        .checked_sub(1)
+        .and_then(|p| tokens.get(p))
+        .is_none_or(|p| p.line != t.line)
+        && tokens.get(i + 1).is_none_or(|n| n.line != t.line)
+}
+
+fn statements<'t, 'a>(tokens: &'t [Token<'a>], dialect: SqlDialect) -> Vec<&'t [Token<'a>]> {
     let mut out = Vec::new();
     let mut start = 0;
     for (i, t) in tokens.iter().enumerate() {
-        if matches!(t.kind, TokenKind::Punct(';')) {
+        let sep = matches!(t.kind, TokenKind::Punct(';')) || is_batch_separator(tokens, i, dialect);
+        if sep {
             out.extend(tokens.get(start..i).filter(|s| !s.is_empty()));
             start = i + 1;
         }
@@ -517,6 +535,9 @@ fn alter<'a>(ir: &mut Ir<'a>, cur: &mut Cursor<'_, 'a>, dialect: SqlDialect) -> 
     }
     cur.eat_kw("only");
     let table = cur.name()?;
+    if cur.at_kw("with") && (cur.at_kw_n(1, "check") || cur.at_kw_n(1, "nocheck")) {
+        cur.i += 2; // T-SQL `WITH CHECK ADD CONSTRAINT`
+    }
     let rest = cur.toks.get(cur.i..).unwrap_or(&[]);
     for action in split_commas(rest) {
         let mut c = Cursor::new(action);
@@ -799,6 +820,7 @@ fn ends_type(c: &Cursor<'_, '_>) -> bool {
         "references",
         "check",
         "generated",
+        "identity",
         "auto_increment",
         "autoincrement",
         "comment",
@@ -941,8 +963,10 @@ fn column_constraint<'a>(
         col.references = Some(references(c, vec![col.name.clone()])?);
     } else if c.eat_kw("check") {
         let (inner, _) = c.balanced();
-        if dialect == SqlDialect::Sqlite
-            && let Some(values) = in_list_check(inner, &col.name)
+        if matches!(
+            dialect,
+            SqlDialect::Sqlite | SqlDialect::SqlServer | SqlDialect::Oracle
+        ) && let Some(values) = in_list_check(inner, &col.name)
         {
             col.enum_values = Some(values);
             warns.push(ImportWarning {
@@ -954,10 +978,17 @@ fn column_constraint<'a>(
                 ),
             });
         }
+    } else if c.eat_kw("identity") {
+        // T-SQL `IDENTITY(1,1)`
+        col.auto_increment = true;
+        c.skip_balanced();
     } else if c.eat_kw("generated") {
         c.eat_kw("always");
         if c.eat_kw("by") {
             c.eat_kw("default");
+            if c.at_kw("on") && c.at_kw_n(1, "null") {
+                c.i += 2; // Oracle `BY DEFAULT ON NULL`
+            }
         }
         generated_as(c, col);
     } else if c.at_kw("as") {

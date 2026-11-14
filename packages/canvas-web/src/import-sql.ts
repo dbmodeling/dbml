@@ -1,4 +1,13 @@
-export type ImportDialect = 'postgres' | 'mysql' | 'sqlite';
+export type ImportDialect = 'postgres' | 'mysql' | 'sqlite' | 'sqlserver' | 'oracle';
+
+/** Mesmos bancos, rótulos e ordem do dropdown de exportação. */
+export const IMPORT_DIALECTS: ReadonlyArray<{ value: ImportDialect; label: string }> = [
+  { value: 'postgres', label: 'PostgreSQL' },
+  { value: 'mysql', label: 'MySQL' },
+  { value: 'sqlite', label: 'SQLite' },
+  { value: 'sqlserver', label: 'SQL Server' },
+  { value: 'oracle', label: 'Oracle' },
+];
 
 export interface ImportWarning {
   line: number;

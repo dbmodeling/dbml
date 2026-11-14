@@ -53,6 +53,12 @@ pub enum ImportDialect {
     /// SQLite
     #[value(alias = "sqlite3")]
     Sqlite,
+    /// Microsoft SQL Server / T-SQL
+    #[value(alias = "mssql", alias = "tsql")]
+    Sqlserver,
+    /// Oracle Database
+    #[value(alias = "ora")]
+    Oracle,
 }
 
 impl ImportDialect {
@@ -63,6 +69,8 @@ impl ImportDialect {
             Self::Postgres => sql_import::SqlDialect::Postgres,
             Self::Mysql => sql_import::SqlDialect::Mysql,
             Self::Sqlite => sql_import::SqlDialect::Sqlite,
+            Self::Sqlserver => sql_import::SqlDialect::SqlServer,
+            Self::Oracle => sql_import::SqlDialect::Oracle,
         }
     }
 }
@@ -296,6 +304,11 @@ mod tests {
             ("mariadb", sql_import::SqlDialect::Mysql),
             ("sqlite", sql_import::SqlDialect::Sqlite),
             ("sqlite3", sql_import::SqlDialect::Sqlite),
+            ("sqlserver", sql_import::SqlDialect::SqlServer),
+            ("mssql", sql_import::SqlDialect::SqlServer),
+            ("tsql", sql_import::SqlDialect::SqlServer),
+            ("oracle", sql_import::SqlDialect::Oracle),
+            ("ora", sql_import::SqlDialect::Oracle),
         ] {
             let cli = Cli::try_parse_from([
                 "dbml",
