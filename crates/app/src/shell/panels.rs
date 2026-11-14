@@ -1062,6 +1062,34 @@ impl Shell {
         for t in loose {
             body = body.child(row(t, cx));
         }
+        let mut enums_list = div().flex().flex_col().gap(px(1.));
+        for en in &schema.enums {
+            let name = en.name.clone();
+            enums_list = enums_list.child(
+                Self::row(g, SharedString::from(format!("schema-enum-{name}")), false)
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.with_diagram(cx, |d| d.focus_enum(&name));
+                    }))
+                    .child(
+                        div()
+                            .px(px(4.))
+                            .py(px(1.))
+                            .rounded(px(3.))
+                            .bg(g.accent.opacity(0.16))
+                            .text_size(px(9.))
+                            .font_weight(FontWeight::BOLD)
+                            .text_color(g.accent)
+                            .child("E"),
+                    )
+                    .child(div().flex_1().truncate().child(en.name.clone()))
+                    .child(
+                        div()
+                            .text_size(TEXT_XS)
+                            .text_color(g.text_faint)
+                            .child(format!("{}", en.values.len())),
+                    ),
+            );
+        }
         let mut refs = div().flex().flex_col().gap(px(2.)).px(SP_MD);
         for r in &schema.refs {
             refs = refs.child(
@@ -1085,6 +1113,8 @@ impl Shell {
             .flex_col()
             .child(Self::section(g, "TABLES", Some(schema.tables.len())))
             .child(body)
+            .child(Self::section(g, "ENUMS", Some(schema.enums.len())))
+            .child(enums_list)
             .child(Self::section(g, "RELATIONS", Some(schema.refs.len())))
             .child(refs)
     }
@@ -1197,7 +1227,7 @@ impl Shell {
                 .text_color(g.text_muted)
                 .child(text)
         };
-        let (selection, selected, group, selected_ref) = match self.doc() {
+        let (selection, selected, selected_enum, group, selected_ref) = match self.doc() {
             Some(doc) => {
                 let d = doc.diagram.read(cx);
                 let sel = d.selection();
@@ -1206,6 +1236,20 @@ impl Shell {
                         t.clone(),
                         d.refs_of(&t.name).into_iter().cloned().collect::<Vec<_>>(),
                     )
+                });
+                let one_enum = d.selected_enum().map(|en| {
+                    let refs_by: Vec<(String, String)> = d
+                        .schema()
+                        .tables
+                        .iter()
+                        .flat_map(|t| {
+                            t.columns
+                                .iter()
+                                .filter(|c| c.ty.rsplit('.').next().is_some_and(|ty| ty == en.name))
+                                .map(|c| (t.name.clone(), c.name.clone()))
+                        })
+                        .collect();
+                    (en.clone(), refs_by)
                 });
                 let group = one
                     .as_ref()
@@ -1226,9 +1270,9 @@ impl Shell {
                         })
                         .cloned()
                 });
-                (sel, one, group, sref)
+                (sel, one, one_enum, group, sref)
             }
-            None => (Vec::new(), None, None, None),
+            None => (Vec::new(), None, None, None, None),
         };
         let header = |eyebrow: &'static str, title: String, sub: String| {
             div()
@@ -1943,6 +1987,208 @@ impl Shell {
                                 .label("Delete relation")
                                 .tooltip_with_action(
                                     "Delete relation and FK column",
+                                    &DeleteSelection,
+                                    Some(actions::CANVAS),
+                                )
+                                .on_click(|_, window, cx| {
+                                    window.dispatch_action(Box::new(DeleteSelection), cx);
+                                }),
+                        ),
+                )
+        } else if let Some((en, refs_by)) = selected_enum {
+            let editing = self
+                .editing
+                .as_ref()
+                .map(|(t, st, _)| (t.clone(), st.clone()));
+            let enum_field =
+                |target: EditTarget, text: String, cx: &mut Context<Self>| -> AnyElement {
+                    match &editing {
+                        Some((t, st)) if *t == target => Input::new(st).small().into_any_element(),
+                        _ => {
+                            let id = SharedString::from(format!("enum-edit-{target:?}"));
+                            let value = text.clone();
+                            div()
+                                .id(id)
+                                .role(Role::Button)
+                                .aria_label(format!("Edit {text}"))
+                                .w_full()
+                                .px(px(4.))
+                                .rounded(px(4.))
+                                .truncate()
+                                .text_color(g.text)
+                                .cursor_text()
+                                .hover({
+                                    let h = g.hover;
+                                    move |st| st.bg(h)
+                                })
+                                .on_click(cx.listener(move |this, _, window, cx| {
+                                    this.start_edit(target.clone(), value.clone(), window, cx);
+                                }))
+                                .child(text)
+                                .into_any_element()
+                        }
+                    }
+                };
+            let title_el = enum_field(EditTarget::Enum(en.name.clone()), en.name.clone(), cx);
+            let mut values_list = div().flex().flex_col().gap(px(2.)).px(SP_MD);
+            for (idx, val) in en.values.iter().enumerate() {
+                let en_up = en.name.clone();
+                let v_up = val.name.clone();
+                let en_dn = en.name.clone();
+                let v_dn = val.name.clone();
+                let en_del = en.name.clone();
+                let v_del = val.name.clone();
+                let val_el = enum_field(
+                    EditTarget::EnumVal(en.name.clone(), val.name.clone()),
+                    val.name.clone(),
+                    cx,
+                );
+                values_list = values_list.child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap(px(4.))
+                        .h(px(26.))
+                        .child(div().flex_1().min_w_0().child(val_el))
+                        .when(idx > 0, |d| {
+                            d.child(
+                                Button::new(SharedString::from(format!("enum-up-{idx}")))
+                                    .ghost()
+                                    .xsmall()
+                                    .icon(IconName::ArrowUp)
+                                    .on_click(cx.listener(move |this, _, window, cx| {
+                                        this.edit_text(false, window, cx, |t| {
+                                            dbml_edit::reorder_enum_value(t, &en_up, &v_up, true)
+                                        });
+                                    })),
+                            )
+                        })
+                        .when(idx + 1 < en.values.len(), |d| {
+                            d.child(
+                                Button::new(SharedString::from(format!("enum-dn-{idx}")))
+                                    .ghost()
+                                    .xsmall()
+                                    .icon(IconName::ArrowDown)
+                                    .on_click(cx.listener(move |this, _, window, cx| {
+                                        this.edit_text(false, window, cx, |t| {
+                                            dbml_edit::reorder_enum_value(t, &en_dn, &v_dn, false)
+                                        });
+                                    })),
+                            )
+                        })
+                        .child(
+                            Button::new(SharedString::from(format!("enum-del-{idx}")))
+                                .ghost()
+                                .xsmall()
+                                .icon(IconName::Trash)
+                                .on_click(cx.listener(move |this, _, window, cx| {
+                                    this.edit_text(false, window, cx, |t| {
+                                        dbml_edit::delete_enum_value(t, &en_del, &v_del)
+                                    });
+                                })),
+                        ),
+                );
+            }
+            if let Some((EditTarget::NewEnumVal(target_en), st)) = &editing
+                && target_en == &en.name
+            {
+                values_list = values_list.child(div().py(px(2.)).child(Input::new(st).small()));
+            }
+            let en_add = en.name.clone();
+            values_list = values_list.child(
+                div().pt(px(4.)).child(
+                    Button::new("insp-add-enum-val")
+                        .ghost()
+                        .xsmall()
+                        .icon(IconName::Plus)
+                        .label("Add value")
+                        .on_click(cx.listener(move |this, _, window, cx| {
+                            this.start_edit(
+                                EditTarget::NewEnumVal(en_add.clone()),
+                                String::new(),
+                                window,
+                                cx,
+                            );
+                        })),
+                ),
+            );
+            let mut refs_list = div().flex().flex_col().gap(px(2.)).px(SP_MD);
+            if refs_by.is_empty() {
+                refs_list = refs_list.child(
+                    div()
+                        .text_size(TEXT_XS)
+                        .text_color(g.text_faint)
+                        .child("No columns reference this enum"),
+                );
+            } else {
+                for (i, (tbl, col)) in refs_by.iter().enumerate() {
+                    let tbl_click = tbl.clone();
+                    refs_list = refs_list.child(
+                        Self::row(g, SharedString::from(format!("enum-ref-{i}")), false)
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                this.with_diagram(cx, |d| d.focus_table(&tbl_click));
+                            }))
+                            .child(
+                                div()
+                                    .truncate()
+                                    .text_size(TEXT_XS)
+                                    .text_color(g.text_muted)
+                                    .child(format!("{tbl}.{col}")),
+                            ),
+                    );
+                }
+            }
+            div()
+                .flex()
+                .flex_col()
+                .child(
+                    div()
+                        .flex()
+                        .flex_col()
+                        .gap(px(2.))
+                        .px(SP_MD)
+                        .py(SP_SM)
+                        .border_b_1()
+                        .border_color(g.edge_soft)
+                        .child(
+                            div()
+                                .text_size(TEXT_XS)
+                                .font_weight(FontWeight::SEMIBOLD)
+                                .text_color(g.text_faint)
+                                .child("ENUM"),
+                        )
+                        .child(
+                            div()
+                                .text_size(px(15.))
+                                .font_weight(FontWeight::SEMIBOLD)
+                                .text_color(g.text)
+                                .child(title_el),
+                        )
+                        .child(
+                            div()
+                                .text_size(TEXT_XS)
+                                .text_color(g.text_muted)
+                                .child(format!("{} values", en.values.len())),
+                        ),
+                )
+                .child(Self::section(g, "VALUES", Some(en.values.len())))
+                .child(values_list)
+                .child(Self::section(g, "REFERENCED BY", Some(refs_by.len())))
+                .child(refs_list)
+                .child(
+                    div()
+                        .p(SP_MD)
+                        .mt(SP_SM)
+                        .border_t_1()
+                        .border_color(g.edge_soft)
+                        .child(
+                            Button::new("insp-del-enum")
+                                .ghost()
+                                .small()
+                                .icon(IconName::Trash)
+                                .label("Delete enum")
+                                .tooltip_with_action(
+                                    "Delete enum",
                                     &DeleteSelection,
                                     Some(actions::CANVAS),
                                 )

@@ -1,6 +1,6 @@
 use clap::Parser;
 use colored::Colorize;
-use dbml_cli::args::Cli;
+use dbml_cli::args::{Cli, Commands, ExportFormat};
 use dbml_cli::server;
 use dbml_cli::state::AppState;
 use dbml_cli::watcher;
@@ -10,6 +10,24 @@ use tokio::net::TcpListener;
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
+    if let Some(Commands::Export {
+        file,
+        format,
+        dialect,
+        output,
+    }) = cli.command
+    {
+        let src = std::fs::read_to_string(&file)?;
+        let out = match format {
+            ExportFormat::Sql => dbml_analysis::export_sql_ddl(&src, dialect.to_sql_dialect()),
+        };
+        if let Some(out_path) = output {
+            std::fs::write(&out_path, out)?;
+        } else {
+            print!("{out}");
+        }
+        return Ok(());
+    }
     let config = cli.resolve_config()?;
 
     let state = AppState::new(config.file.clone()).await?;

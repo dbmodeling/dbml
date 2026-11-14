@@ -61,6 +61,40 @@ export function compute_scene(source, positions_js) {
 }
 
 /**
+ * Exports DBML `source` to SQL DDL for the requested `dialect`
+ * (`postgres`, `mysql`, `sqlite`, `sqlserver`/`mssql`, `oracle`).
+ *
+ * # Errors
+ *
+ * Returns an error if `dialect` is not recognized.
+ * @param {string} source
+ * @param {string} dialect
+ * @returns {string}
+ */
+export function export_sql_ddl(source, dialect) {
+    let deferred4_0;
+    let deferred4_1;
+    try {
+        const ptr0 = passStringToWasm0(source, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ptr1 = passStringToWasm0(dialect, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len1 = WASM_VECTOR_LEN;
+        const ret = wasm.export_sql_ddl(ptr0, len0, ptr1, len1);
+        var ptr3 = ret[0];
+        var len3 = ret[1];
+        if (ret[3]) {
+            ptr3 = 0; len3 = 0;
+            throw takeFromExternrefTable0(ret[2]);
+        }
+        deferred4_0 = ptr3;
+        deferred4_1 = len3;
+        return getStringFromWasm0(ptr3, len3);
+    } finally {
+        wasm.__wbindgen_free(deferred4_0, deferred4_1, 1);
+    }
+}
+
+/**
  * Executa a formatação canônica de código do documento DBML.
  * @param {string} source
  * @returns {string}

@@ -12,8 +12,8 @@ use serde::Serialize;
 use std::collections::{HashMap, HashSet};
 use std::fmt::Write as _;
 use types::{
-    AnalysisResult, Command, DiagnosticSeverity, GroupBox, LayoutResult, NodeCoordinate,
-    RoutedEdge, SceneGeometry, TableVisual, TextPatch, WasmDiagnostic,
+    AnalysisResult, Command, DiagnosticSeverity, EnumVisual, GroupBox, LayoutResult,
+    NodeCoordinate, RoutedEdge, SceneGeometry, TableVisual, TextPatch, WasmDiagnostic,
 };
 use wasm_bindgen::prelude::*;
 
@@ -41,21 +41,12 @@ pub fn group_color(schema: &Schema, group: &str) -> String {
 /// Extrai nomes de `Enum` definidos no código DBML (idêntico a `crates/app/src/shell/mod.rs`).
 #[must_use]
 pub fn extract_enums_from_dbml(text: &str) -> Vec<String> {
-    let mut enums = Vec::new();
-    for line in text.lines() {
-        let trimmed = line.trim();
-        if let Some(rest) = trimmed.strip_prefix("Enum ") {
-            let name = rest
-                .split(|c: char| c.is_whitespace() || c == '{')
-                .next()
-                .unwrap_or("")
-                .trim();
-            if !name.is_empty() && !enums.contains(&name.to_string()) {
-                enums.push(name.to_string());
-            }
-        }
-    }
-    enums
+    let mut seen = std::collections::HashSet::new();
+    dbml_analysis::analyze(text)
+        .enums
+        .into_iter()
+        .filter_map(|e| seen.insert(e.name.clone()).then_some(e.name))
+        .collect()
 }
 
 /// Converte um diagnóstico do `dbml_analysis` para a representação do Wasm.
@@ -98,6 +89,8 @@ pub fn compute_minimal_patch(original: &str, updated: &str, line_index: &LineInd
             created_table: None,
             created_column: None,
             renamed_table: None,
+            created_enum: None,
+            renamed_enum: None,
             should_relayout: false,
         };
     }
@@ -153,6 +146,8 @@ pub fn compute_minimal_patch(original: &str, updated: &str, line_index: &LineInd
         created_table: None,
         created_column: None,
         renamed_table: None,
+        created_enum: None,
+        renamed_enum: None,
         should_relayout: false,
     }
 }
@@ -236,15 +231,55 @@ pub fn build_rounded_svg_path(pts: &[layout::Pos]) -> String {
 )]
 pub fn compute_scene_internal(
     schema: &Schema,
-    provided_positions: Option<HashMap<String, NodeCoordinate>>,
+    provided_positions: Option<&HashMap<String, NodeCoordinate>>,
 ) -> SceneGeometry {
     let mut pos = auto_layout_schema(schema);
     if let Some(custom) = provided_positions {
         for (k, v) in custom {
-            if schema.table(&k).is_some() {
-                pos.insert(k, v);
+            if schema.table(k).is_some() {
+                pos.insert(k.clone(), *v);
             }
         }
+    }
+
+    let max_table_bottom = schema
+        .tables
+        .iter()
+        .filter_map(|t| pos.get(&t.name).map(|p| p.y + card_h(t.columns.len())))
+        .fold(0.0_f32, f32::max);
+    let enum_base_y = if schema.tables.is_empty() {
+        0.0
+    } else {
+        max_table_bottom + 72.0
+    };
+    let mut enums = Vec::with_capacity(schema.enums.len());
+    for (idx, e) in schema.enums.iter().enumerate() {
+        let key = format!("enum:{}", e.name);
+        let default_coord = NodeCoordinate {
+            x: (idx % 4) as f32 * (CARD_W + 48.0),
+            y: enum_base_y + (idx / 4) as f32 * 220.0,
+        };
+        let coord = provided_positions
+            .and_then(|custom| custom.get(&key).copied())
+            .unwrap_or(default_coord);
+        pos.insert(key, coord);
+        let referenced_by = schema
+            .tables
+            .iter()
+            .filter(|t| t.columns.iter().any(|c| c.ty == e.name))
+            .map(|t| t.name.clone())
+            .collect();
+        let values: Vec<String> = e.values.iter().map(|v| v.name.clone()).collect();
+        let h = card_h(values.len().max(1));
+        enums.push(EnumVisual {
+            name: e.name.clone(),
+            x: coord.x,
+            y: coord.y,
+            w: CARD_W,
+            h,
+            values,
+            referenced_by,
+        });
     }
 
     // Colunas que são origem de alguma relação (FK)
@@ -425,6 +460,7 @@ pub fn compute_scene_internal(
     SceneGeometry {
         positions: pos,
         tables,
+        enums,
         groups,
         edges,
     }
@@ -470,6 +506,8 @@ pub fn apply_command(source: &str, command_js: JsValue) -> Result<JsValue, JsVal
     let mut created_table = None;
     let mut created_column = None;
     let mut renamed_table = None;
+    let mut created_enum = None;
+    let mut renamed_enum = None;
     let mut should_relayout = false;
 
     let new_source = match command {
@@ -578,12 +616,57 @@ pub fn apply_command(source: &str, command_js: JsValue) -> Result<JsValue, JsVal
                 JsValue::from_str(&format!("Table '{table}' not found when setting color"))
             })?
         }
+        Command::AddEnum { name } => {
+            let enum_name = name.unwrap_or_else(|| dbml_edit::unique_enum_name(source, "new_enum"));
+            created_enum = Some(enum_name.clone());
+            dbml_edit::add_enum(source, &enum_name)
+        }
+        Command::DeleteEnum { name } => dbml_edit::delete_enum(source, &name),
+        Command::RenameEnum { old_name, new_name } => {
+            if old_name != new_name {
+                renamed_enum = Some((old_name.clone(), new_name.clone()));
+            }
+            dbml_edit::rename_enum(source, &old_name, &new_name)
+        }
+        Command::AddEnumValue { enum_name, value } => {
+            let val = value.unwrap_or_else(|| "new_value".to_string());
+            dbml_edit::add_enum_value(source, &enum_name, &val).ok_or_else(|| {
+                JsValue::from_str(&format!("Enum '{enum_name}' not found when adding value"))
+            })?
+        }
+        Command::DeleteEnumValue { enum_name, value } => {
+            dbml_edit::delete_enum_value(source, &enum_name, &value).ok_or_else(|| {
+                JsValue::from_str(&format!("Value '{value}' not found in enum '{enum_name}'"))
+            })?
+        }
+        Command::RenameEnumValue {
+            enum_name,
+            old_value,
+            new_value,
+        } => dbml_edit::rename_enum_value(source, &enum_name, &old_value, &new_value).ok_or_else(
+            || {
+                JsValue::from_str(&format!(
+                    "Value '{old_value}' not found in enum '{enum_name}'"
+                ))
+            },
+        )?,
+        Command::ReorderEnumValue {
+            enum_name,
+            value,
+            up,
+        } => dbml_edit::reorder_enum_value(source, &enum_name, &value, up).ok_or_else(|| {
+            JsValue::from_str(&format!(
+                "Could not reorder '{value}' in enum '{enum_name}'"
+            ))
+        })?,
     };
 
     let mut patch = compute_minimal_patch(source, &new_source, &line_index);
     patch.created_table = created_table;
     patch.created_column = created_column;
     patch.renamed_table = renamed_table;
+    patch.created_enum = created_enum;
+    patch.renamed_enum = renamed_enum;
     patch.should_relayout = should_relayout;
 
     to_js_json(&patch)
@@ -659,8 +742,27 @@ pub fn compute_scene(source: &str, positions_js: JsValue) -> Result<JsValue, JsV
             serde_wasm_bindgen::from_value(positions_js).ok()
         };
 
-    let scene = compute_scene_internal(&schema, provided);
+    let scene = compute_scene_internal(&schema, provided.as_ref());
     to_js_json(&scene)
+}
+
+/// Exports DBML `source` to SQL DDL for the requested `dialect`
+/// (`postgres`, `mysql`, `sqlite`, `sqlserver`/`mssql`, `oracle`).
+///
+/// # Errors
+///
+/// Returns an error if `dialect` is not recognized.
+#[wasm_bindgen]
+pub fn export_sql_ddl(source: &str, dialect: &str) -> Result<String, JsValue> {
+    export_sql_ddl_str(source, dialect).map_err(|e| JsValue::from_str(&e.to_string()))
+}
+
+fn export_sql_ddl_str(
+    source: &str,
+    dialect: &str,
+) -> Result<String, dbml_analysis::SqlExportError> {
+    let parsed = dialect.parse::<dbml_analysis::SqlDialect>()?;
+    Ok(dbml_analysis::export_sql_ddl(source, parsed))
 }
 
 #[cfg(test)]
@@ -722,5 +824,33 @@ mod tests {
         let src = "Enum order_status {\n  pending\n  paid\n}\nTable orders {\n  id int\n}\n";
         let enums = extract_enums_from_dbml(src);
         assert_eq!(enums, vec!["order_status".to_string()]);
+    }
+
+    #[test]
+    fn export_sql_ddl_generates_all_five_dialects() {
+        let src = "Table users {\n  id int [pk]\n}\n";
+        for dialect in ["postgres", "mysql", "sqlite", "sqlserver", "oracle"] {
+            let ddl = export_sql_ddl_str(src, dialect).unwrap();
+            assert!(ddl.contains("CREATE TABLE"));
+        }
+    }
+
+    #[test]
+    fn export_sql_ddl_rejects_unknown_dialect() {
+        let err = export_sql_ddl_str("Table u { id int }", "nosql").unwrap_err();
+        assert!(err.to_string().contains("unknown SQL dialect"));
+    }
+
+    #[test]
+    fn scene_includes_enum_cards_and_references() {
+        let src =
+            "Enum role {\n  admin\n  member\n}\nTable users {\n  id int [pk]\n  role role\n}\n";
+        let schema = dbml_analysis::analyze(src);
+        let scene = compute_scene_internal(&schema, None);
+        assert_eq!(scene.enums.len(), 1);
+        assert_eq!(scene.enums[0].name, "role");
+        assert_eq!(scene.enums[0].values, vec!["admin", "member"]);
+        assert_eq!(scene.enums[0].referenced_by, vec!["users"]);
+        assert!(scene.positions.contains_key("enum:role"));
     }
 }

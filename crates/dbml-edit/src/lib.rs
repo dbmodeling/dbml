@@ -2,6 +2,11 @@
 #![deny(missing_docs)]
 //! Semantic editing operations producing minimal CST-preserving text patches.
 
+mod enums;
+pub use enums::{
+    add_enum, add_enum_value, delete_enum, delete_enum_value, rename_enum, rename_enum_value,
+    reorder_enum_value, unique_enum_name,
+};
 mod format;
 pub use format::{format, swap_lines};
 pub use groups::{group_tables, next_group_name, set_table_color, ungroup_table};

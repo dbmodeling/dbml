@@ -24,6 +24,7 @@ export type ActionId =
   | 'GroupSelection'
   | 'UngroupSelection'
   | 'NewTable'
+  | 'NewEnum'
   | 'DeleteSelection'
   | 'RenameSelected'
   | 'FormatDocument'
@@ -38,7 +39,12 @@ export type ActionId =
   | 'ExportSvg'
   | 'ExportPng'
   | 'ExportJpeg'
-  | 'ExportMermaid';
+  | 'ExportMermaid'
+  | 'ExportSqlPostgres'
+  | 'ExportSqlMysql'
+  | 'ExportSqlSqlite'
+  | 'ExportSqlSqlServer'
+  | 'ExportSqlOracle';
 
 export type KeyContext = 'Shell' | 'Canvas';
 
@@ -82,6 +88,7 @@ export function catalog(): ActionEntry[] {
     e('ctrl--', ['Ctrl', '-'], 'ZoomOut', 'Canvas', 'Zoom Out'),
     e('escape', ['Esc'], 'Deselect', 'Canvas', 'Clear Selection'),
     e('t', ['T'], 'NewTable', 'Canvas', 'New Table'),
+    e('', [], 'NewEnum', 'Canvas', 'New Enum'),
     e('delete', ['Del'], 'DeleteSelection', 'Canvas', 'Delete Selected Tables'),
     e('f2', ['F2'], 'RenameSelected', 'Canvas', 'Rename Table'),
     e('ctrl-g', ['Ctrl', 'G'], 'GroupSelection', 'Canvas', 'Group Selected Tables'),
@@ -116,6 +123,11 @@ export function catalog(): ActionEntry[] {
     e('', [], 'ExportPng', 'Export', 'Export diagram as PNG image'),
     e('', [], 'ExportJpeg', 'Export', 'Export diagram as JPEG image'),
     e('', [], 'ExportMermaid', 'Export', 'Export diagram as Mermaid erDiagram'),
+    e('', [], 'ExportSqlPostgres', 'Export', 'Export SQL DDL (PostgreSQL)'),
+    e('', [], 'ExportSqlMysql', 'Export', 'Export SQL DDL (MySQL)'),
+    e('', [], 'ExportSqlSqlite', 'Export', 'Export SQL DDL (SQLite)'),
+    e('', [], 'ExportSqlSqlServer', 'Export', 'Export SQL DDL (SQL Server)'),
+    e('', [], 'ExportSqlOracle', 'Export', 'Export SQL DDL (Oracle)'),
     e('ctrl-k', ['Ctrl', 'K'], 'OpenPalette', 'Help', 'Command Palette'),
     e('ctrl-/', ['Ctrl', '/'], 'ShowShortcuts', 'Help', 'Keyboard Shortcuts'),
   ];

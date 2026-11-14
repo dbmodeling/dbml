@@ -633,7 +633,10 @@ pub fn lint(text: &str) -> Vec<Diagnostic> {
             };
             col_flags.insert((name.clone(), cname), flags);
         }
-        for b in t.children().filter(|n| n.kind() == SyntaxKind::Block) {
+        for b in t
+            .children()
+            .filter(|n| matches!(n.kind(), SyntaxKind::Block | SyntaxKind::Indexes))
+        {
             collect_index_uniques(&name, &b, &mut col_flags, &mut has_pk);
         }
         if !has_pk && !cols.is_empty() {
@@ -682,63 +685,88 @@ pub fn lint(text: &str) -> Vec<Diagnostic> {
         };
         check(&ts, &mut out);
         let body = &ts[colon + 1..];
-        let has_dot1 = body.get(1).is_some_and(|k| k.text() == ".");
-        let mut op_idx = 3;
+        let body_strs: Vec<&str> = body.iter().map(rowan::SyntaxToken::text).collect();
+        let parsed_from = crate::endpoint(&body_strs);
+        let op_start = parsed_from.as_ref().map_or(0, |(_, len)| *len);
+        let mut op_idx = op_start;
         while op_idx < body.len() && matches!(body[op_idx].text(), "<" | ">" | "-") {
             op_idx += 1;
         }
-        let has_op = op_idx > 3;
-        let has_dot2 =
-            body.get(op_idx + 1).is_some_and(|k| k.text() == ".") && body.get(op_idx + 2).is_some();
-        if !has_dot1 || !has_op || !has_dot2 {
+        let has_op = parsed_from.is_some() && op_idx > op_start;
+        let parsed_to = if has_op {
+            crate::endpoint(&body_strs[op_idx..])
+        } else {
+            None
+        };
+        let (Some((from_ep, _)), Some((to_ep, _))) = (parsed_from, parsed_to) else {
             out.push(diag(
                 range(&ts[0]),
                 Severity::Error,
                 "Incomplete relation: expected `Ref: table.column > table.column`",
             ));
+            continue;
+        };
+
+        let (from_cols, to_cols) = (from_ep.cols(), to_ep.cols());
+        if from_cols.len() != to_cols.len() {
+            out.push(diag(
+                range(&ts[0]),
+                Severity::Error,
+                format!(
+                    "Composite foreign key column count mismatch ({} vs {})",
+                    from_cols.len(),
+                    to_cols.len()
+                ),
+            ));
+            continue;
+        }
+        if from_ep.table == to_ep.table && from_cols == to_cols {
+            out.push(diag(
+                range(&body[0]),
+                Severity::Error,
+                format!(
+                    "A column cannot reference itself (`{}.{}`)",
+                    from_ep.table,
+                    from_ep.primary_column()
+                ),
+            ));
         } else {
-            let (ft, fc) = (unquote(body[0].text()), unquote(body[2].text()));
-            let (tt, tc) = (
-                unquote(body[op_idx].text()),
-                unquote(body[op_idx + 2].text()),
-            );
-            if ft == tt && fc == tc {
-                out.push(diag(
-                    range(&body[0]),
-                    Severity::Error,
-                    format!("A column cannot reference itself (`{ft}.{fc}`)"),
-                ));
-            } else {
+            let ft = from_ep.table.as_str();
+            let tt = to_ep.table.as_str();
+            for (&fc, &tc) in from_cols.iter().zip(to_cols.iter()) {
                 if let (Some(t1), Some(t2)) = (
                     col_types.get(&(ft.to_string(), fc.to_string())),
                     col_types.get(&(tt.to_string(), tc.to_string())),
                 ) && t1 != t2
                 {
                     out.push(diag(
-                        range(&body[2]),
+                        range(&body[0]),
                         Severity::Warning,
                         format!(
                             "Incompatible types in relation: `{ft}.{fc}` is `{t1}`, but `{tt}.{tc}` is `{t2}`"
                         ),
                     ));
                 }
-                if let Some(op) = RefOp::from_tokens(&body[3..op_idx]) {
-                    check_fk_semantics(
-                        &FkRelation {
-                            ft,
-                            fc,
-                            tt,
-                            tc,
-                            op,
-                            anchor_tok: &body[0],
-                            target_tok: &body[op_idx + 2],
-                        },
-                        &col_flags,
-                        &mut fk_graph,
-                        &mut fk_anchors,
-                        &mut out,
-                    );
-                }
+            }
+            if from_cols.len() == 1
+                && let Some(op) = RefOp::from_tokens(&body[op_start..op_idx])
+                && let Some(target_tok) = body.get(op_idx + 2)
+            {
+                check_fk_semantics(
+                    &FkRelation {
+                        ft,
+                        fc: from_cols[0],
+                        tt,
+                        tc: to_cols[0],
+                        op,
+                        anchor_tok: &body[0],
+                        target_tok,
+                    },
+                    &col_flags,
+                    &mut fk_graph,
+                    &mut fk_anchors,
+                    &mut out,
+                );
             }
         }
     }

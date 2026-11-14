@@ -66,6 +66,12 @@ pub struct TextPatch {
     /// `(old_name, new_name)` pair when a table is renamed.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub renamed_table: Option<(String, String)>,
+    /// Newly created enum name, if any.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub created_enum: Option<String>,
+    /// `(old_name, new_name)` pair when an enum is renamed.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub renamed_enum: Option<(String, String)>,
     /// Whether the operation requires an immediate relayout.
     #[serde(default)]
     pub should_relayout: bool,
@@ -209,6 +215,55 @@ pub enum Command {
         /// Optional hex color (`None` removes `headercolor`).
         color: Option<String>,
     },
+    /// Add a new `Enum` block (auto-naming if `name` is `None`).
+    AddEnum {
+        /// Optional explicit enum name.
+        name: Option<String>,
+    },
+    /// Delete an `Enum` block by name.
+    DeleteEnum {
+        /// Enum name to delete.
+        name: String,
+    },
+    /// Rename an `Enum` block and cascade column types.
+    RenameEnum {
+        /// Current enum name.
+        old_name: String,
+        /// New enum name.
+        new_name: String,
+    },
+    /// Add a new value to an `Enum` block.
+    AddEnumValue {
+        /// Target enum name.
+        enum_name: String,
+        /// Optional value name (auto-generated if `None`).
+        value: Option<String>,
+    },
+    /// Delete a value from an `Enum` block.
+    DeleteEnumValue {
+        /// Target enum name.
+        enum_name: String,
+        /// Value to remove.
+        value: String,
+    },
+    /// Rename a value inside an `Enum` block.
+    RenameEnumValue {
+        /// Target enum name.
+        enum_name: String,
+        /// Current value name.
+        old_value: String,
+        /// New value name.
+        new_value: String,
+    },
+    /// Move an enum value up or down inside its `Enum` block.
+    ReorderEnumValue {
+        /// Target enum name.
+        enum_name: String,
+        /// Value to move.
+        value: String,
+        /// `true` to move up, `false` to move down.
+        up: bool,
+    },
 }
 
 /// Dimensions of a table card for auto-layout computation.
@@ -339,13 +394,35 @@ pub struct TableVisual {
     pub fk_columns: Vec<String>,
 }
 
+/// Computed visual metadata for an `Enum` card.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EnumVisual {
+    /// Enum name.
+    pub name: String,
+    /// Left X coordinate.
+    pub x: f32,
+    /// Top Y coordinate.
+    pub y: f32,
+    /// Card width.
+    pub w: f32,
+    /// Card height.
+    pub h: f32,
+    /// Ordered enum value names.
+    pub values: Vec<String>,
+    /// Table names containing columns that reference this enum.
+    pub referenced_by: Vec<String>,
+}
+
 /// Complete scene geometry calculated to match `crates/app/src/canvas.rs`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SceneGeometry {
-    /// Table positions keyed by table name.
+    /// Table and enum (`enum:<name>`) positions.
     pub positions: HashMap<String, NodeCoordinate>,
     /// Visual metadata for each table.
     pub tables: Vec<TableVisual>,
+    /// Visual metadata for each enum card.
+    #[serde(default)]
+    pub enums: Vec<EnumVisual>,
     /// Bounding boxes for each group.
     pub groups: Vec<GroupBox>,
     /// Orthogonally routed relationship edges.

@@ -74,6 +74,8 @@ export interface TextPatch {
   created_table?: string;
   created_column?: [string, string];
   renamed_table?: [string, string];
+  created_enum?: string;
+  renamed_enum?: [string, string];
   should_relayout?: boolean;
 }
 
@@ -124,9 +126,20 @@ export interface TableVisual {
   fk_columns: string[];
 }
 
+export interface EnumVisual {
+  name: string;
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+  values: string[];
+  referenced_by: string[];
+}
+
 export interface SceneGeometry {
   positions: Record<string, NodeCoordinate>;
   tables: TableVisual[];
+  enums?: EnumVisual[];
   groups: GroupBox[];
   edges: RoutedEdge[];
 }
@@ -171,7 +184,14 @@ export type Command =
   | { action: 'group_tables'; payload: { name?: string; tables: string[] } }
   | { action: 'ungroup_table'; payload: { table: string } }
   | { action: 'ungroup_tables'; payload: { tables: string[] } }
-  | { action: 'set_table_color'; payload: { table: string; color?: string | null } };
+  | { action: 'set_table_color'; payload: { table: string; color?: string | null } }
+  | { action: 'add_enum'; payload: { name?: string } }
+  | { action: 'delete_enum'; payload: { name: string } }
+  | { action: 'rename_enum'; payload: { old_name: string; new_name: string } }
+  | { action: 'add_enum_value'; payload: { enum_name: string; value?: string } }
+  | { action: 'delete_enum_value'; payload: { enum_name: string; value: string } }
+  | { action: 'rename_enum_value'; payload: { enum_name: string; old_value: string; new_value: string } }
+  | { action: 'reorder_enum_value'; payload: { enum_name: string; value: string; up: boolean } };
 
 export interface WorkspaceFileEntry {
   name: string;

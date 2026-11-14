@@ -47,6 +47,9 @@ enum EditTarget {
     Table(String),
     ColName(String, String),
     ColType(String, String),
+    Enum(String),
+    EnumVal(String, String),
+    NewEnumVal(String),
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -347,6 +350,12 @@ impl Shell {
                 }
                 DiagramEvent::Select(table) => {
                     let _ = table;
+                    this.inspector_open = true;
+                    this.save_prefs();
+                    cx.notify();
+                }
+                DiagramEvent::SelectEnum(name) => {
+                    let _ = name;
                     this.inspector_open = true;
                     this.save_prefs();
                     cx.notify();
@@ -697,6 +706,71 @@ impl Shell {
         }
     }
 
+    fn export_sql(
+        &mut self,
+        dialect: dbml_analysis::SqlDialect,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(doc) = self.doc() else { return };
+        let text = doc.editor.read(cx).value().to_string();
+        let sql = dbml_analysis::export_sql_ddl(&text, dialect);
+        let stem = std::path::Path::new(&doc.title)
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .filter(|s| !s.is_empty())
+            .unwrap_or("schema");
+        let suggested = format!("{stem}.{}.sql", dialect.as_str());
+        let dir = self
+            .project
+            .clone()
+            .unwrap_or_else(|| std::env::current_dir().unwrap_or_default());
+        let rx = cx.prompt_for_new_path(&dir, Some(&suggested));
+        cx.spawn_in(window, async move |_, cx| {
+            let Ok(Ok(Some(path))) = rx.await else { return };
+            let res = std::fs::write(&path, sql);
+            cx.update(|window, cx| match res {
+                Ok(()) => window.push_notification(
+                    format!("Exported SQL ({}) to {}", dialect.as_str(), path.display()),
+                    cx,
+                ),
+                Err(e) => window.push_notification(format!("Failed to export SQL: {e}"), cx),
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    fn export_sql_postgres(
+        &mut self,
+        _: &ExportSqlPostgres,
+        w: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.export_sql(dbml_analysis::SqlDialect::Postgres, w, cx);
+    }
+
+    fn export_sql_mysql(&mut self, _: &ExportSqlMysql, w: &mut Window, cx: &mut Context<Self>) {
+        self.export_sql(dbml_analysis::SqlDialect::Mysql, w, cx);
+    }
+
+    fn export_sql_sqlite(&mut self, _: &ExportSqlSqlite, w: &mut Window, cx: &mut Context<Self>) {
+        self.export_sql(dbml_analysis::SqlDialect::Sqlite, w, cx);
+    }
+
+    fn export_sql_sqlserver(
+        &mut self,
+        _: &ExportSqlSqlServer,
+        w: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.export_sql(dbml_analysis::SqlDialect::SqlServer, w, cx);
+    }
+
+    fn export_sql_oracle(&mut self, _: &ExportSqlOracle, w: &mut Window, cx: &mut Context<Self>) {
+        self.export_sql(dbml_analysis::SqlDialect::Oracle, w, cx);
+    }
+
     fn move_line(&mut self, up: bool, window: &mut Window, cx: &mut Context<Self>) {
         let Some(doc) = self.doc() else { return };
         doc.editor.update(cx, |e, cx| {
@@ -926,6 +1000,37 @@ impl Shell {
                     dbml_edit::set_column_type(t, &table, &col, &value)
                 });
             }
+            EditTarget::Enum(old) if value != old => {
+                if ident {
+                    let new = value.clone();
+                    self.edit_text(false, window, cx, |t| {
+                        Some(dbml_edit::rename_enum(t, &old, &new))
+                    });
+                    self.with_diagram(cx, |d| d.rename_enum(&old, &value));
+                } else {
+                    window.push_notification("Invalid enum name: use letters, numbers, and _.", cx);
+                }
+            }
+            EditTarget::EnumVal(en, old) if value != old => {
+                if ident {
+                    self.edit_text(false, window, cx, |t| {
+                        dbml_edit::rename_enum_value(t, &en, &old, &value)
+                    });
+                } else {
+                    window
+                        .push_notification("Invalid enum value: use letters, numbers, and _.", cx);
+                }
+            }
+            EditTarget::NewEnumVal(en) if !value.is_empty() => {
+                if ident {
+                    self.edit_text(false, window, cx, |t| {
+                        dbml_edit::add_enum_value(t, &en, &value)
+                    });
+                } else {
+                    window
+                        .push_notification("Invalid enum value: use letters, numbers, and _.", cx);
+                }
+            }
             _ => {}
         }
         cx.notify();
@@ -952,6 +1057,16 @@ impl Shell {
         self.start_edit(EditTarget::Table(name.clone()), name, window, cx);
     }
 
+    fn new_enum(&mut self, _: &NewEnum, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(doc) = self.doc() else { return };
+        let text = doc.editor.read(cx).value().to_string();
+        let name = dbml_edit::unique_enum_name(&text, "enum_type");
+        self.edit_text(false, window, cx, |t| Some(dbml_edit::add_enum(t, &name)));
+        self.with_diagram(cx, |d| d.place_new_enum(&name));
+        self.inspector_open = true;
+        self.start_edit(EditTarget::Enum(name.clone()), name, window, cx);
+    }
+
     fn delete_selection(
         &mut self,
         _: &DeleteSelection,
@@ -963,6 +1078,11 @@ impl Shell {
             self.edit_text(false, window, cx, |t| {
                 Some(dbml_edit::delete_ref(t, (&from.0, &from.1), (&to.0, &to.1)))
             });
+            self.with_diagram(cx, super::canvas::Diagram::deselect);
+            return;
+        }
+        if let Some(en) = doc.diagram.read(cx).selected_enum().map(|e| e.name.clone()) {
+            self.edit_text(false, window, cx, |t| Some(dbml_edit::delete_enum(t, &en)));
             self.with_diagram(cx, super::canvas::Diagram::deselect);
             return;
         }
@@ -985,6 +1105,9 @@ impl Shell {
         if let Some(t) = doc.diagram.read(cx).selected().map(|t| t.name.clone()) {
             self.inspector_open = true;
             self.start_edit(EditTarget::Table(t.clone()), t, window, cx);
+        } else if let Some(en) = doc.diagram.read(cx).selected_enum().map(|e| e.name.clone()) {
+            self.inspector_open = true;
+            self.start_edit(EditTarget::Enum(en.clone()), en, window, cx);
         }
     }
 
@@ -1235,6 +1358,11 @@ pub fn register_global_actions(win: AnyWindowHandle, shell: &Entity<Shell>, cx: 
         ShowProblems => show_problems,
         Quit => quit,
         FormatDocument => format_document,
+        ExportSqlPostgres => export_sql_postgres,
+        ExportSqlMysql => export_sql_mysql,
+        ExportSqlSqlite => export_sql_sqlite,
+        ExportSqlSqlServer => export_sql_sqlserver,
+        ExportSqlOracle => export_sql_oracle,
         MoveLineUp => move_line_up,
         MoveLineDown => move_line_down,
         OpenPalette => open_palette,
@@ -1254,6 +1382,7 @@ pub fn register_global_actions(win: AnyWindowHandle, shell: &Entity<Shell>, cx: 
         Deselect => deselect,
         GroupSelection => group_selection,
         NewTable => new_table,
+        NewEnum => new_enum,
         DeleteSelection => delete_selection,
         RenameSelected => rename_selected,
         ResetPanels => reset_panels,

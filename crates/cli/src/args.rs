@@ -1,5 +1,45 @@
-use clap::{Parser, Subcommand};
+use clap::{Parser, Subcommand, ValueEnum};
 use std::path::PathBuf;
+
+/// Output format for `dbml export`.
+#[derive(ValueEnum, Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ExportFormat {
+    /// SQL DDL (`CREATE TABLE`, `FOREIGN KEY`, `CREATE INDEX`).
+    Sql,
+}
+
+/// Target SQL dialect for `dbml export --format sql`.
+#[derive(ValueEnum, Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CliDialect {
+    /// PostgreSQL
+    #[value(alias = "postgresql", alias = "pg")]
+    Postgres,
+    /// MySQL
+    Mysql,
+    /// SQLite
+    #[value(alias = "sqlite3")]
+    Sqlite,
+    /// Microsoft SQL Server / T-SQL
+    #[value(alias = "mssql", alias = "tsql")]
+    Sqlserver,
+    /// Oracle Database
+    #[value(alias = "ora")]
+    Oracle,
+}
+
+impl CliDialect {
+    /// Converts this CLI dialect flag into [`dbml_analysis::SqlDialect`].
+    #[must_use]
+    pub const fn to_sql_dialect(self) -> dbml_analysis::SqlDialect {
+        match self {
+            Self::Postgres => dbml_analysis::SqlDialect::Postgres,
+            Self::Mysql => dbml_analysis::SqlDialect::Mysql,
+            Self::Sqlite => dbml_analysis::SqlDialect::Sqlite,
+            Self::Sqlserver => dbml_analysis::SqlDialect::SqlServer,
+            Self::Oracle => dbml_analysis::SqlDialect::Oracle,
+        }
+    }
+}
 
 #[derive(Parser, Debug)]
 #[command(name = "dbml")]
@@ -76,6 +116,24 @@ pub enum Commands {
         #[arg(long)]
         no_watch: bool,
     },
+    /// Export a .dbml file to SQL DDL
+    Export {
+        /// Path to the input .dbml file
+        #[arg(value_name = "FILE")]
+        file: PathBuf,
+
+        /// Export format
+        #[arg(long, value_enum, default_value_t = ExportFormat::Sql)]
+        format: ExportFormat,
+
+        /// Target SQL dialect
+        #[arg(long, value_enum, default_value_t = CliDialect::Postgres)]
+        dialect: CliDialect,
+
+        /// Optional output file path (writes to stdout if omitted)
+        #[arg(short, long, value_name = "OUTPUT")]
+        output: Option<PathBuf>,
+    },
 }
 
 pub struct RunConfig {
@@ -110,6 +168,9 @@ impl Cli {
                     no_watch,
                 },
             ) => (file, port, host, no_open, no_watch),
+            Some(Commands::Export { .. }) => {
+                anyhow::bail!("export command should be handled before starting the web server")
+            }
             None => (self.file, self.port, self.host, self.no_open, self.no_watch),
         };
 
@@ -132,5 +193,49 @@ impl Cli {
             no_open,
             no_watch,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn cli_parses_export_subcommand_with_all_dialects() {
+        for (flag, expected) in [
+            ("postgres", dbml_analysis::SqlDialect::Postgres),
+            ("mysql", dbml_analysis::SqlDialect::Mysql),
+            ("sqlite", dbml_analysis::SqlDialect::Sqlite),
+            ("sqlserver", dbml_analysis::SqlDialect::SqlServer),
+            ("mssql", dbml_analysis::SqlDialect::SqlServer),
+            ("oracle", dbml_analysis::SqlDialect::Oracle),
+        ] {
+            let cli = Cli::try_parse_from([
+                "dbml",
+                "export",
+                "schema.dbml",
+                "--format",
+                "sql",
+                "--dialect",
+                flag,
+                "-o",
+                "out.sql",
+            ])
+            .unwrap();
+            match cli.command {
+                Some(Commands::Export {
+                    file,
+                    format,
+                    dialect,
+                    output,
+                }) => {
+                    assert_eq!(file, PathBuf::from("schema.dbml"));
+                    assert_eq!(format, ExportFormat::Sql);
+                    assert_eq!(dialect.to_sql_dialect(), expected);
+                    assert_eq!(output, Some(PathBuf::from("out.sql")));
+                }
+                other => panic!("expected Export command, got {other:?}"),
+            }
+        }
     }
 }

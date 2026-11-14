@@ -39,6 +39,7 @@ type Pane = 'files' | 'schema' | 'problems';
 type Drag =
   | { kind: 'pan'; lx: number; ly: number }
   | { kind: 'cards'; last: Pt }
+  | { kind: 'enum'; name: string; last: Pt }
   | { kind: 'group'; name: string; last: Pt }
   | { kind: 'marquee'; start: Pt; now: Pt; base: string[] }
   | { kind: 'link'; table: string; col: string; now: Pt };
@@ -96,6 +97,7 @@ export class Workbench {
   private extraLayout: Partial<SidecarLayout> = {};
 
   private selection: string[] = [];
+  private selectedEnum: string | null = null;
   private selectedRef: { from_table: string; from_col: string; to_table: string; to_col: string } | null = null;
   private top: string | null = null;
   private tool: 'select' | 'hand' = 'select';
@@ -402,8 +404,24 @@ export class Workbench {
       if (patch.created_table) {
         this.pendingNew = patch.created_table;
         this.selection = [patch.created_table];
+        this.selectedEnum = null;
         this.prefs.inspector = true;
         this.focusCol = null;
+      }
+      if (patch.renamed_enum) {
+        const [o, n] = patch.renamed_enum;
+        const ok = `enum:${o}`, nk = `enum:${n}`;
+        if (this.positions[ok]) {
+          this.positions[nk] = this.positions[ok];
+          delete this.positions[ok];
+        }
+        if (this.selectedEnum === o) this.selectedEnum = n;
+      }
+      if (patch.created_enum) {
+        this.selectedEnum = patch.created_enum;
+        this.selection = [];
+        this.selectedRef = null;
+        this.prefs.inspector = true;
       }
       if (patch.created_column) {
         this.selection = [patch.created_column[0]];
@@ -630,6 +648,24 @@ export class Workbench {
         <div class="rows">${rows}</div>
         <div class="plus" data-addcol="${esc(t.name)}" title="Add column">${ICON('Plus', 14)}</div></div>`;
     }
+    // enum cards
+    for (const ev of sc.enums || []) {
+      const p = this.positions[`enum:${ev.name}`] || { x: ev.x, y: ev.y };
+      const on = this.selectedEnum === ev.name;
+      const referencedBySelected = !on && ev.referenced_by.some((tb) => sel.has(tb));
+      const valRows = ev.values.length
+        ? ev.values
+            .map(
+              (v) =>
+                `<div class="row"><div class="rail14"></div><div class="cn">${esc(v)}</div></div>`
+            )
+            .join('')
+        : `<div class="row"><div class="rail14"></div><div class="cn" style="color:var(--faint)">(empty)</div></div>`;
+      html += `<div class="card enum-card ${on ? 'sel' : ''}" data-enum="${esc(ev.name)}" style="left:${p.x}px;top:${p.y}px;height:${ev.h}px;${referencedBySelected ? 'border-color:var(--accent);box-shadow:0 0 0 1px var(--accent);' : ''}">
+        <div class="head"><div class="ic" style="color:var(--accent)">${ICON('Braces', 14)}</div>
+        <div class="nm">${esc(ev.name)}</div><div class="cnt" style="font-size:10px;font-weight:600;color:var(--accent)">ENUM</div></div>
+        <div class="rows">${valRows}</div></div>`;
+    }
     w.innerHTML = html;
     // marquee
     const m = this.els['marquee'];
@@ -692,6 +728,7 @@ export class Workbench {
       ${this.btn('ToolHand', 'Hand', 'Hand: pan view (H)', this.tool === 'hand')}
       <div class="sep"></div>
       ${this.btn('NewTable', 'Plus', 'New Table (T)')}
+      ${this.btn('NewEnum', 'Braces', 'New Enum')}
       <div class="sep"></div>
       ${this.btn('Relayout', 'LayoutGrid', 'Auto-Layout (Ctrl+L)')}
       ${this.btn('FitView', 'Scan', 'Fit to Screen (Shift+1)')}
@@ -709,6 +746,7 @@ export class Workbench {
     if (d?.kind === 'group') return `Moving group ${d.name}`;
     if (d?.kind === 'link') return `Relation from ${d.table}.${d.col}: drop on target table`;
     if (d?.kind === 'marquee') return 'Release to select tables inside rectangle';
+    if (this.selectedEnum) return 'Enum selected · Edit values in Inspector · Delete removes Enum · Esc clears selection';
     if (this.selectedRef) return 'Relation selected · Delete removes line and FK column · Esc clears selection';
     if (this.selection.length > 1) return `${this.selection.length} tables selected · Ctrl+G groups`;
     if (this.selection.length === 1) return `${this.selection[0]} · F2 renames · Del deletes`;
@@ -757,10 +795,17 @@ export class Workbench {
       const loose = this.schema.tables.filter((t) => !grouped.has(t.name));
       if (grouped.size && loose.length) body += `<div class="gh" style="color:var(--faint)">No group</div>`;
       for (const t of loose) body += row(t.name, t.columns.length);
+      const enumsHtml = (this.scene?.enums || [])
+        .map(
+          (ev) => `<div class="srow ${this.selectedEnum === ev.name ? 'on' : ''}" data-act="focus-enum" data-enum="${esc(ev.name)}">
+          <span style="color:var(--accent)">${ICON('Braces', 14)}</span><span class="g">${esc(ev.name)}</span><span class="c">${ev.values.length}</span></div>`
+        )
+        .join('');
       const refs = this.schema.refs
         .map((r) => `<div class="rel"><span style="color:var(--faint)">${ICON('Link2', 12)}</span><span class="tx">${esc(r.from.table)} → ${esc(r.to.table)}</span></div>`)
         .join('');
       el.innerHTML = `<div class="sec"><span>TABLES</span><span>${this.schema.tables.length}</span></div>${body}
+        ${enumsHtml ? `<div class="sec"><span>ENUMS</span><span>${(this.scene?.enums || []).length}</span></div>${enumsHtml}` : ''}
         <div class="sec"><span>RELATIONS</span><span>${this.schema.refs.length}</span></div>${refs}`;
     } else {
       const items = this.diags
@@ -780,7 +825,7 @@ export class Workbench {
   private renderInspector(): void {
     const el = this.els['inspector'];
     const sel = this.selection;
-    const show = this.prefs.inspector && !(this.prefs.autoHide && sel.length === 0 && !this.selectedRef);
+    const show = this.prefs.inspector && !(this.prefs.autoHide && sel.length === 0 && !this.selectedRef && !this.selectedEnum);
     el.style.display = show ? 'block' : 'none';
     if (!show) return;
     // não recria o inspector enquanto o usuário digita num campo dele
@@ -795,6 +840,37 @@ export class Workbench {
       return;
     }
     const t = sel.length === 1 ? this.schema.tables.find((x) => x.name === sel[0]) : undefined;
+    if (!t && this.selectedEnum) {
+      const ev = this.scene?.enums?.find((x) => x.name === this.selectedEnum);
+      if (ev) {
+        const valsHtml = ev.values
+          .map(
+            (v, idx) => `<div class="icr" style="gap:4px">
+            <input style="flex:1" data-edit="enumval" data-enum="${esc(ev.name)}" data-orig="${esc(v)}" value="${esc(v)}">
+            <button class="ib" style="width:22px;height:22px" data-act="enum-move" data-enum="${esc(ev.name)}" data-val="${esc(v)}" data-up="1" ${idx === 0 ? 'disabled' : ''} title="Move up">↑</button>
+            <button class="ib" style="width:22px;height:22px" data-act="enum-move" data-enum="${esc(ev.name)}" data-val="${esc(v)}" data-up="0" ${idx + 1 === ev.values.length ? 'disabled' : ''} title="Move down">↓</button>
+            <button class="ib" style="width:22px;height:22px" data-act="enum-delval" data-enum="${esc(ev.name)}" data-val="${esc(v)}" title="Remove value">${ICON('Trash', 12)}</button>
+          </div>`
+          )
+          .join('');
+        const refsHtml = ev.referenced_by.length
+          ? ev.referenced_by
+              .map(
+                (tb) => `<div class="rel" data-act="focus-table" data-table="${esc(tb)}" style="cursor:pointer"><span style="color:var(--accent)">${ICON('Table2', 12)}</span><span class="tx">${esc(tb)}</span></div>`
+              )
+              .join('')
+          : `<div class="pad" style="padding:4px 12px;font-size:12px">Not referenced by any column</div>`;
+        el.innerHTML = `<div class="ihead"><span class="eb">ENUM</span>
+          <input id="insp-name" data-edit="enum" data-enum="${esc(ev.name)}" data-orig="${esc(ev.name)}" value="${esc(ev.name)}">
+          <span class="su">${ev.values.length} values</span></div>
+          <div class="sec"><span>VALUES</span><button class="ib" style="width:22px;height:22px" data-act="enum-addval" data-enum="${esc(ev.name)}" title="Add value">${ICON('Plus', 13)}</button></div>
+          ${valsHtml}
+          <div class="sec"><span>REFERENCED BY</span><span>${ev.referenced_by.length}</span></div>
+          ${refsHtml}
+          <div style="padding:12px"><button class="btn" style="width:100%;justify-content:center;color:var(--err)" data-act="enum-del" data-enum="${esc(ev.name)}">${ICON('Trash', 14)} Delete enum</button></div>`;
+        return;
+      }
+    }
     if (!t && this.selectedRef) {
       const sr = this.selectedRef;
       const r = this.schema.refs.find(
@@ -978,7 +1054,7 @@ export class Workbench {
       }
       case 'ToolSelect': this.tool = 'select'; break;
       case 'ToolHand': this.tool = 'hand'; break;
-      case 'Deselect': this.selection = []; this.selectedRef = null; break;
+      case 'Deselect': this.selection = []; this.selectedRef = null; this.selectedEnum = null; break;
       case 'ToggleCardTransparency': this.prefs.translucent = !this.prefs.translucent; break;
       case 'GroupSelection':
         if (this.selection.length) this.dispatch({ action: 'group_tables', payload: { tables: [...this.selection] } });
@@ -987,8 +1063,12 @@ export class Workbench {
         if (this.selection.length) this.dispatch({ action: 'ungroup_tables', payload: { tables: [...this.selection] } });
         return;
       case 'NewTable': this.dispatch({ action: 'add_table', payload: {} }); return;
+      case 'NewEnum': this.dispatch({ action: 'add_enum', payload: {} }); return;
       case 'DeleteSelection':
-        if (this.selectedRef) {
+        if (this.selectedEnum) {
+          this.dispatch({ action: 'delete_enum', payload: { name: this.selectedEnum } });
+          this.selectedEnum = null;
+        } else if (this.selectedRef) {
           this.dispatch({ action: 'delete_ref', payload: { ...this.selectedRef } });
           this.selectedRef = null;
         } else if (this.selection.length) {
@@ -997,7 +1077,7 @@ export class Workbench {
         }
         break;
       case 'RenameSelected': {
-        if (this.selection.length !== 1) return;
+        if (this.selection.length !== 1 && !this.selectedEnum) return;
         this.prefs.inspector = true;
         this.renderChrome();
         const i = this.els['inspector'].querySelector('#insp-name') as HTMLInputElement | null;
@@ -1021,6 +1101,11 @@ export class Workbench {
       case 'ExportPng': this.doExport('png'); return;
       case 'ExportJpeg': this.doExport('jpeg'); return;
       case 'ExportMermaid': this.doExport('mermaid'); return;
+      case 'ExportSqlPostgres': this.doExportSql('postgres'); return;
+      case 'ExportSqlMysql': this.doExportSql('mysql'); return;
+      case 'ExportSqlSqlite': this.doExportSql('sqlite'); return;
+      case 'ExportSqlSqlServer': this.doExportSql('sqlserver'); return;
+      case 'ExportSqlOracle': this.doExportSql('oracle'); return;
     }
     this.savePrefs();
     this.scheduleRender();
@@ -1062,6 +1147,18 @@ export class Workbench {
       await this.transport.exportFile(kind === 'png' ? 'diagram.png' : 'diagram.jpg', b64, true);
     } catch (e) {
       this.toast('Export failed: ' + e);
+    }
+  }
+
+  private async doExportSql(
+    dialect: 'postgres' | 'mysql' | 'sqlite' | 'sqlserver' | 'oracle'
+  ): Promise<void> {
+    if (!this.transport.exportFile || !this.wasm?.export_sql_ddl) return;
+    try {
+      const sql = this.wasm.export_sql_ddl(this.source, dialect) as string;
+      await this.transport.exportFile(`schema.${dialect}.sql`, sql, false);
+    } catch (e) {
+      this.toast('SQL export failed: ' + e);
     }
   }
 
@@ -1110,7 +1207,13 @@ export class Workbench {
       <button class="mi" data-act="ExportPng"><span class="ck"></span>PNG</button>
       <button class="mi" data-act="ExportJpeg"><span class="ck"></span>JPEG</button>
       <button class="mi" data-act="ExportSvg"><span class="ck"></span>Vector SVG</button>
-      <button class="mi" data-act="ExportMermaid"><span class="ck"></span>Mermaid erDiagram</button>`);
+      <button class="mi" data-act="ExportMermaid"><span class="ck"></span>Mermaid erDiagram</button><hr>
+      <div class="lb">SQL DDL</div>
+      <button class="mi" data-act="ExportSqlPostgres"><span class="ck"></span>PostgreSQL (.sql)</button>
+      <button class="mi" data-act="ExportSqlMysql"><span class="ck"></span>MySQL (.sql)</button>
+      <button class="mi" data-act="ExportSqlSqlite"><span class="ck"></span>SQLite (.sql)</button>
+      <button class="mi" data-act="ExportSqlSqlServer"><span class="ck"></span>SQL Server (.sql)</button>
+      <button class="mi" data-act="ExportSqlOracle"><span class="ck"></span>Oracle (.sql)</button>`);
   }
 
   private modal(inner: string): HTMLElement {
@@ -1240,7 +1343,35 @@ export class Workbench {
       case 'set-mode': this.prefs.mode = d.mode as Mode; break;
       case 'set-ui': this.prefs.uiScale = parseFloat(d.ui || '1'); break;
       case 'open-file': this.transport.openFile?.(d.path!); return;
-      case 'focus-table': this.focusTable(d.table!); return;
+      case 'focus-table': this.selectedEnum = null; this.focusTable(d.table!); return;
+      case 'focus-enum': {
+        this.selection = [];
+        this.selectedRef = null;
+        this.selectedEnum = d.enum!;
+        const p = this.positions[`enum:${d.enum!}`];
+        if (p) {
+          const r = this.els['surface'].getBoundingClientRect();
+          this.pan = { x: r.width / 2 - (p.x + CARD_W / 2) * this.zoom, y: r.height / 2 - (p.y + 60) * this.zoom };
+        }
+        this.scheduleRender();
+        return;
+      }
+      case 'enum-addval':
+        this.dispatch({ action: 'add_enum_value', payload: { enum_name: d.enum! } });
+        return;
+      case 'enum-delval':
+        this.dispatch({ action: 'delete_enum_value', payload: { enum_name: d.enum!, value: d.val! } });
+        return;
+      case 'enum-move':
+        this.dispatch({
+          action: 'reorder_enum_value',
+          payload: { enum_name: d.enum!, value: d.val!, up: d.up === '1' },
+        });
+        return;
+      case 'enum-del':
+        this.dispatch({ action: 'delete_enum', payload: { name: d.enum! } });
+        this.selectedEnum = null;
+        return;
       case 'goto-diag': {
         const g = this.diags[parseInt(d.i!, 10)];
         if (!g) return;
@@ -1351,6 +1482,17 @@ export class Workbench {
       return;
     }
     if (!val) { t.value = orig; return; }
+    if (kind === 'enum') {
+      this.dispatch({ action: 'rename_enum', payload: { old_name: t.dataset.enum!, new_name: val } });
+      return;
+    }
+    if (kind === 'enumval') {
+      this.dispatch({
+        action: 'rename_enum_value',
+        payload: { enum_name: t.dataset.enum!, old_value: orig, new_value: val },
+      });
+      return;
+    }
     const table = t.dataset.table!;
     if (kind === 'table') this.dispatch({ action: 'rename_table', payload: { old_name: table, new_name: val } });
     else if (kind === 'colname') this.dispatch({ action: 'rename_column', payload: { table, old_name: t.dataset.col!, new_name: val } });
@@ -1431,8 +1573,22 @@ export class Workbench {
       return;
     }
     const card = t.closest('.card') as HTMLElement | null;
+    if (card && card.dataset.enum) {
+      this.selectedRef = null;
+      this.selection = [];
+      const enumName = card.dataset.enum;
+      this.selectedEnum = enumName;
+      if (e.detail >= 2) {
+        this.runAction('RenameSelected');
+        return;
+      }
+      this.drag = { kind: 'enum', name: enumName, last: wp };
+      this.scheduleRender();
+      return;
+    }
     if (card) {
       this.selectedRef = null;
+      this.selectedEnum = null;
       const name = card.dataset.table!;
       if (e.shiftKey) {
         this.selection = this.selection.includes(name) ? this.selection.filter((n) => n !== name) : [...this.selection, name];
@@ -1450,6 +1606,7 @@ export class Workbench {
       return;
     }
     this.selectedRef = null;
+    this.selectedEnum = null;
     const base = e.shiftKey ? [...this.selection] : [];
     this.selection = base;
     this.drag = { kind: 'marquee', start: wp, now: wp, base };
@@ -1476,6 +1633,12 @@ export class Workbench {
         if (p) { p.x += dx; p.y += dy; }
       }
       this.recomputeEdges();
+    } else if (d.kind === 'enum') {
+      const dx = wp.x - d.last.x, dy = wp.y - d.last.y;
+      d.last = wp;
+      const key = `enum:${d.name}`;
+      const p = this.positions[key];
+      if (p) { p.x += dx; p.y += dy; }
     } else if (d.kind === 'group') {
       const dx = wp.x - d.last.x, dy = wp.y - d.last.y;
       d.last = wp;

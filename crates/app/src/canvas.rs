@@ -36,6 +36,7 @@ pub enum DiagramEvent {
     AddColumn(String),
     Rename(String),
     Select(String),
+    SelectEnum(String),
 }
 
 impl EventEmitter<DiagramEvent> for Diagram {}
@@ -60,6 +61,11 @@ enum Drag {
         name: String,
         last: (f32, f32),
     },
+    /// arrasta um cartão de Enum; `last` em coordenadas de mundo
+    Enum {
+        name: String,
+        last: (f32, f32),
+    },
     Pan {
         last: Point<Pixels>,
     },
@@ -79,6 +85,7 @@ pub struct Diagram {
     /// Último cartão tocado; desenhado por cima dos demais.
     top: Option<String>,
     selected: Option<String>,
+    selected_enum: Option<String>,
     /// relação selecionada no canvas `((from_table, from_col), (to_table, to_col))`
     selected_ref: Option<RefPair>,
     /// seleção extra (Shift+clique); a seleção total é `selected` + `multi`
@@ -106,6 +113,7 @@ impl Diagram {
             drag: None,
             top: None,
             selected: None,
+            selected_enum: None,
             selected_ref: None,
             multi: Vec::new(),
             tool: Tool::Select,
@@ -131,6 +139,15 @@ impl Diagram {
                 .copied()
                 .unwrap_or((0., 0.));
             self.pos.insert(t.name.clone(), p);
+        }
+        for e in &schema.enums {
+            let key = format!("enum:{}", e.name);
+            let p = old
+                .get(&key)
+                .or_else(|| auto.get(&key))
+                .copied()
+                .unwrap_or((0., 0.));
+            self.pos.insert(key, p);
         }
         self.schema = schema;
     }
@@ -183,7 +200,26 @@ impl Diagram {
         let (cx_, cy_) = (x + CARD_W / 2., y + card_h(t.columns.len()) / 2.);
         self.pan = (w / 2. - cx_ * self.zoom, h / 2. - cy_ * self.zoom);
         self.selected = Some(name.to_string());
+        self.selected_enum = None;
+        self.selected_ref = None;
         self.top = Some(name.to_string());
+    }
+
+    /// Seleciona o enum e centraliza a vista nele.
+    pub fn focus_enum(&mut self, name: &str) {
+        let Some(en) = self.schema.enums.iter().find(|e| e.name == name) else {
+            return;
+        };
+        let key = format!("enum:{name}");
+        let (x, y) = self.pos.get(&key).copied().unwrap_or((0., 0.));
+        let (w, h) = (f32::from(self.size.width), f32::from(self.size.height));
+        let eh = HEADER_H + (en.values.len().min(6) as f32) * 20. + 16.;
+        let (cx_, cy_) = (x + 100., y + eh / 2.);
+        self.pan = (w / 2. - cx_ * self.zoom, h / 2. - cy_ * self.zoom);
+        self.selected = None;
+        self.multi.clear();
+        self.selected_ref = None;
+        self.selected_enum = Some(name.to_string());
     }
 
     /// Frase curta para a barra de status: o que o usuário pode fazer agora.
@@ -199,6 +235,7 @@ impl Diagram {
             (Some(Drag::Marquee { .. }), _) => "Selecting: release to select touched tables".into(),
             (Some(Drag::Pan { .. }), _) => "Panning view".into(),
             (Some(Drag::Group { name, .. }), _) => format!("Moving group {name}"),
+            (Some(Drag::Enum { name, .. }), _) => format!("Moving enum {name}"),
             (None, Tool::Hand) => "Hand: drag to pan view · V returns to Select".into(),
             (None, Tool::Select) if !self.multi.is_empty() => {
                 format!("{} tables selected · Ctrl+G groups", self.multi.len() + 1)
@@ -228,6 +265,21 @@ impl Diagram {
     pub fn select(&mut self, name: &str) {
         if self.schema.table(name).is_some() {
             self.selected = Some(name.to_string());
+            self.selected_enum = None;
+            self.selected_ref = None;
+            self.multi.clear();
+        }
+    }
+
+    pub fn selected_enum(&self) -> Option<&schema::EnumDef> {
+        let name = self.selected_enum.as_deref()?;
+        self.schema.enums.iter().find(|e| e.name == name)
+    }
+
+    pub fn select_enum(&mut self, name: &str) {
+        if self.schema.enums.iter().any(|e| e.name == name) {
+            self.selected_enum = Some(name.to_string());
+            self.selected = None;
             self.selected_ref = None;
             self.multi.clear();
         }
@@ -240,6 +292,7 @@ impl Diagram {
     pub fn deselect(&mut self) {
         self.multi.clear();
         self.selected = None;
+        self.selected_enum = None;
         self.selected_ref = None;
     }
 
@@ -391,8 +444,35 @@ impl Diagram {
         );
         self.pos.insert(name.to_string(), at);
         self.selected = Some(name.to_string());
+        self.selected_enum = None;
+        self.selected_ref = None;
         self.multi.clear();
         self.top = Some(name.to_string());
+    }
+
+    /// Posiciona um enum recém-criado no centro da vista e o seleciona.
+    pub fn place_new_enum(&mut self, name: &str) {
+        let (w, h) = (f32::from(self.size.width), f32::from(self.size.height));
+        let at = (
+            (w / 2. - self.pan.0) / self.zoom - 100.,
+            (h / 2. - self.pan.1) / self.zoom - 50.,
+        );
+        self.pos.insert(format!("enum:{name}"), at);
+        self.selected = None;
+        self.multi.clear();
+        self.selected_ref = None;
+        self.selected_enum = Some(name.to_string());
+    }
+
+    /// Mantém posição e seleção quando um enum é renomeado.
+    pub fn rename_enum(&mut self, old: &str, new: &str) {
+        let old_key = format!("enum:{old}");
+        if let Some(p) = self.pos.remove(&old_key) {
+            self.pos.insert(format!("enum:{new}"), p);
+        }
+        if self.selected_enum.as_deref() == Some(old) {
+            self.selected_enum = Some(new.to_string());
+        }
     }
 
     /// Mantém posição e seleção quando a tabela é renomeada.
@@ -479,12 +559,26 @@ fn auto_layout(schema: &Schema) -> HashMap<String, (f32, f32)> {
         c
     });
     let pos = layout::compute_diagram_positions(&col_counts, &edges, clusters.as_deref());
-    schema
+    let mut map: HashMap<String, (f32, f32)> = schema
         .tables
         .iter()
         .zip(pos)
         .map(|(t, p)| (t.name.clone(), (p.x, p.y)))
-        .collect()
+        .collect();
+    let max_y = map
+        .values()
+        .zip(&schema.tables)
+        .map(|((_, y), t)| y + card_h(t.columns.len()))
+        .fold(0.0_f32, f32::max);
+    let enum_y = if schema.tables.is_empty() {
+        0.0
+    } else {
+        max_y + 64.0
+    };
+    for (i, en) in schema.enums.iter().enumerate() {
+        map.insert(format!("enum:{}", en.name), (i as f32 * 232.0, enum_y));
+    }
+    map
 }
 
 /// O canvas renderiza sozinho: arrastar/zoom não redesenha a janela inteira.
@@ -752,6 +846,14 @@ impl Diagram {
                                 p.0 += dx;
                                 p.1 += dy;
                             }
+                        }
+                    }
+                    Some(Drag::Enum { name, last }) => {
+                        let (dx, dy) = (now.0 - last.0, now.1 - last.1);
+                        *last = now;
+                        if let Some(p) = this.pos.get_mut(&format!("enum:{name}")) {
+                            p.0 += dx;
+                            p.1 += dy;
                         }
                     }
                     Some(Drag::Marquee { now: n, .. } | Drag::Link { now: n, .. }) => *n = now,
@@ -1152,6 +1254,8 @@ impl Diagram {
                                 this.selected = Some(name.clone());
                                 this.multi.clear();
                             }
+                            this.selected_enum = None;
+                            this.selected_ref = None;
                             cx.emit(DiagramEvent::Select(name.clone()));
                             let _ = grab;
                             this.drag = Some(Drag::Cards {
@@ -1251,6 +1355,142 @@ impl Diagram {
                             )
                     }),
             );
+        }
+        let selected_table = self.selected().cloned();
+        for en in &self.schema.enums {
+            let key = format!("enum:{}", en.name);
+            let Some(&(x, y)) = self.pos.get(&key) else {
+                continue;
+            };
+            let is_sel = self.selected_enum.as_deref() == Some(en.name.as_str());
+            let is_ref = selected_table.as_ref().is_some_and(|t| {
+                t.columns
+                    .iter()
+                    .any(|c| c.ty.rsplit('.').next().is_some_and(|ty| ty == en.name))
+            });
+            let en_name = en.name.clone();
+            let shown = en.values.iter().take(6);
+            let overflow = en.values.len().saturating_sub(6);
+            let card = div()
+                .id(SharedString::from(format!("enum-card-{}", en.name)))
+                .absolute()
+                .left(px(x * z + pan_x))
+                .top(px(y * z + pan_y))
+                .w(s(200.))
+                .rounded(RADIUS_CARD * z)
+                .border_1()
+                .border_color(if is_sel || is_ref { g.accent } else { g.edge })
+                .shadow({
+                    let mut sh = vec![card_shadow(g.mode)];
+                    if is_sel || is_ref {
+                        sh.push(BoxShadow {
+                            color: g.accent.opacity(if is_sel { 0.28 } else { 0.16 }),
+                            offset: point(px(0.), px(0.)),
+                            blur_radius: px(0.),
+                            spread_radius: px(if is_sel { 3. } else { 2. }),
+                            inset: false,
+                        });
+                    }
+                    sh
+                })
+                .bg(if self.translucent_cards {
+                    g.card.opacity(0.55)
+                } else {
+                    g.card
+                })
+                .when(self.tool == Tool::Select, gpui_kit::Styled::cursor_move)
+                .on_mouse_down(
+                    MouseButton::Left,
+                    cx.listener(move |this, e: &MouseDownEvent, window, cx| {
+                        if this.tool == Tool::Hand || this.space {
+                            return;
+                        }
+                        window.focus(&this.focus, cx);
+                        this.select_enum(&en_name);
+                        cx.emit(DiagramEvent::SelectEnum(en_name.clone()));
+                        this.drag = Some(Drag::Enum {
+                            name: en_name.clone(),
+                            last: this.to_world(e.position),
+                        });
+                        cx.stop_propagation();
+                        cx.notify();
+                    }),
+                )
+                .child(
+                    div()
+                        .h(s(HEADER_H))
+                        .px(s(10.))
+                        .flex()
+                        .items_center()
+                        .gap(s(6.))
+                        .rounded_t(RADIUS_CARD * z)
+                        .border_b_1()
+                        .border_color(g.edge_soft)
+                        .bg(g.accent.opacity(0.08))
+                        .child(
+                            div()
+                                .px(s(5.))
+                                .py(s(1.))
+                                .rounded(px(4.))
+                                .bg(g.accent.opacity(0.18))
+                                .text_size(s(9.))
+                                .font_weight(FontWeight::BOLD)
+                                .text_color(g.accent)
+                                .child("ENUM"),
+                        )
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w_0()
+                                .truncate()
+                                .text_size(s(12.))
+                                .font_weight(FontWeight::SEMIBOLD)
+                                .text_color(g.text)
+                                .child(en.name.clone()),
+                        ),
+                )
+                .child(
+                    div()
+                        .py(s(4.))
+                        .px(s(10.))
+                        .flex()
+                        .flex_col()
+                        .gap(s(2.))
+                        .children(shown.map(|v| {
+                            div()
+                                .h(s(18.))
+                                .flex()
+                                .items_center()
+                                .gap(s(6.))
+                                .text_size(s(11.))
+                                .text_color(g.text_muted)
+                                .child(
+                                    div()
+                                        .w(s(4.))
+                                        .h(s(4.))
+                                        .rounded_full()
+                                        .bg(g.accent.opacity(0.6)),
+                                )
+                                .child(div().truncate().child(v.name.clone()))
+                        }))
+                        .when(en.values.is_empty(), |d| {
+                            d.child(
+                                div()
+                                    .text_size(s(10.))
+                                    .text_color(g.text_faint)
+                                    .child("(no values)"),
+                            )
+                        })
+                        .when(overflow > 0, |d| {
+                            d.child(
+                                div()
+                                    .text_size(s(10.))
+                                    .text_color(g.text_faint)
+                                    .child(format!("+{overflow} more")),
+                            )
+                        }),
+                );
+            root = root.child(card);
         }
         if let Some(Drag::Marquee { start, now }) = &self.drag {
             let (x0, y0) = (start.0.min(now.0), start.1.min(now.1));

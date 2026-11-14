@@ -29,6 +29,16 @@ export function compute_layout(source: string, _params_js: any): any;
 export function compute_scene(source: string, positions_js: any): any;
 
 /**
+ * Exports DBML `source` to SQL DDL for the requested `dialect`
+ * (`postgres`, `mysql`, `sqlite`, `sqlserver`/`mssql`, `oracle`).
+ *
+ * # Errors
+ *
+ * Returns an error if `dialect` is not recognized.
+ */
+export function export_sql_ddl(source: string, dialect: string): string;
+
+/**
  * Executa a formatação canônica de código do documento DBML.
  */
 export function format_dbml(source: string): string;
@@ -58,6 +68,7 @@ export interface InitOutput {
     readonly apply_command: (a: number, b: number, c: any) => [number, number, number];
     readonly compute_layout: (a: number, b: number, c: any) => [number, number, number];
     readonly compute_scene: (a: number, b: number, c: any) => [number, number, number];
+    readonly export_sql_ddl: (a: number, b: number, c: number, d: number) => [number, number, number, number];
     readonly format_dbml: (a: number, b: number) => [number, number];
     readonly parse_and_analyze: (a: number, b: number) => [number, number, number];
     readonly swap_dbml_lines: (a: number, b: number, c: number, d: number) => [number, number, number];

@@ -33,6 +33,7 @@ actions!(
         ToggleCardTransparency,
         GroupSelection,
         NewTable,
+        NewEnum,
         DeleteSelection,
         RenameSelected,
         ResetPanels,
@@ -44,6 +45,11 @@ actions!(
         ZoomOutUi,
         ResetUiZoom,
         ToggleAutoCollapseInspector,
+        ExportSqlPostgres,
+        ExportSqlMysql,
+        ExportSqlSqlite,
+        ExportSqlSqlServer,
+        ExportSqlOracle,
     ]
 );
 
@@ -108,6 +114,7 @@ pub fn catalog() -> Vec<Entry> {
         e("ctrl--", ZoomOut, "Canvas", "Zoom Out"),
         e("escape", Deselect, "Canvas", "Clear Selection"),
         e("t", NewTable, "Canvas", "New Table"),
+        e("e", NewEnum, "Canvas", "New Enum"),
         e(
             "delete",
             DeleteSelection,
@@ -147,5 +154,10 @@ pub fn catalog() -> Vec<Entry> {
         e("alt-down", MoveLineDown, "Editor", "Move Line Down"),
         e("ctrl-k", OpenPalette, "Help", "Command Palette"),
         e("ctrl-/", ShowShortcuts, "Help", "Keyboard Shortcuts"),
+        e("", ExportSqlPostgres, "Export", "Export SQL (PostgreSQL)"),
+        e("", ExportSqlMysql, "Export", "Export SQL (MySQL)"),
+        e("", ExportSqlSqlite, "Export", "Export SQL (SQLite)"),
+        e("", ExportSqlSqlServer, "Export", "Export SQL (SQL Server)"),
+        e("", ExportSqlOracle, "Export", "Export SQL (Oracle)"),
     ]
 }
