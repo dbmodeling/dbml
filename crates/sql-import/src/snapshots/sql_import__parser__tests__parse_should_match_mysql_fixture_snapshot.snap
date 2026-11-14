@@ -1,0 +1,208 @@
+---
+source: crates/sql-import/src/parser.rs
+expression: "ir(MYSQL, SqlDialect::Mysql)"
+---
+Ir {
+    tables: [
+        Table {
+            name: Name {
+                schema: None,
+                name: "users",
+            },
+            columns: [
+                Column {
+                    name: "id",
+                    ty: "int",
+                    not_null: true,
+                    default: None,
+                    unique: false,
+                    primary_key: false,
+                    auto_increment: true,
+                    references: None,
+                    enum_values: None,
+                    comment: None,
+                },
+                Column {
+                    name: "email",
+                    ty: "varchar(255)",
+                    not_null: true,
+                    default: None,
+                    unique: false,
+                    primary_key: false,
+                    auto_increment: false,
+                    references: None,
+                    enum_values: None,
+                    comment: Some(
+                        "Login e-mail",
+                    ),
+                },
+                Column {
+                    name: "role",
+                    ty: "enum",
+                    not_null: true,
+                    default: Some(
+                        Str(
+                            "user",
+                        ),
+                    ),
+                    unique: false,
+                    primary_key: false,
+                    auto_increment: false,
+                    references: None,
+                    enum_values: Some(
+                        [
+                            "admin",
+                            "user",
+                        ],
+                    ),
+                    comment: None,
+                },
+                Column {
+                    name: "active",
+                    ty: "tinyint(1)",
+                    not_null: true,
+                    default: Some(
+                        Str(
+                            "1",
+                        ),
+                    ),
+                    unique: false,
+                    primary_key: false,
+                    auto_increment: false,
+                    references: None,
+                    enum_values: None,
+                    comment: None,
+                },
+                Column {
+                    name: "updated_at",
+                    ty: "timestamp",
+                    not_null: true,
+                    default: Some(
+                        Raw(
+                            "CURRENT_TIMESTAMP",
+                        ),
+                    ),
+                    unique: false,
+                    primary_key: false,
+                    auto_increment: false,
+                    references: None,
+                    enum_values: None,
+                    comment: None,
+                },
+            ],
+            constraints: [
+                PrimaryKey(
+                    [
+                        "id",
+                    ],
+                ),
+                Unique {
+                    name: Some(
+                        "uq_email",
+                    ),
+                    cols: [
+                        "email",
+                    ],
+                },
+            ],
+            comment: Some(
+                "Users",
+            ),
+            line: 3,
+            col: 14,
+        },
+        Table {
+            name: Name {
+                schema: None,
+                name: "posts",
+            },
+            columns: [
+                Column {
+                    name: "id",
+                    ty: "int",
+                    not_null: true,
+                    default: None,
+                    unique: false,
+                    primary_key: false,
+                    auto_increment: true,
+                    references: None,
+                    enum_values: None,
+                    comment: None,
+                },
+                Column {
+                    name: "user_id",
+                    ty: "int",
+                    not_null: true,
+                    default: None,
+                    unique: false,
+                    primary_key: false,
+                    auto_increment: false,
+                    references: None,
+                    enum_values: None,
+                    comment: None,
+                },
+            ],
+            constraints: [
+                PrimaryKey(
+                    [
+                        "id",
+                    ],
+                ),
+                ForeignKey(
+                    Fk {
+                        name: Some(
+                            "fk_posts_user",
+                        ),
+                        from_cols: [
+                            "user_id",
+                        ],
+                        to_table: Name {
+                            schema: None,
+                            name: "users",
+                        },
+                        to_cols: [
+                            "id",
+                        ],
+                        on_delete: Some(
+                            SetNull,
+                        ),
+                        on_update: Some(
+                            Cascade,
+                        ),
+                        line: 18,
+                        col: 65,
+                    },
+                ),
+            ],
+            comment: None,
+            line: 14,
+            col: 14,
+        },
+    ],
+    enums: [],
+    indexes: [
+        Index {
+            name: Some(
+                "idx_role",
+            ),
+            table: Name {
+                schema: None,
+                name: "users",
+            },
+            cols: [
+                Column(
+                    "role",
+                ),
+                Column(
+                    "email",
+                ),
+            ],
+            unique: false,
+            line: 11,
+            col: 3,
+        },
+    ],
+    alter_constraints: [],
+    comments: [],
+    warnings: [],
+}

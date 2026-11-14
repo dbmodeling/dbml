@@ -115,6 +115,31 @@ export function format_dbml(source) {
 }
 
 /**
+ * Imports SQL DDL written for `dialect` (`postgres`, `mysql`, `sqlite`) into DBML.
+ *
+ * Returns `{ dbml, warnings: [{ line, column, message }] }`. Unsupported or malformed
+ * statements never fail the call; they are reported in `warnings`.
+ *
+ * # Errors
+ *
+ * Returns an error if `dialect` is not recognized or serialization fails.
+ * @param {string} sql
+ * @param {string} dialect
+ * @returns {any}
+ */
+export function import_sql_ddl(sql, dialect) {
+    const ptr0 = passStringToWasm0(sql, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+    const len0 = WASM_VECTOR_LEN;
+    const ptr1 = passStringToWasm0(dialect, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+    const len1 = WASM_VECTOR_LEN;
+    const ret = wasm.import_sql_ddl(ptr0, len0, ptr1, len1);
+    if (ret[2]) {
+        throw takeFromExternrefTable0(ret[1]);
+    }
+    return takeFromExternrefTable0(ret[0]);
+}
+
+/**
  * Analisa o código-fonte DBML e devolve a projeção semântica (`Schema`), diagnósticos e `Enum`s.
  *
  * # Errors
@@ -158,6 +183,10 @@ function __wbg_get_imports() {
         __proto__: null,
         __wbg_Error_30c8987f7c2ed4e2: function(arg0, arg1) {
             const ret = Error(getStringFromWasm0(arg0, arg1));
+            return ret;
+        },
+        __wbg_Number_14af1003b8dd5ead: function(arg0) {
+            const ret = Number(arg0);
             return ret;
         },
         __wbg_String_8564e559799eccda: function(arg0, arg1) {

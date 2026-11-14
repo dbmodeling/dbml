@@ -95,6 +95,12 @@ Starts a local HTTP + WebSocket server with live reload and two-way persistence 
 ```bash
 cargo run -p dbml-cli -- path/to/schema.dbml
 # Options: --port 3000 --no-open --readonly --theme dark
+
+# Import SQL DDL (postgres, mysql, sqlite) into DBML:
+cargo run -p dbml-cli -- import schema.sql --dialect postgres -o schema.dbml
+
+# Export DBML to SQL DDL (postgres, mysql, sqlite, sqlserver, oracle):
+cargo run -p dbml-cli -- export schema.dbml --format sql --dialect postgres -o schema.sql
 ```
 
 ### 4. VS Code Extension (`vscode-extension/`)

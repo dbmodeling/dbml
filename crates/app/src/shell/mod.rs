@@ -19,7 +19,7 @@ use gpui_kit::component::menu::DropdownMenu;
 use gpui_kit::component::resizable::{h_resizable, resizable_panel};
 use gpui_kit::component::theme::{Theme, ThemeMode};
 use gpui_kit::component::tooltip::Tooltip;
-use gpui_kit::component::{Icon, InteractiveElementExt as _, Sizable, WindowExt};
+use gpui_kit::component::{Disableable as _, Icon, InteractiveElementExt as _, Sizable, WindowExt};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 use std::path::{Path, PathBuf};
@@ -30,6 +30,9 @@ pub struct Doc {
     title: String,
     editor: Entity<EditorState>,
     diagram: Entity<Diagram>,
+    saved_text: std::sync::Arc<str>,
+    last_text: std::sync::Arc<str>,
+    history: crate::history::UndoHistory,
     dirty: bool,
     diags: Vec<dbml_analysis::Diagnostic>,
 }
@@ -47,6 +50,9 @@ enum EditTarget {
     Table(String),
     ColName(String, String),
     ColType(String, String),
+    ColDefault(String, String),
+    ColCheck(String, String),
+    IndexName(String, usize),
     Enum(String),
     EnumVal(String, String),
     NewEnumVal(String),
@@ -130,6 +136,8 @@ pub struct Shell {
     ui_scale: f32,
     inspector_auto_hide: bool,
     restoring_session: bool,
+    suppress_history: bool,
+    import_dialect: sql_import::SqlDialect,
 }
 
 impl Focusable for Shell {
@@ -252,6 +260,8 @@ impl Shell {
             ui_scale: crate::settings::load().ui_scale,
             inspector_auto_hide: crate::settings::load().inspector_auto_hide,
             restoring_session: false,
+            suppress_history: false,
+            import_dialect: sql_import::SqlDialect::Postgres,
         };
         // DBM_PANE: painel inicial (usado pelo harness de screenshot)
         this.pane = match std::env::var("DBM_PANE").as_deref() {
@@ -276,6 +286,18 @@ impl Shell {
         self.docs.get(self.active)
     }
 
+    fn snapshot_of(doc: &Doc, cx: &App) -> crate::history::DocSnapshot {
+        let d = doc.diagram.read(cx);
+        let (selected, selected_enum, multi) = d.selection_state();
+        crate::history::DocSnapshot {
+            text: doc.last_text.clone(),
+            pos: d.positions().clone(),
+            selected,
+            selected_enum,
+            multi,
+        }
+    }
+
     fn add_doc(
         &mut self,
         text: String,
@@ -284,6 +306,7 @@ impl Shell {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        let initial_arc: std::sync::Arc<str> = std::sync::Arc::from(text.as_str());
         let diagram = cx.new(|cx| Diagram::new(dbml_analysis::analyze(&text), cx));
         let editor = cx.new(|cx| {
             let mut st = EditorState::new(window, cx)
@@ -301,15 +324,31 @@ impl Shell {
                 if !matches!(ev, InputEvent::Change) {
                     return;
                 }
-                let schema = dbml_analysis::analyze(&ed.read(cx).value());
+                let val = ed.read(cx).value().to_string();
+                let schema = dbml_analysis::analyze(&val);
                 let diags = ed.update(cx, crate::ide::refresh_diagnostics);
+                let suppress = this.suppress_history;
                 if let Some(doc) = this.docs.iter_mut().find(|d| &d.editor == ed) {
-                    doc.dirty = true;
+                    if !suppress && val.as_str() != doc.last_text.as_ref() {
+                        let d = doc.diagram.read(cx);
+                        let (selected, selected_enum, multi) = d.selection_state();
+                        doc.history.push(crate::history::DocSnapshot {
+                            text: doc.last_text.clone(),
+                            pos: d.positions().clone(),
+                            selected,
+                            selected_enum,
+                            multi,
+                        });
+                    }
+                    doc.last_text = std::sync::Arc::from(val.as_str());
+                    doc.dirty = doc.last_text.as_ref() != doc.saved_text.as_ref();
                     doc.diags = diags;
-                    doc.diagram.update(cx, |d, cx| {
-                        d.set_schema(schema);
-                        cx.notify();
-                    });
+                    if !suppress {
+                        doc.diagram.update(cx, |d, cx| {
+                            d.set_schema(schema);
+                            cx.notify();
+                        });
+                    }
                 }
                 cx.notify();
             },
@@ -336,7 +375,7 @@ impl Shell {
         let events = cx.subscribe_in(
             &diagram,
             window,
-            |this: &mut Shell, _, ev: &DiagramEvent, window, cx| match ev {
+            |this: &mut Shell, diag_entity, ev: &DiagramEvent, window, cx| match ev {
                 DiagramEvent::CreateRef { from, to } => {
                     let (f, t) = (from.clone(), to.clone());
                     this.edit_text(false, window, cx, |text| {
@@ -360,6 +399,19 @@ impl Shell {
                     this.save_prefs();
                     cx.notify();
                 }
+                DiagramEvent::PositionsChanged(old_pos) => {
+                    if let Some(doc) = this.docs.iter_mut().find(|d| &d.diagram == diag_entity) {
+                        let (selected, selected_enum, multi) =
+                            doc.diagram.read(cx).selection_state();
+                        doc.history.push(crate::history::DocSnapshot {
+                            text: doc.last_text.clone(),
+                            pos: old_pos.clone(),
+                            selected,
+                            selected_enum,
+                            multi,
+                        });
+                    }
+                }
             },
         );
         self.subs.extend([sub, obs, events]);
@@ -368,6 +420,9 @@ impl Shell {
             title,
             editor,
             diagram,
+            saved_text: initial_arc.clone(),
+            last_text: initial_arc,
+            history: crate::history::UndoHistory::new(),
             dirty: false,
             diags,
         });
@@ -599,11 +654,14 @@ impl Shell {
             return;
         };
         let text = doc.editor.read(cx).value().to_string();
-        match std::fs::write(&path, text) {
+        match std::fs::write(&path, &text) {
             Ok(()) => {
                 window.push_notification(format!("Saved to {}", path.display()), cx);
                 doc.title = file_title(&path);
                 doc.path = Some(path);
+                let saved: std::sync::Arc<str> = std::sync::Arc::from(text.as_str());
+                doc.saved_text = saved.clone();
+                doc.last_text = saved;
                 doc.dirty = false;
                 if let Some(dir) = self.project.clone() {
                     self.files = scan(&dir);
@@ -615,11 +673,10 @@ impl Shell {
         cx.notify();
     }
 
-    fn close_tab_at(&mut self, i: usize, cx: &mut Context<Self>) {
+    fn force_close_tab_at(&mut self, i: usize, cx: &mut Context<Self>) {
         if i >= self.docs.len() {
             return;
         }
-        // shortcut: fecha sem perguntar mesmo com alterações; trocar por confirmação inline quando houver undo de arquivo
         self.docs.remove(i);
         if self.active >= self.docs.len() {
             self.active = self.docs.len().saturating_sub(1);
@@ -630,8 +687,117 @@ impl Shell {
         cx.notify();
     }
 
-    fn close_tab(&mut self, _: &CloseTab, _: &mut Window, cx: &mut Context<Self>) {
-        self.close_tab_at(self.active, cx);
+    fn save_and_close_tab_at(&mut self, i: usize, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(doc) = self.docs.get(i) else {
+            return;
+        };
+        if let Some(path) = doc.path.clone() {
+            let text = doc.editor.read(cx).value().to_string();
+            match std::fs::write(&path, &text) {
+                Ok(()) => {
+                    window.push_notification(format!("Saved to {}", path.display()), cx);
+                    self.force_close_tab_at(i, cx);
+                }
+                Err(e) => window.push_notification(format!("Could not save file: {e}"), cx),
+            }
+            return;
+        }
+        let dir = self
+            .project
+            .clone()
+            .unwrap_or_else(|| std::env::current_dir().unwrap_or_default());
+        let rx = cx.prompt_for_new_path(&dir, Some(&doc.title));
+        cx.spawn_in(window, async move |this, cx| {
+            let Ok(Ok(Some(path))) = rx.await else { return };
+            this.update_in(cx, |this, window, cx| {
+                let Some(doc) = this.docs.get(i) else { return };
+                let text = doc.editor.read(cx).value().to_string();
+                match std::fs::write(&path, &text) {
+                    Ok(()) => {
+                        window.push_notification(format!("Saved to {}", path.display()), cx);
+                        this.force_close_tab_at(i, cx);
+                    }
+                    Err(e) => window.push_notification(format!("Could not save file: {e}"), cx),
+                }
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    fn close_tab_at(&mut self, i: usize, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(doc) = self.docs.get(i) else {
+            return;
+        };
+        if !doc.dirty {
+            self.force_close_tab_at(i, cx);
+            return;
+        }
+        let title = doc.title.clone();
+        let shell = cx.entity();
+        window.open_dialog(cx, move |dialog, _, _| {
+            let title = title.clone();
+            let shell = shell.clone();
+            dialog
+                .w(px(440.))
+                .title("Unsaved Changes")
+                .content(move |content, _, _| {
+                    let shell_save = shell.clone();
+                    let shell_discard = shell.clone();
+                    content.child(
+                        div()
+                            .flex()
+                            .flex_col()
+                            .gap(px(16.))
+                            .child(div().text_size(TEXT_SM).child(format!(
+                                "Do you want to save the changes made to \"{title}\"?"
+                            )))
+                            .child(
+                                div()
+                                    .flex()
+                                    .justify_end()
+                                    .gap(px(8.))
+                                    .child(
+                                        Button::new("dlg-cancel-close")
+                                            .ghost()
+                                            .small()
+                                            .label("Cancel")
+                                            .on_click(|_, window, cx| {
+                                                window.close_dialog(cx);
+                                            }),
+                                    )
+                                    .child(
+                                        Button::new("dlg-discard-close")
+                                            .ghost()
+                                            .small()
+                                            .label("Discard changes")
+                                            .on_click(move |_, window, cx| {
+                                                window.close_dialog(cx);
+                                                shell_discard.update(cx, |s, cx| {
+                                                    s.force_close_tab_at(i, cx);
+                                                });
+                                            }),
+                                    )
+                                    .child(
+                                        Button::new("dlg-save-close")
+                                            .primary()
+                                            .small()
+                                            .label("Save")
+                                            .on_click(move |_, window, cx| {
+                                                window.close_dialog(cx);
+                                                shell_save.update(cx, |s, cx| {
+                                                    s.save_and_close_tab_at(i, window, cx);
+                                                });
+                                            }),
+                                    ),
+                            ),
+                    )
+                })
+        });
+    }
+
+    fn close_tab(&mut self, _: &CloseTab, window: &mut Window, cx: &mut Context<Self>) {
+        self.close_tab_at(self.active, window, cx);
     }
 
     fn next_tab(&mut self, _: &NextTab, _: &mut Window, cx: &mut Context<Self>) {
@@ -771,6 +937,224 @@ impl Shell {
         self.export_sql(dbml_analysis::SqlDialect::Oracle, w, cx);
     }
 
+    fn import_sql_ddl(&mut self, _: &ImportSqlDdl, window: &mut Window, cx: &mut Context<Self>) {
+        let model = cx.new(|_| crate::import_sql::ImportSqlModel::new(self.import_dialect));
+        let sql_editor = cx.new(|cx| EditorState::new(window, cx).line_number(true));
+        let shell_entity = cx.entity().clone();
+        let has_existing = self
+            .doc()
+            .is_some_and(|d| !d.editor.read(cx).value().trim().is_empty());
+
+        let sub = cx.subscribe_in(&sql_editor, window, {
+            let model = model.clone();
+            move |_, ed, ev: &InputEvent, _, cx| {
+                if matches!(ev, InputEvent::Change) {
+                    let sql = ed.read(cx).value().to_string();
+                    model.update(cx, |m, cx| {
+                        m.set_sql(sql);
+                        cx.notify();
+                    });
+                }
+            }
+        });
+        self.subs.push(sub);
+
+        let g = Glass::of_scaled(self.mode, self.translucent, self.ui_scale);
+        window.open_dialog(cx, move |dialog, _, _| {
+            let model = model.clone();
+            let sql_editor = sql_editor.clone();
+            let shell_entity = shell_entity.clone();
+            dialog
+                .w(px(760.))
+                .title("Import SQL DDL")
+                .content(move |content, _, cx| {
+                    let st = model.read(cx).clone();
+                    let can_apply = st.can_apply();
+                    let preview_text = if st.dbml.is_empty() {
+                        "// DBML preview will appear here…".to_string()
+                    } else {
+                        st.dbml.clone()
+                    };
+
+                    let dialect_btn = |id: &'static str, label: &'static str, d: sql_import::SqlDialect| {
+                        let active = st.dialect == d;
+                        let model = model.clone();
+                        let shell_entity = shell_entity.clone();
+                        let b = Button::new(id).small().label(label);
+                        let b = if active { b.primary() } else { b.outline() };
+                        b.on_click(move |_, _, cx| {
+                            shell_entity.update(cx, |s, _| s.import_dialect = d);
+                            model.update(cx, |m, cx| {
+                                m.set_dialect(d);
+                                cx.notify();
+                            });
+                        })
+                    };
+
+                    let pick_btn = {
+                        let sql_editor = sql_editor.clone();
+                        let model = model.clone();
+                        Button::new("imp-pick-file")
+                            .small()
+                            .outline()
+                            .label("Choose .sql file…")
+                            .on_click(move |_, window, cx| {
+                                let rx = cx.prompt_for_paths(PathPromptOptions {
+                                    files: true,
+                                    directories: false,
+                                    multiple: false,
+                                    prompt: Some("Select SQL file".into()),
+                                });
+                                let sql_editor = sql_editor.clone();
+                                let model = model.clone();
+                                window.spawn(cx, async move |cx| {
+                                    let Ok(Ok(Some(paths))) = rx.await else { return };
+                                    let Some(path) = paths.into_iter().next() else { return };
+                                    let Ok(bytes) = std::fs::read(&path) else { return };
+                                    let content = String::from_utf8_lossy(&bytes).into_owned();
+                                    cx.update(|window, cx| {
+                                        if content.len() <= crate::import_sql::MAX_IMPORT_BYTES {
+                                            sql_editor.update(cx, |e, cx| {
+                                                e.replace_all(content.clone(), window, cx);
+                                            });
+                                        }
+                                        model.update(cx, |m, cx| {
+                                            m.set_sql(content);
+                                            cx.notify();
+                                        });
+                                    })
+                                    .ok();
+                                })
+                                .detach();
+                            })
+                    };
+
+                    let apply_btn = |id: &'static str, label: String, replace: bool, primary: bool| {
+                        let model = model.clone();
+                        let shell_entity = shell_entity.clone();
+                        let mut b = Button::new(id).small().label(label).disabled(!can_apply);
+                        b = if primary { b.primary() } else { b.outline() };
+                        b.on_click(move |_, window, cx| {
+                            if replace && has_existing && !model.read(cx).confirm_replace {
+                                model.update(cx, |m, cx| {
+                                    m.confirm_replace = true;
+                                    cx.notify();
+                                });
+                                return;
+                            }
+                            let current = model.read(cx).clone();
+                            shell_entity.update(cx, |s, cx| {
+                                s.edit_text(true, window, cx, move |existing| {
+                                    Some(current.build_merged_source(existing, replace))
+                                });
+                            });
+                            window.close_dialog(cx);
+                        })
+                    };
+
+                    let replace_label = if st.confirm_replace {
+                        "Confirm Replace?".to_string()
+                    } else {
+                        "Replace".to_string()
+                    };
+
+                    content.child(
+                        div()
+                            .flex()
+                            .flex_col()
+                            .gap(SP_MD)
+                            .child(
+                                div()
+                                    .flex()
+                                    .items_center()
+                                    .justify_between()
+                                    .gap(SP_SM)
+                                    .child(
+                                        div()
+                                            .flex()
+                                            .items_center()
+                                            .gap(px(6.))
+                                            .child(dialect_btn("imp-pg", "PostgreSQL", sql_import::SqlDialect::Postgres))
+                                            .child(dialect_btn("imp-my", "MySQL", sql_import::SqlDialect::Mysql))
+                                            .child(dialect_btn("imp-sq", "SQLite", sql_import::SqlDialect::Sqlite)),
+                                    )
+                                    .child(pick_btn),
+                            )
+                            .child(
+                                div()
+                                    .flex()
+                                    .gap(SP_SM)
+                                    .h(px(280.))
+                                    .child(
+                                        div()
+                                            .flex_1()
+                                            .h_full()
+                                            .rounded(px(6.))
+                                            .border_1()
+                                            .border_color(g.edge)
+                                            .overflow_hidden()
+                                            .child(Editor::new(&sql_editor)),
+                                    )
+                                    .child(
+                                        div()
+                                            .id("imp-preview-scroll")
+                                            .flex_1()
+                                            .h_full()
+                                            .p(SP_SM)
+                                            .rounded(px(6.))
+                                            .border_1()
+                                            .border_color(g.edge)
+                                            .bg(g.sidebar)
+                                            .overflow_y_scroll()
+                                            .font_family("JetBrains Mono")
+                                            .text_size(TEXT_XS)
+                                            .text_color(if st.dbml.is_empty() { g.text_faint } else { g.text })
+                                            .child(preview_text),
+                                    ),
+                            )
+                            .when(st.too_large, |d| {
+                                d.child(
+                                    div()
+                                        .text_size(TEXT_XS)
+                                        .text_color(rgb(crate::glass::DIAG_WARNING))
+                                        .child("Input exceeds 5 MB limit; please split the dump into smaller files."),
+                                )
+                            })
+                            .when(!st.too_large && !st.warnings.is_empty(), |d| {
+                                let mut list = div()
+                                    .id("imp-warn-scroll")
+                                    .flex()
+                                    .flex_col()
+                                    .gap(px(2.))
+                                    .max_h(px(72.))
+                                    .overflow_y_scroll()
+                                    .text_size(TEXT_XS)
+                                    .text_color(rgb(crate::glass::DIAG_WARNING));
+                                for w in &st.warnings {
+                                    list = list.child(format!("{}:{}: {}", w.line, w.column, w.message));
+                                }
+                                d.child(list)
+                            })
+                            .child(
+                                div()
+                                    .flex()
+                                    .justify_end()
+                                    .gap(SP_SM)
+                                    .child(
+                                        Button::new("imp-cancel")
+                                            .small()
+                                            .outline()
+                                            .label("Cancel")
+                                            .on_click(|_, window, cx| window.close_dialog(cx)),
+                                    )
+                                    .child(apply_btn("imp-replace", replace_label, true, false))
+                                    .child(apply_btn("imp-insert", "Insert".to_string(), false, true)),
+                            ),
+                    )
+                })
+        });
+    }
+
     fn move_line(&mut self, up: bool, window: &mut Window, cx: &mut Context<Self>) {
         let Some(doc) = self.doc() else { return };
         doc.editor.update(cx, |e, cx| {
@@ -820,12 +1204,90 @@ impl Shell {
 
     // ---- ações: janela ----
 
-    #[expect(
-        clippy::unused_self,
-        reason = "GPUI cx.listener requires &mut self on action handlers"
-    )]
-    fn quit(&mut self, _: &Quit, _: &mut Window, cx: &mut Context<Self>) {
-        cx.quit();
+    fn quit(&mut self, _: &Quit, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.docs.iter().any(|d| d.dirty) {
+            cx.quit();
+            return;
+        }
+        let shell = cx.entity();
+        window.open_dialog(cx, move |dialog, _, _| {
+            let shell = shell.clone();
+            dialog
+                .w(px(460.))
+                .title("Unsaved Changes")
+                .content(move |content, _, _| {
+                    let shell_save = shell.clone();
+                    content.child(
+                        div()
+                            .flex()
+                            .flex_col()
+                            .gap(px(16.))
+                            .child(div().text_size(TEXT_SM).child(
+                                "You have unsaved changes in open documents. Save before quitting?",
+                            ))
+                            .child(
+                                div()
+                                    .flex()
+                                    .justify_end()
+                                    .gap(px(8.))
+                                    .child(
+                                        Button::new("dlg-cancel-quit")
+                                            .ghost()
+                                            .small()
+                                            .label("Cancel")
+                                            .on_click(|_, window, cx| {
+                                                window.close_dialog(cx);
+                                            }),
+                                    )
+                                    .child(
+                                        Button::new("dlg-discard-quit")
+                                            .ghost()
+                                            .small()
+                                            .label("Discard changes")
+                                            .on_click(|_, window, cx| {
+                                                window.close_dialog(cx);
+                                                cx.quit();
+                                            }),
+                                    )
+                                    .child(
+                                        Button::new("dlg-save-quit")
+                                            .primary()
+                                            .small()
+                                            .label("Save All & Quit")
+                                            .on_click(move |_, window, cx| {
+                                                window.close_dialog(cx);
+                                                let ok = shell_save.update(cx, |s, cx| {
+                                                    for d in &mut s.docs {
+                                                        if d.dirty
+                                                            && let Some(p) = &d.path
+                                                        {
+                                                            let t = d
+                                                                .editor
+                                                                .read(cx)
+                                                                .value()
+                                                                .to_string();
+                                                            if std::fs::write(p, &t).is_ok() {
+                                                                let arc: std::sync::Arc<str> =
+                                                                    std::sync::Arc::from(
+                                                                        t.as_str(),
+                                                                    );
+                                                                d.saved_text = arc.clone();
+                                                                d.last_text = arc;
+                                                                d.dirty = false;
+                                                            }
+                                                        }
+                                                    }
+                                                    !s.docs.iter().any(|d| d.dirty)
+                                                });
+                                                if ok {
+                                                    cx.quit();
+                                                }
+                                            }),
+                                    ),
+                            ),
+                    )
+                })
+        });
     }
 
     fn open_palette(&mut self, _: &OpenPalette, window: &mut Window, cx: &mut Context<Self>) {
@@ -902,22 +1364,89 @@ impl Shell {
         cx: &mut Context<Self>,
         f: impl FnOnce(&str) -> Option<String>,
     ) {
-        let Some(doc) = self.doc() else { return };
+        let Some(doc) = self.docs.get_mut(self.active) else {
+            return;
+        };
         let text = doc.editor.read(cx).value().to_string();
         let Some(new) = f(&text).filter(|n| *n != text) else {
             return;
         };
+        let before = Self::snapshot_of(doc, cx);
+        doc.history.push(before);
         let schema = dbml_analysis::analyze(&new);
+        let new_arc: std::sync::Arc<str> = std::sync::Arc::from(new.as_str());
+        doc.last_text = new_arc;
+        doc.dirty = doc.last_text.as_ref() != doc.saved_text.as_ref();
+        self.suppress_history = true;
         doc.editor
             .update(cx, |e, cx| e.replace_all(new, window, cx));
-        doc.diagram.update(cx, |d, cx| {
-            d.set_schema(schema);
-            if relayout {
-                d.relayout();
-            }
+        self.suppress_history = false;
+        if let Some(doc) = self.docs.get_mut(self.active) {
+            doc.diagram.update(cx, |d, cx| {
+                d.set_schema(schema);
+                if relayout {
+                    d.relayout();
+                }
+                cx.notify();
+            });
+        }
+        cx.notify();
+    }
+
+    fn apply_snapshot(
+        &mut self,
+        snap: crate::history::DocSnapshot,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(doc) = self.docs.get_mut(self.active) else {
+            return;
+        };
+        let cur_text = doc.editor.read(cx).value().to_string();
+        let new_text = snap.text.to_string();
+        let schema = dbml_analysis::analyze(&new_text);
+        doc.last_text = snap.text;
+        doc.dirty = doc.last_text.as_ref() != doc.saved_text.as_ref();
+        let editor = doc.editor.clone();
+        let diagram = doc.diagram.clone();
+        if cur_text != new_text {
+            self.suppress_history = true;
+            editor.update(cx, |e, cx| e.replace_all(new_text, window, cx));
+            self.suppress_history = false;
+        }
+        diagram.update(cx, |d, cx| {
+            d.apply_snapshot(
+                schema,
+                snap.pos,
+                snap.selected,
+                snap.selected_enum,
+                snap.multi,
+            );
             cx.notify();
         });
         cx.notify();
+    }
+
+    fn undo(&mut self, _: &Undo, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(doc) = self.docs.get_mut(self.active) else {
+            return;
+        };
+        let cur = Self::snapshot_of(doc, cx);
+        let Some(prev) = doc.history.undo(cur) else {
+            return;
+        };
+        self.apply_snapshot(prev, window, cx);
+    }
+
+    fn redo(&mut self, _: &Redo, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(doc) = self.docs.get_mut(self.active) else {
+            return;
+        };
+        let cur = Self::snapshot_of(doc, cx);
+        let Some(next) = doc.history.redo(cur) else {
+            return;
+        };
+        self.apply_snapshot(next, window, cx);
     }
 
     fn start_edit(
@@ -999,6 +1528,33 @@ impl Shell {
                 self.edit_text(false, window, cx, |t| {
                     dbml_edit::set_column_type(t, &table, &col, &value)
                 });
+            }
+            EditTarget::ColDefault(table, col) => {
+                let opt = (!value.is_empty()).then_some(value.as_str());
+                self.edit_text(false, window, cx, |t| {
+                    dbml_edit::set_column_default(t, &table, &col, opt)
+                });
+            }
+            EditTarget::ColCheck(table, col) => {
+                let opt = (!value.is_empty()).then_some(value.as_str());
+                self.edit_text(false, window, cx, |t| {
+                    dbml_edit::set_column_check(t, &table, &col, opt)
+                });
+            }
+            EditTarget::IndexName(table, idx) => {
+                let existing = self.doc().and_then(|d| {
+                    d.diagram
+                        .read(cx)
+                        .schema()
+                        .table(&table)
+                        .and_then(|tb| tb.indexes.get(idx).cloned())
+                });
+                if let Some(mut ix) = existing {
+                    ix.name = (!value.is_empty()).then(|| value.clone());
+                    self.edit_text(false, window, cx, |t| {
+                        dbml_edit::update_index(t, &table, idx, &ix)
+                    });
+                }
             }
             EditTarget::Enum(old) if value != old => {
                 if ident {
@@ -1129,8 +1685,8 @@ impl Shell {
                     .schema()
                     .refs
                     .iter()
-                    .find(|r| r.from.table == table && r.from.column == col)
-                    .map(|r| (r.to.table.clone(), r.to.column.clone()));
+                    .find(|r| r.from.qualified_table() == table && r.from.column == col)
+                    .map(|r| (r.to.qualified_table(), r.to.column.clone()));
                 if let Some((to_t, to_c)) = target_ref {
                     self.edit_text(false, window, cx, |t| {
                         Some(dbml_edit::delete_ref(t, (table, col), (&to_t, &to_c)))
@@ -1306,6 +1862,10 @@ impl Shell {
     }
 
     fn relayout(&mut self, _: &Relayout, _: &mut Window, cx: &mut Context<Self>) {
+        if let Some(doc) = self.docs.get_mut(self.active) {
+            let before = Self::snapshot_of(doc, cx);
+            doc.history.push(before);
+        }
         self.with_diagram(cx, super::canvas::Diagram::relayout);
     }
 
@@ -1350,6 +1910,8 @@ pub fn register_global_actions(win: AnyWindowHandle, shell: &Entity<Shell>, cx: 
         OpenFile => open_file,
         OpenFolder => open_folder,
         SaveFile => save_file,
+        Undo => undo,
+        Redo => redo,
         CloseTab => close_tab,
         NextTab => next_tab,
         PrevTab => prev_tab,
@@ -1363,6 +1925,7 @@ pub fn register_global_actions(win: AnyWindowHandle, shell: &Entity<Shell>, cx: 
         ExportSqlSqlite => export_sql_sqlite,
         ExportSqlSqlServer => export_sql_sqlserver,
         ExportSqlOracle => export_sql_oracle,
+        ImportSqlDdl => import_sql_ddl,
         MoveLineUp => move_line_up,
         MoveLineDown => move_line_down,
         OpenPalette => open_palette,
@@ -1538,6 +2101,8 @@ impl Render for Shell {
             .on_action(cx.listener(Self::open_file))
             .on_action(cx.listener(Self::open_folder))
             .on_action(cx.listener(Self::save_file))
+            .on_action(cx.listener(Self::undo))
+            .on_action(cx.listener(Self::redo))
             .on_action(cx.listener(Self::close_tab))
             .on_action(cx.listener(Self::next_tab))
             .on_action(cx.listener(Self::prev_tab))
@@ -1549,6 +2114,7 @@ impl Render for Shell {
             .on_action(cx.listener(Self::move_line_up))
             .on_action(cx.listener(Self::move_line_down))
             .on_action(cx.listener(Self::open_palette))
+            .on_action(cx.listener(Self::import_sql_ddl))
             .on_action(cx.listener(Self::show_shortcuts))
             .on_action(cx.listener(Self::toggle_theme))
             .on_action(cx.listener(Self::toggle_card_transparency))
@@ -1564,6 +2130,7 @@ impl Render for Shell {
             .on_action(cx.listener(Self::tool_hand))
             .on_action(cx.listener(Self::deselect))
             .on_action(cx.listener(Self::new_table))
+            .on_action(cx.listener(Self::new_enum))
             .on_action(cx.listener(Self::delete_selection))
             .on_action(cx.listener(Self::rename_selected))
             .on_action(cx.listener(Self::reset_panels))

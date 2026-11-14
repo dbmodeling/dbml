@@ -34,6 +34,21 @@ pub struct EnumDef {
     pub values: Vec<EnumValue>,
 }
 
+impl EnumDef {
+    /// Returns `schema.name` when qualified, or `name` otherwise.
+    #[must_use]
+    pub fn qualified_name(&self) -> String {
+        format_qualified(self.schema.as_deref(), &self.name)
+    }
+}
+
+fn format_qualified(schema: Option<&str>, name: &str) -> String {
+    match schema {
+        Some(s) if !s.is_empty() => format!("{s}.{name}"),
+        _ => name.to_owned(),
+    }
+}
+
 /// A single variant inside an [`EnumDef`].
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub struct EnumValue {
@@ -59,6 +74,9 @@ pub enum IndexType {
 }
 
 impl IndexType {
+    /// All supported index algorithms in canonical UI order.
+    pub const ALL: &[Self] = &[Self::BTree, Self::Hash, Self::Gin, Self::Gist];
+
     /// Returns the canonical lowercase SQL index method name.
     #[must_use]
     pub const fn as_sql_str(self) -> &'static str {
@@ -98,6 +116,32 @@ pub enum IndexColumn {
     Expression(String),
 }
 
+impl IndexColumn {
+    /// Formats this item for a DBML `indexes { ... }` line.
+    #[must_use]
+    pub fn as_dbml_str(&self) -> String {
+        match self {
+            Self::Column(c) => {
+                if c.chars().all(|ch| ch.is_ascii_alphanumeric() || ch == '_') && !c.is_empty() {
+                    c.clone()
+                } else {
+                    format!("\"{c}\"")
+                }
+            }
+            Self::Expression(e) => format!("`{e}`"),
+        }
+    }
+
+    /// Returns the column identifier when this item is [`Self::Column`].
+    #[must_use]
+    pub fn column_name(&self) -> Option<&str> {
+        match self {
+            Self::Column(c) => Some(c.as_str()),
+            Self::Expression(_) => None,
+        }
+    }
+}
+
 /// Index or composite primary-key definition inside a `Table`'s `indexes { ... }` block.
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub struct IndexDef {
@@ -115,6 +159,50 @@ pub struct IndexDef {
     /// Optional index algorithm (`[type: ...]`).
     #[serde(default)]
     pub index_type: Option<IndexType>,
+}
+
+impl IndexDef {
+    /// Returns `true` if this index references the plain column `col`.
+    #[must_use]
+    pub fn references_column(&self, col: &str) -> bool {
+        self.columns.iter().any(|ic| ic.column_name() == Some(col))
+    }
+
+    /// Formats this index definition as a canonical single-line DBML entry inside `indexes { ... }`.
+    #[must_use]
+    pub fn to_dbml_line(&self) -> String {
+        let cols_part = match self.columns.as_slice() {
+            [] => String::new(),
+            [single] => single.as_dbml_str(),
+            many => {
+                let joined: Vec<String> = many.iter().map(IndexColumn::as_dbml_str).collect();
+                format!("({})", joined.join(", "))
+            }
+        };
+        let mut settings: Vec<String> = Vec::new();
+        if self.pk {
+            settings.push("pk".to_string());
+        }
+        if self.unique {
+            settings.push("unique".to_string());
+        }
+        if let Some(ty) = self.index_type {
+            settings.push(format!("type: {}", ty.as_sql_str()));
+        }
+        if let Some(name) = self
+            .name
+            .as_deref()
+            .map(str::trim)
+            .filter(|n| !n.is_empty())
+        {
+            settings.push(format!("name: '{name}'"));
+        }
+        if settings.is_empty() {
+            cols_part
+        } else {
+            format!("{cols_part} [{}]", settings.join(", "))
+        }
+    }
 }
 
 /// Explicit nullability state of a DBML [`Column`].
@@ -172,6 +260,14 @@ pub struct Table {
     pub indexes: Vec<IndexDef>,
 }
 
+impl Table {
+    /// Returns `schema.name` when qualified, or `name` otherwise.
+    #[must_use]
+    pub fn qualified_name(&self) -> String {
+        format_qualified(self.schema.as_deref(), &self.name)
+    }
+}
+
 /// A column inside a [`Table`].
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub struct Column {
@@ -200,6 +296,9 @@ pub struct Column {
     /// Optional `[note: '...']` attached to this column.
     #[serde(default)]
     pub note: Option<String>,
+    /// Optional `[check: ...]` constraint expression attached to this column.
+    #[serde(default)]
+    pub check: Option<String>,
 }
 
 /// Directed relationship edge between two columns.
@@ -316,6 +415,12 @@ impl Endpoint {
             .first()
             .map_or(self.column.as_str(), String::as_str)
     }
+
+    /// Returns `schema.table` when qualified, or `table` otherwise.
+    #[must_use]
+    pub fn qualified_table(&self) -> String {
+        format_qualified(self.schema.as_deref(), &self.table)
+    }
 }
 
 /// Cardinality of a DBML [`Ref`] relationship.
@@ -365,18 +470,46 @@ impl RefKind {
 }
 
 impl Schema {
-    /// Returns a reference to the table with the given `name`, if present.
+    /// Returns a reference to the table matching `(schema, name)`.
+    ///
+    /// When `schema` is `Some(s)`, matches `t.schema.as_deref() == Some(s) && t.name == name`.
+    /// When `schema` is `None`, prefers an unqualified table (`t.schema.is_none()`) and falls
+    /// back to any table with `t.name == name` when unambiguous.
     #[must_use]
-    pub fn table(&self, name: &str) -> Option<&Table> {
-        self.tables.iter().find(|t| t.name == name)
+    pub fn table_by(&self, schema: Option<&str>, name: &str) -> Option<&Table> {
+        if let Some(s) = schema {
+            return self
+                .tables
+                .iter()
+                .find(|t| t.schema.as_deref() == Some(s) && t.name == name);
+        }
+        self.tables
+            .iter()
+            .find(|t| t.schema.is_none() && t.name == name)
+            .or_else(|| self.tables.iter().find(|t| t.name == name))
     }
 
-    /// Returns a reference to the [`Group`] containing `table`, if any.
+    /// Returns a reference to the table with the given `name` (qualified `schema.table` or bare),
+    /// if present.
+    #[must_use]
+    pub fn table(&self, name: &str) -> Option<&Table> {
+        match name.split_once('.') {
+            Some((s, tbl)) => self.table_by(Some(s), tbl),
+            None => self.table_by(None, name),
+        }
+    }
+
+    /// Returns a reference to the [`Group`] containing `table` (qualified or bare), if any.
     #[must_use]
     pub fn group_of(&self, table: &str) -> Option<&Group> {
+        let bare = table.split_once('.').map(|(_, n)| n);
         self.groups
             .iter()
             .find(|g| g.tables.iter().any(|t| t == table))
+            .or_else(|| {
+                let n = bare?;
+                self.groups.iter().find(|g| g.tables.iter().any(|t| t == n))
+            })
     }
 }
 
@@ -475,11 +608,71 @@ mod tests {
 
     #[test]
     fn index_type_and_nullability_roundtrip() {
+        for &ty in IndexType::ALL {
+            assert_eq!(IndexType::from_dbml_str(ty.as_sql_str()), Some(ty));
+        }
         assert_eq!(IndexType::from_dbml_str("GIN"), Some(IndexType::Gin));
         assert_eq!(IndexType::Gin.as_sql_str(), "gin");
         assert_eq!(IndexType::from_dbml_str("unknown"), None);
         assert!(Nullability::NotNull.is_not_null());
         assert!(!Nullability::Nullable.is_not_null());
         assert!(!Nullability::Unspecified.is_not_null());
+    }
+
+    #[test]
+    fn index_def_formats_canonical_dbml_line() {
+        let single = IndexDef {
+            columns: vec![IndexColumn::Column("email".to_string())],
+            unique: false,
+            pk: false,
+            name: None,
+            index_type: None,
+        };
+        assert_eq!(single.to_dbml_line(), "email");
+        assert!(single.references_column("email"));
+        assert!(!single.references_column("id"));
+
+        let composite = IndexDef {
+            columns: vec![
+                IndexColumn::Column("tenant_id".to_string()),
+                IndexColumn::Column("email".to_string()),
+            ],
+            unique: true,
+            pk: false,
+            name: Some("idx_tenant_email".to_string()),
+            index_type: Some(IndexType::BTree),
+        };
+        assert_eq!(
+            composite.to_dbml_line(),
+            "(tenant_id, email) [unique, type: btree, name: 'idx_tenant_email']"
+        );
+    }
+
+    #[test]
+    fn schema_table_by_distinguishes_same_name_across_schemas() {
+        let schema = Schema {
+            tables: vec![
+                Table {
+                    schema: Some("auth".into()),
+                    name: "users".into(),
+                    ..Default::default()
+                },
+                Table {
+                    schema: Some("billing".into()),
+                    name: "users".into(),
+                    ..Default::default()
+                },
+            ],
+            ..Default::default()
+        };
+        assert_eq!(
+            schema.table("auth.users").map(Table::qualified_name),
+            Some("auth.users".into())
+        );
+        assert_eq!(
+            schema.table("billing.users").map(Table::qualified_name),
+            Some("billing.users".into())
+        );
+        assert_eq!(schema.table_by(Some("audit"), "users"), None);
     }
 }

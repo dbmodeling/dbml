@@ -5,6 +5,9 @@
 
 export type ActionId =
   | 'NewFile'
+  | 'SaveFile'
+  | 'Undo'
+  | 'Redo'
   | 'ShowFiles'
   | 'ShowSchema'
   | 'ShowProblems'
@@ -44,7 +47,8 @@ export type ActionId =
   | 'ExportSqlMysql'
   | 'ExportSqlSqlite'
   | 'ExportSqlSqlServer'
-  | 'ExportSqlOracle';
+  | 'ExportSqlOracle'
+  | 'ImportSqlDdl';
 
 export type KeyContext = 'Shell' | 'Canvas';
 
@@ -72,6 +76,10 @@ export function catalog(): ActionEntry[] {
 
   return [
     e('ctrl-n', ['Ctrl', 'N'], 'NewFile', 'File', 'New .dbml File'),
+    e('ctrl-s', ['Ctrl', 'S'], 'SaveFile', 'File', 'Save'),
+    e('', [], 'ImportSqlDdl', 'File', 'Import SQL DDL…'),
+    e('ctrl-z', ['Ctrl', 'Z'], 'Undo', 'Edit', 'Undo'),
+    e('ctrl-shift-z', ['Ctrl', 'Shift', 'Z'], 'Redo', 'Edit', 'Redo'),
     e('ctrl-shift-e', ['Ctrl', 'Shift', 'E'], 'ShowFiles', 'View', 'Show Project Files'),
     e('ctrl-shift-d', ['Ctrl', 'Shift', 'D'], 'ShowSchema', 'View', 'Show Schema (Tables)'),
     e('ctrl-shift-m', ['Ctrl', 'Shift', 'M'], 'ShowProblems', 'View', 'Show Problems'),

@@ -11,6 +11,8 @@ mod format;
 pub use format::{format, swap_lines};
 pub use groups::{group_tables, next_group_name, set_table_color, ungroup_table};
 mod groups;
+mod indexes;
+pub use indexes::{add_index, delete_index, set_column_check, set_column_default, update_index};
 mod model;
 pub use model::{
     RefUpdate, add_column as add_column_text, add_ref, add_table, delete_column, delete_ref,
@@ -18,7 +20,7 @@ pub use model::{
     unique_column_name, unique_table_name, update_ref,
 };
 
-use dbml_syntax::{SyntaxKind, SyntaxNode, parse};
+use dbml_syntax::{SyntaxKind, parse};
 use rowan::TextRange;
 
 /// Byte-range text replacement; applying patches is the only way to mutate DBML text.
@@ -91,20 +93,10 @@ pub fn edit(text: &str, cmd: &Command) -> Result<Patch, EditError> {
     }
 }
 
-fn table_name(t: &SyntaxNode) -> Option<String> {
-    t.children_with_tokens()
-        .filter_map(rowan::NodeOrToken::into_token)
-        .filter(|t| t.kind() == SyntaxKind::Ident)
-        .nth(1) // o primeiro é a palavra-chave `Table`
-        .map(|t| t.text().to_string())
-}
-
 fn add_column(text: &str, table: &str, name: &str, ty: &str) -> Result<Patch, EditError> {
     let root = parse(text).syntax();
-    let t = root
-        .children()
-        .find(|n| n.kind() == SyntaxKind::Table && table_name(n).as_deref() == Some(table))
-        .ok_or_else(|| EditError::TableNotFound(table.into()))?;
+    let t =
+        model::find_table(&root, table).ok_or_else(|| EditError::TableNotFound(table.into()))?;
     let line = format!("{name} {ty}");
 
     // Imita a indentação da última coluna; senão 2 espaços.

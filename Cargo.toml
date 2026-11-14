@@ -15,6 +15,7 @@ dbml-syntax = { path = "crates/dbml-syntax" }
 dbml-analysis = { path = "crates/dbml-analysis" }
 dbml-edit = { path = "crates/dbml-edit" }
 layout = { path = "crates/layout" }
+sql-import = { path = "crates/sql-import" }
 
 # Parsing & CST
 logos = "=0.16.1"

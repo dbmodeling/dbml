@@ -191,3 +191,18 @@ Ref: public.orders.(org_id, user_id) > u.(org_id, id) [delete: cascade]
     );
     assert!(mysql.contains("COMMENT='User accounts'"), "{mysql}");
 }
+
+#[test]
+fn exports_column_check_constraint() {
+    let src = "\
+Table items {
+  id int [pk]
+  qty int [not null, default: 1, check: `qty > 0`]
+}
+";
+    let pg = export_sql_ddl(src, SqlDialect::Postgres);
+    assert!(
+        pg.contains("\"qty\" INTEGER DEFAULT 1 NOT NULL CHECK (qty > 0)"),
+        "{pg}"
+    );
+}

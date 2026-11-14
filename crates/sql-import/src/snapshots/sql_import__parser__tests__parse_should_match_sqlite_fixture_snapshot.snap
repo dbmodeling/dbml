@@ -1,0 +1,185 @@
+---
+source: crates/sql-import/src/parser.rs
+expression: "ir(SQLITE, SqlDialect::Sqlite)"
+---
+Ir {
+    tables: [
+        Table {
+            name: Name {
+                schema: None,
+                name: "users",
+            },
+            columns: [
+                Column {
+                    name: "id",
+                    ty: "INTEGER",
+                    not_null: false,
+                    default: None,
+                    unique: false,
+                    primary_key: true,
+                    auto_increment: true,
+                    references: None,
+                    enum_values: None,
+                    comment: None,
+                },
+                Column {
+                    name: "email",
+                    ty: "TEXT",
+                    not_null: true,
+                    default: None,
+                    unique: true,
+                    primary_key: false,
+                    auto_increment: false,
+                    references: None,
+                    enum_values: None,
+                    comment: None,
+                },
+                Column {
+                    name: "status",
+                    ty: "TEXT",
+                    not_null: true,
+                    default: Some(
+                        Str(
+                            "new",
+                        ),
+                    ),
+                    unique: false,
+                    primary_key: false,
+                    auto_increment: false,
+                    references: None,
+                    enum_values: Some(
+                        [
+                            "new",
+                            "active",
+                            "banned",
+                        ],
+                    ),
+                    comment: None,
+                },
+                Column {
+                    name: "created",
+                    ty: "TEXT",
+                    not_null: false,
+                    default: Some(
+                        Raw(
+                            "(datetime('now'))",
+                        ),
+                    ),
+                    unique: false,
+                    primary_key: false,
+                    auto_increment: false,
+                    references: None,
+                    enum_values: None,
+                    comment: None,
+                },
+            ],
+            constraints: [],
+            comment: None,
+            line: 3,
+            col: 14,
+        },
+        Table {
+            name: Name {
+                schema: None,
+                name: "posts",
+            },
+            columns: [
+                Column {
+                    name: "id",
+                    ty: "INTEGER",
+                    not_null: true,
+                    default: None,
+                    unique: false,
+                    primary_key: false,
+                    auto_increment: false,
+                    references: None,
+                    enum_values: None,
+                    comment: None,
+                },
+                Column {
+                    name: "user_id",
+                    ty: "INTEGER",
+                    not_null: false,
+                    default: None,
+                    unique: false,
+                    primary_key: false,
+                    auto_increment: false,
+                    references: Some(
+                        Fk {
+                            name: None,
+                            from_cols: [
+                                "user_id",
+                            ],
+                            to_table: Name {
+                                schema: None,
+                                name: "users",
+                            },
+                            to_cols: [
+                                "id",
+                            ],
+                            on_delete: Some(
+                                Cascade,
+                            ),
+                            on_update: None,
+                            line: 4,
+                            col: 73,
+                        },
+                    ),
+                    enum_values: None,
+                    comment: None,
+                },
+                Column {
+                    name: "body",
+                    ty: "",
+                    not_null: false,
+                    default: None,
+                    unique: false,
+                    primary_key: false,
+                    auto_increment: false,
+                    references: None,
+                    enum_values: None,
+                    comment: None,
+                },
+            ],
+            constraints: [
+                PrimaryKey(
+                    [
+                        "id",
+                    ],
+                ),
+            ],
+            comment: None,
+            line: 4,
+            col: 14,
+        },
+    ],
+    enums: [],
+    indexes: [
+        Index {
+            name: Some(
+                "idx_posts_user",
+            ),
+            table: Name {
+                schema: None,
+                name: "posts",
+            },
+            cols: [
+                Column(
+                    "user_id",
+                ),
+            ],
+            unique: false,
+            line: 5,
+            col: 14,
+        },
+    ],
+    alter_constraints: [],
+    comments: [],
+    warnings: [
+        ImportWarning {
+            line: 3,
+            column: 122,
+            message: "enum values of column `status` were inferred from its CHECK constraint",
+        },
+    ],
+}

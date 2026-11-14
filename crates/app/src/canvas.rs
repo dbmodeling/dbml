@@ -37,6 +37,7 @@ pub enum DiagramEvent {
     Rename(String),
     Select(String),
     SelectEnum(String),
+    PositionsChanged(HashMap<String, (f32, f32)>),
 }
 
 impl EventEmitter<DiagramEvent> for Diagram {}
@@ -82,6 +83,7 @@ pub struct Diagram {
     origin: Point<Pixels>,
     size: Size<Pixels>,
     drag: Option<Drag>,
+    drag_start_pos: Option<HashMap<String, (f32, f32)>>,
     /// Último cartão tocado; desenhado por cima dos demais.
     top: Option<String>,
     selected: Option<String>,
@@ -111,6 +113,7 @@ impl Diagram {
             origin: Point::default(),
             size: Size::default(),
             drag: None,
+            drag_start_pos: None,
             top: None,
             selected: None,
             selected_enum: None,
@@ -133,15 +136,16 @@ impl Diagram {
         let auto = auto_layout(&schema);
         let old = std::mem::take(&mut self.pos);
         for t in &schema.tables {
+            let qname = t.qualified_name();
             let p = old
-                .get(&t.name)
-                .or_else(|| auto.get(&t.name))
+                .get(&qname)
+                .or_else(|| auto.get(&qname))
                 .copied()
                 .unwrap_or((0., 0.));
-            self.pos.insert(t.name.clone(), p);
+            self.pos.insert(qname, p);
         }
         for e in &schema.enums {
-            let key = format!("enum:{}", e.name);
+            let key = format!("enum:{}", e.qualified_name());
             let p = old
                 .get(&key)
                 .or_else(|| auto.get(&key))
@@ -166,7 +170,7 @@ impl Diagram {
         self.schema
             .refs
             .iter()
-            .filter(|r| r.from.table == table || r.to.table == table)
+            .filter(|r| r.from.qualified_table() == table || r.to.qualified_table() == table)
             .collect()
     }
 
@@ -180,6 +184,34 @@ impl Diagram {
 
     pub fn viewport(&self) -> (f32, f32, f32) {
         (self.zoom, self.pan.0, self.pan.1)
+    }
+
+    pub fn positions(&self) -> &HashMap<String, (f32, f32)> {
+        &self.pos
+    }
+
+    pub fn selection_state(&self) -> (Option<String>, Option<String>, Vec<String>) {
+        (
+            self.selected.clone(),
+            self.selected_enum.clone(),
+            self.multi.clone(),
+        )
+    }
+
+    pub fn apply_snapshot(
+        &mut self,
+        schema: Schema,
+        pos: HashMap<String, (f32, f32)>,
+        selected: Option<String>,
+        selected_enum: Option<String>,
+        multi: Vec<String>,
+    ) {
+        self.schema = schema;
+        self.pos = pos;
+        self.selected = selected;
+        self.selected_enum = selected_enum;
+        self.selected_ref = None;
+        self.multi = multi;
     }
 
     pub fn set_viewport(&mut self, zoom: f32, pan: (f32, f32)) {
@@ -315,7 +347,7 @@ impl Diagram {
         }
         let (mut x0, mut y0, mut x1, mut y1) = (f32::MAX, f32::MAX, f32::MIN, f32::MIN);
         for t in &self.schema.tables {
-            let (x, y) = self.pos[&t.name];
+            let (x, y) = self.pos[&t.qualified_name()];
             x0 = x0.min(x);
             y0 = y0.min(y);
             x1 = x1.max(x + CARD_W);
@@ -342,21 +374,23 @@ impl Diagram {
     /// Coluna sob o ponto (mundo), para soltar uma relação.
     fn column_at(&self, p: (f32, f32)) -> Option<(String, String)> {
         self.schema.tables.iter().find_map(|t| {
-            let (x, y) = self.pos[&t.name];
+            let qname = t.qualified_name();
+            let (x, y) = self.pos[&qname];
             let inside =
                 p.0 >= x && p.0 <= x + CARD_W && p.1 >= y && p.1 <= y + card_h(t.columns.len());
             let row = ((p.1 - y - HEADER_H - 4.) / ROW_H).floor();
             (inside && row >= 0.)
                 .then(|| t.columns.get(row as usize))
                 .flatten()
-                .map(|c| (t.name.clone(), c.name.clone()))
+                .map(|c| (qname, c.name.clone()))
         })
     }
 
     /// Tabela sob o ponto (mundo), para soltar uma relação em qualquer parte do cartão.
     fn table_at(&self, p: (f32, f32)) -> Option<(String, String)> {
         self.schema.tables.iter().find_map(|t| {
-            let (x, y) = self.pos[&t.name];
+            let qname = t.qualified_name();
+            let (x, y) = self.pos[&qname];
             let inside =
                 p.0 >= x && p.0 <= x + CARD_W && p.1 >= y && p.1 <= y + card_h(t.columns.len());
             if !inside {
@@ -368,7 +402,7 @@ impl Diagram {
                 .find(|c| c.pk)
                 .or_else(|| t.columns.first())
                 .map_or_else(|| "id".to_string(), |c| c.name.clone());
-            Some((t.name.clone(), pk_col))
+            Some((qname, pk_col))
         })
     }
 
@@ -376,10 +410,12 @@ impl Diagram {
     fn ref_at(&self, p: (f32, f32)) -> Option<RefPair> {
         let schema = &self.schema;
         for r in &schema.refs {
-            let Some(ft) = schema.table(&r.from.table) else {
+            let from_q = r.from.qualified_table();
+            let to_q = r.to.qualified_table();
+            let Some(ft) = schema.table(&from_q) else {
                 continue;
             };
-            let Some(tt) = schema.table(&r.to.table) else {
+            let Some(tt) = schema.table(&to_q) else {
                 continue;
             };
             let Some(fc) = ft.columns.iter().position(|c| c.name == r.from.column) else {
@@ -388,8 +424,10 @@ impl Diagram {
             let Some(tc) = tt.columns.iter().position(|c| c.name == r.to.column) else {
                 continue;
             };
-            let (ax, ay) = self.pos[&ft.name];
-            let (bx, by) = self.pos[&tt.name];
+            let source_key = ft.qualified_name();
+            let target_key = tt.qualified_name();
+            let (ax, ay) = self.pos[&source_key];
+            let (bx, by) = self.pos[&target_key];
             let ay = ay + HEADER_H + 4. + ROW_H * (fc as f32 + 0.5);
             let by = by + HEADER_H + 4. + ROW_H * (tc as f32 + 0.5);
             let (sa, sb) = if ax + CARD_W < bx {
@@ -406,9 +444,12 @@ impl Diagram {
             let obstacles: Vec<layout::Rect> = schema
                 .tables
                 .iter()
-                .filter(|t| t.name != ft.name && t.name != tt.name)
+                .filter(|t| {
+                    let tq = t.qualified_name();
+                    tq != source_key && tq != target_key
+                })
                 .map(|t| {
-                    let (x, y) = self.pos[&t.name];
+                    let (x, y) = self.pos[&t.qualified_name()];
                     layout::Rect {
                         x,
                         y,
@@ -427,8 +468,8 @@ impl Diagram {
             );
             if crate::canvas_geom::point_hits_polyline(p, &pts, 8. / self.zoom.max(0.4)) {
                 return Some((
-                    (r.from.table.clone(), r.from.column.clone()),
-                    (r.to.table.clone(), r.to.column.clone()),
+                    (source_key, r.from.column.clone()),
+                    (target_key, r.to.column.clone()),
                 ));
             }
         }
@@ -488,6 +529,11 @@ impl Diagram {
     }
 
     fn end_drag(&mut self, cx: &mut Context<Self>) {
+        if let Some(old_pos) = self.drag_start_pos.take()
+            && old_pos != self.pos
+        {
+            cx.emit(DiagramEvent::PositionsChanged(old_pos));
+        }
         if let Some(Drag::Link { from, now }) = &self.drag
             && let Some(to) = self.column_at(*now).or_else(|| self.table_at(*now))
             && to.0 != from.0
@@ -502,14 +548,15 @@ impl Diagram {
             let (y0, y1) = (start.1.min(now.1), start.1.max(now.1));
             if x1 - x0 > 2. || y1 - y0 > 2. {
                 for t in &self.schema.tables {
-                    let (x, y) = self.pos[&t.name];
+                    let qname = t.qualified_name();
+                    let (x, y) = self.pos[&qname];
                     let hit =
                         x < x1 && x + CARD_W > x0 && y < y1 && y + card_h(t.columns.len()) > y0;
-                    if hit && !self.is_selected(&t.name) {
+                    if hit && !self.is_selected(&qname) {
                         if self.selected.is_none() {
-                            self.selected = Some(t.name.clone());
+                            self.selected = Some(qname);
                         } else {
-                            self.multi.push(t.name.clone());
+                            self.multi.push(qname);
                         }
                     }
                 }
@@ -539,11 +586,25 @@ impl Diagram {
 
 fn auto_layout(schema: &Schema) -> HashMap<String, (f32, f32)> {
     let col_counts: Vec<usize> = schema.tables.iter().map(|t| t.columns.len()).collect();
-    let idx = |n: &str| schema.tables.iter().position(|t| t.name == n);
+    let idx = |n: &str| {
+        schema
+            .tables
+            .iter()
+            .position(|t| t.qualified_name() == n)
+            .or_else(|| {
+                (!n.contains('.'))
+                    .then(|| schema.tables.iter().position(|t| t.name == n))
+                    .flatten()
+            })
+    };
     let edges: Vec<_> = schema
         .refs
         .iter()
-        .filter_map(|r| Some((idx(&r.from.table)?, idx(&r.to.table)?)))
+        .filter_map(|r| {
+            let from = r.from.qualified_table();
+            let to = r.to.qualified_table();
+            Some((idx(&from)?, idx(&to)?))
+        })
         .collect();
     let clusters = (!schema.groups.is_empty()).then(|| {
         let mut c: Vec<Vec<usize>> = schema
@@ -553,7 +614,11 @@ fn auto_layout(schema: &Schema) -> HashMap<String, (f32, f32)> {
             .collect();
         c.push(
             (0..schema.tables.len())
-                .filter(|&i| schema.group_of(&schema.tables[i].name).is_none())
+                .filter(|&i| {
+                    schema
+                        .group_of(&schema.tables[i].qualified_name())
+                        .is_none()
+                })
                 .collect(),
         );
         c
@@ -563,7 +628,7 @@ fn auto_layout(schema: &Schema) -> HashMap<String, (f32, f32)> {
         .tables
         .iter()
         .zip(pos)
-        .map(|(t, p)| (t.name.clone(), (p.x, p.y)))
+        .map(|(t, p)| (t.qualified_name(), (p.x, p.y)))
         .collect();
     let max_y = map
         .values()
@@ -629,12 +694,16 @@ impl Diagram {
             .refs
             .iter()
             .filter_map(|r| {
-                let ft = schema.table(&r.from.table)?;
-                let tt = schema.table(&r.to.table)?;
+                let from_q = r.from.qualified_table();
+                let to_q = r.to.qualified_table();
+                let ft = schema.table(&from_q)?;
+                let tt = schema.table(&to_q)?;
                 let fc = ft.columns.iter().position(|c| c.name == r.from.column)?;
                 let tc = tt.columns.iter().position(|c| c.name == r.to.column)?;
-                let (ax, ay) = self.pos[&ft.name];
-                let (bx, by) = self.pos[&tt.name];
+                let source_key = ft.qualified_name();
+                let target_key = tt.qualified_name();
+                let (ax, ay) = self.pos[&source_key];
+                let (bx, by) = self.pos[&target_key];
                 let ay = ay + HEADER_H + 4. + ROW_H * (fc as f32 + 0.5);
                 let by = by + HEADER_H + 4. + ROW_H * (tc as f32 + 0.5);
                 // lado de saída/entrada: +1 borda direita, -1 esquerda
@@ -652,9 +721,12 @@ impl Diagram {
                 let obstacles: Vec<layout::Rect> = schema
                     .tables
                     .iter()
-                    .filter(|t| t.name != ft.name && t.name != tt.name)
+                    .filter(|t| {
+                        let tq = t.qualified_name();
+                        tq != source_key && tq != target_key
+                    })
                     .map(|t| {
-                        let (x, y) = self.pos[&t.name];
+                        let (x, y) = self.pos[&t.qualified_name()];
                         layout::Rect {
                             x,
                             y,
@@ -681,13 +753,13 @@ impl Diagram {
                     schema::RefKind::ManyToMany => ("N", "N"),
                 };
                 let is_sel_ref = self.selected_ref.as_ref().is_some_and(|(f, t)| {
-                    f.0 == r.from.table
+                    f.0 == source_key
                         && f.1 == r.from.column
-                        && t.0 == r.to.table
+                        && t.0 == target_key
                         && t.1 == r.to.column
                 });
                 let lit =
-                    is_sel_ref || self.is_selected(&r.from.table) || self.is_selected(&r.to.table);
+                    is_sel_ref || self.is_selected(&source_key) || self.is_selected(&target_key);
                 Some(Edge {
                     a: point(px(ax * z + pan_x), px(ay * z + pan_y)),
                     b: point(px(bx * z + pan_x), px(by * z + pan_y)),
@@ -1027,6 +1099,7 @@ impl Diagram {
                                         (lx - this.pan.0) / this.zoom,
                                         (ly - this.pan.1) / this.zoom,
                                     );
+                                    this.drag_start_pos = Some(this.pos.clone());
                                     this.drag = Some(Drag::Group {
                                         name: name.clone(),
                                         last: at,
@@ -1048,16 +1121,17 @@ impl Diagram {
         }
 
         // colunas que são origem de alguma relação (FK)
-        let fks: std::collections::HashSet<(&str, &str)> = schema
+        let fks: std::collections::HashSet<(String, &str)> = schema
             .refs
             .iter()
-            .map(|r| (r.from.table.as_str(), r.from.column.as_str()))
+            .map(|r| (r.from.qualified_table(), r.from.column.as_str()))
             .collect();
         let mut order: Vec<_> = schema.tables.iter().collect();
-        order.sort_by_key(|t| Some(&t.name) == self.top.as_ref());
+        order.sort_by_key(|t| self.top.as_deref() == Some(t.qualified_name().as_str()));
         let (vw, vh) = (f32::from(self.size.width), f32::from(self.size.height));
         for t in order {
-            let (x, y) = self.pos[&t.name];
+            let qname = t.qualified_name();
+            let (x, y) = self.pos[&qname];
             // fora da vista (com margem): não monta o cartão
             let (sx, sy) = (x * z + pan_x, y * z + pan_y);
             if vw > 0.
@@ -1068,22 +1142,25 @@ impl Diagram {
             {
                 continue;
             }
-            let name = t.name.clone();
-            let on = self.is_selected(&t.name);
+            let name = qname.clone();
+            let on = self.is_selected(&qname);
             // cor: a da tabela (headercolor) ou a do grupo
+            let grp = schema.group_of(&qname);
             let tint = t
                 .color
                 .as_deref()
-                .or_else(|| schema.group_of(&t.name).and_then(|gr| gr.color.as_deref()))
+                .or_else(|| grp.and_then(|gr| gr.color.as_deref()))
                 .and_then(hex)
-                .or_else(|| {
-                    schema
-                        .group_of(&t.name)
-                        .map(|gr| group_color(schema, &gr.name))
-                });
+                .or_else(|| grp.map(|gr| group_color(schema, &gr.name)));
             let mut rows: Vec<AnyElement> = Vec::new();
             for (i, c) in t.columns.iter().enumerate() {
-                let fk = c.fk || fks.contains(&(t.name.as_str(), c.name.as_str()));
+                let fk = c.fk || fks.contains(&(qname.clone(), c.name.as_str()));
+                let has_idx = t
+                    .indexes
+                    .iter()
+                    .any(|ix| ix.references_column(c.name.as_str()));
+                let has_def = c.default_value.is_some();
+                let has_chk = c.check.is_some();
                 let icon = if c.pk {
                     Some(Icon::new(IconName::KeyRound).text_color(g.accent))
                 } else if fk {
@@ -1091,7 +1168,7 @@ impl Diagram {
                 } else {
                     None
                 };
-                let from = (t.name.clone(), c.name.clone());
+                let from = (qname.clone(), c.name.clone());
                 rows.push(
                     div()
                         .id(("col", i))
@@ -1150,6 +1227,39 @@ impl Diagram {
                                     .child("NN"),
                             )
                         })
+                        .when(c.unique, |d| {
+                            d.child(
+                                div()
+                                    .text_size(s(10. * g.ui_scale))
+                                    .text_color(g.text_muted)
+                                    .child("UQ"),
+                            )
+                        })
+                        .when(has_idx, |d| {
+                            d.child(
+                                div()
+                                    .text_size(s(9.5 * g.ui_scale))
+                                    .font_weight(FontWeight::SEMIBOLD)
+                                    .text_color(g.accent)
+                                    .child("IDX"),
+                            )
+                        })
+                        .when(has_def, |d| {
+                            d.child(
+                                div()
+                                    .text_size(s(9.5 * g.ui_scale))
+                                    .text_color(g.text_muted)
+                                    .child("DEF"),
+                            )
+                        })
+                        .when(has_chk, |d| {
+                            d.child(
+                                div()
+                                    .text_size(s(9.5 * g.ui_scale))
+                                    .text_color(g.text_muted)
+                                    .child("CHK"),
+                            )
+                        })
                         // porta: arraste até outra coluna para criar a relação
                         .child(
                             div()
@@ -1184,9 +1294,9 @@ impl Diagram {
             }
             root = root.child(
                 div()
-                    .id(SharedString::from(format!("table-{}", t.name)))
+                    .id(SharedString::from(format!("table-{qname}")))
                     .role(Role::Group)
-                    .aria_label(format!("Table {}", t.name))
+                    .aria_label(format!("Table {qname}"))
                     .absolute()
                     .left(s(x) + px(pan_x))
                     .top(s(y) + px(pan_y))
@@ -1258,6 +1368,7 @@ impl Diagram {
                             this.selected_ref = None;
                             cx.emit(DiagramEvent::Select(name.clone()));
                             let _ = grab;
+                            this.drag_start_pos = Some(this.pos.clone());
                             this.drag = Some(Drag::Cards {
                                 last: this.to_world(e.position),
                             });
@@ -1304,11 +1415,23 @@ impl Diagram {
                             .child(
                                 div()
                                     .flex_1()
+                                    .truncate()
                                     .text_size(s(14. * g.ui_scale))
                                     .font_weight(FontWeight::SEMIBOLD)
                                     .text_color(g.text)
                                     .child(t.name.clone()),
                             )
+                            .when_some(t.schema.as_ref(), |d, sch| {
+                                d.child(
+                                    div()
+                                        .px(s(5.))
+                                        .rounded(s(4.))
+                                        .bg(g.selected)
+                                        .text_size(s(10. * g.ui_scale))
+                                        .text_color(g.text_muted)
+                                        .child(sch.clone()),
+                                )
+                            })
                             .child(
                                 div()
                                     .px(s(6.))
@@ -1322,9 +1445,9 @@ impl Diagram {
                     )
                     .child(div().pt(s(4.)).children(rows))
                     .child({
-                        let table = t.name.clone();
+                        let table = qname.clone();
                         div()
-                            .id(SharedString::from(format!("addcol-{}", t.name)))
+                            .id(SharedString::from(format!("addcol-{qname}")))
                             .role(Role::Button)
                             .aria_label("Add column")
                             .absolute()
@@ -1408,6 +1531,7 @@ impl Diagram {
                         window.focus(&this.focus, cx);
                         this.select_enum(&en_name);
                         cx.emit(DiagramEvent::SelectEnum(en_name.clone()));
+                        this.drag_start_pos = Some(this.pos.clone());
                         this.drag = Some(Drag::Enum {
                             name: en_name.clone(),
                             last: this.to_world(e.position),

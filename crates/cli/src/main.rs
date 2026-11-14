@@ -1,10 +1,12 @@
+use anyhow::Context as _;
 use clap::Parser;
 use colored::Colorize;
-use dbml_cli::args::{Cli, Commands, ExportFormat};
+use dbml_cli::args::{Cli, Commands, ExportFormat, ImportDialect};
 use dbml_cli::server;
 use dbml_cli::state::AppState;
 use dbml_cli::watcher;
 use std::net::SocketAddr;
+use std::path::Path;
 use tokio::net::TcpListener;
 
 #[tokio::main]
@@ -27,6 +29,15 @@ async fn main() -> anyhow::Result<()> {
             print!("{out}");
         }
         return Ok(());
+    }
+    if let Some(Commands::Import {
+        file,
+        dialect,
+        output,
+        force,
+    }) = cli.command
+    {
+        return run_import(&file, dialect, output.as_deref(), force);
     }
     let config = cli.resolve_config()?;
 
@@ -108,4 +119,81 @@ async fn main() -> anyhow::Result<()> {
         .await?;
 
     Ok(())
+}
+
+fn run_import(
+    file: &Path,
+    dialect: ImportDialect,
+    output: Option<&Path>,
+    force: bool,
+) -> anyhow::Result<()> {
+    let src = std::fs::read_to_string(file)
+        .with_context(|| format!("failed to read SQL file `{}`", file.display()))?;
+    let outcome = sql_import::import_sql_ddl(&src, dialect.to_sql_dialect());
+    for w in &outcome.warnings {
+        eprintln!(
+            "{}:{}:{}: warning: {}",
+            file.display(),
+            w.line,
+            w.column,
+            w.message
+        );
+    }
+    if let Some(out_path) = output {
+        if out_path.exists() && !force {
+            anyhow::bail!(
+                "output file `{}` already exists (pass --force to overwrite)",
+                out_path.display()
+            );
+        }
+        write_atomic(out_path, outcome.dbml.as_bytes())?;
+    } else {
+        print!("{}", outcome.dbml);
+    }
+    Ok(())
+}
+
+fn write_atomic(path: &Path, bytes: &[u8]) -> anyhow::Result<()> {
+    let parent = path
+        .parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+    let file_name = path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("output.dbml");
+    let tmp = parent.join(format!(".{file_name}.{}.tmp", std::process::id()));
+    std::fs::write(&tmp, bytes)
+        .with_context(|| format!("failed to write temporary file `{}`", tmp.display()))?;
+    if let Err(err) = std::fs::rename(&tmp, path) {
+        let _ = std::fs::remove_file(&tmp);
+        return Err(err)
+            .with_context(|| format!("failed to write output file `{}`", path.display()));
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn run_import_writes_output_and_refuses_overwrite_without_force() {
+        let dir = std::env::temp_dir().join(format!("dbml_cli_import_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let sql_path = dir.join("schema.sql");
+        let out_path = dir.join("schema.dbml");
+        std::fs::write(&sql_path, "CREATE TABLE users (id serial PRIMARY KEY);").unwrap();
+
+        run_import(&sql_path, ImportDialect::Postgres, Some(&out_path), false).unwrap();
+        let dbml = std::fs::read_to_string(&out_path).unwrap();
+        assert!(dbml.contains("Table users {"));
+
+        let err =
+            run_import(&sql_path, ImportDialect::Postgres, Some(&out_path), false).unwrap_err();
+        assert!(err.to_string().contains("--force"));
+
+        run_import(&sql_path, ImportDialect::Postgres, Some(&out_path), true).unwrap();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }

@@ -6,6 +6,7 @@ export const compute_layout: (a: number, b: number, c: any) => [number, number, 
 export const compute_scene: (a: number, b: number, c: any) => [number, number, number];
 export const export_sql_ddl: (a: number, b: number, c: number, d: number) => [number, number, number, number];
 export const format_dbml: (a: number, b: number) => [number, number];
+export const import_sql_ddl: (a: number, b: number, c: number, d: number) => [number, number, number];
 export const parse_and_analyze: (a: number, b: number) => [number, number, number];
 export const swap_dbml_lines: (a: number, b: number, c: number, d: number) => [number, number, number];
 export const __wbindgen_malloc: (a: number, b: number) => number;

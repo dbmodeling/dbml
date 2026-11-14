@@ -14,6 +14,7 @@ dbml-analysis.workspace = true
 # Linux path, which does not exist in cross-built Windows .exe binaries).
 rust-embed = { workspace = true, features = ["debug-embed"] }
 dbml-edit.workspace = true
+sql-import.workspace = true
 lsp-types.workspace = true
 dbml-syntax.workspace = true
 anyhow.workspace = true

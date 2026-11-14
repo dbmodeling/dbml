@@ -20,11 +20,13 @@ pub(super) fn fk_child_endpoint(r: &Ref) -> &Endpoint {
 /// Orders tables so parent tables precede child tables, returning any cycle/self refs to defer.
 pub(super) fn topological_order(schema: &Schema) -> (Vec<&Table>, Vec<&Ref>) {
     let mut table_map: BTreeMap<&str, &Table> = BTreeMap::new();
+    let mut table_idx: HashMap<&str, usize> = HashMap::with_capacity(schema.tables.len());
     let mut indegree: BTreeMap<&str, usize> = BTreeMap::new();
     let mut dependents: BTreeMap<&str, BTreeSet<&str>> = BTreeMap::new();
 
-    for t in &schema.tables {
+    for (idx, t) in schema.tables.iter().enumerate() {
         table_map.insert(t.name.as_str(), t);
+        table_idx.insert(t.name.as_str(), idx);
         indegree.insert(t.name.as_str(), 0);
         dependents.entry(t.name.as_str()).or_default();
     }
@@ -49,15 +51,16 @@ pub(super) fn topological_order(schema: &Schema) -> (Vec<&Table>, Vec<&Ref>) {
         }
     }
 
-    let mut ready: BTreeSet<&str> = indegree
+    let mut ready: BTreeSet<(usize, &str)> = indegree
         .iter()
-        .filter_map(|(&name, &deg)| (deg == 0).then_some(name))
+        .filter(|&(_, &deg)| deg == 0)
+        .map(|(&name, _)| (table_idx.get(name).copied().unwrap_or(usize::MAX), name))
         .collect();
     let mut ordered: Vec<&Table> = Vec::with_capacity(schema.tables.len());
     let mut rank: HashMap<&str, usize> = HashMap::with_capacity(schema.tables.len());
 
-    while let Some(&name) = ready.iter().next() {
-        ready.remove(name);
+    while let Some(&(idx, name)) = ready.iter().next() {
+        ready.remove(&(idx, name));
         if let Some(&t) = table_map.get(name) {
             rank.insert(name, ordered.len());
             ordered.push(t);
@@ -67,7 +70,8 @@ pub(super) fn topological_order(schema: &Schema) -> (Vec<&Table>, Vec<&Ref>) {
                 if let Some(deg) = indegree.get_mut(child) {
                     *deg = deg.saturating_sub(1);
                     if *deg == 0 {
-                        ready.insert(child);
+                        let cidx = table_idx.get(child).copied().unwrap_or(usize::MAX);
+                        ready.insert((cidx, child));
                     }
                 }
             }

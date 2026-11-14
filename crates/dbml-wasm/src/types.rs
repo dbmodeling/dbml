@@ -264,6 +264,49 @@ pub enum Command {
         /// `true` to move up, `false` to move down.
         up: bool,
     },
+    /// Set or clear the `default: ...` value of a column.
+    SetColumnDefault {
+        /// Target table name.
+        table: String,
+        /// Target column name.
+        column: String,
+        /// Desired default expression (`None` clears `default:`).
+        #[serde(default)]
+        default_value: Option<String>,
+    },
+    /// Set or clear the ``check: `...` `` constraint of a column.
+    SetColumnCheck {
+        /// Target table name.
+        table: String,
+        /// Target column name.
+        column: String,
+        /// Desired check expression (`None` clears `check:`).
+        #[serde(default)]
+        check: Option<String>,
+    },
+    /// Append a new index definition to a table's `indexes { ... }` block.
+    AddIndex {
+        /// Target table name.
+        table: String,
+        /// Index definition to append.
+        index: schema::IndexDef,
+    },
+    /// Update an existing index at `index_idx` in a table's `indexes { ... }` block.
+    UpdateIndex {
+        /// Target table name.
+        table: String,
+        /// 0-based index position inside `indexes { ... }`.
+        index_idx: usize,
+        /// Updated index definition.
+        index: schema::IndexDef,
+    },
+    /// Delete an index at `index_idx` from a table's `indexes { ... }` block.
+    DeleteIndex {
+        /// Target table name.
+        table: String,
+        /// 0-based index position inside `indexes { ... }`.
+        index_idx: usize,
+    },
 }
 
 /// Dimensions of a table card for auto-layout computation.
@@ -376,8 +419,11 @@ pub struct GroupBox {
 /// Computed visual metadata for a table card.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TableVisual {
-    /// Table name.
+    /// Qualified table name (`schema.table` or `table`).
     pub name: String,
+    /// Optional schema / namespace name.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub schema: Option<String>,
     /// Left X coordinate.
     pub x: f32,
     /// Top Y coordinate.
@@ -427,4 +473,24 @@ pub struct SceneGeometry {
     pub groups: Vec<GroupBox>,
     /// Orthogonally routed relationship edges.
     pub edges: Vec<RoutedEdge>,
+}
+
+/// Construct skipped or dropped while importing SQL DDL.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ImportWarningDto {
+    /// 1-based line in the SQL source.
+    pub line: u32,
+    /// 1-based column in the SQL source.
+    pub column: u32,
+    /// Human-readable description.
+    pub message: String,
+}
+
+/// Result of `import_sql_ddl`: generated DBML plus warnings.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ImportResult {
+    /// Generated DBML text.
+    pub dbml: String,
+    /// Skipped or dropped constructs ordered by position.
+    pub warnings: Vec<ImportWarningDto>,
 }

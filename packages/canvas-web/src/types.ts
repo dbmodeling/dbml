@@ -7,7 +7,22 @@ export type RefKind = 'ManyToOne' | 'OneToMany' | 'OneToOne' | 'ManyToMany';
 
 export type RefAction = 'no_action' | 'restrict' | 'cascade' | 'set_null' | 'set_default';
 
+export type IndexType = 'b_tree' | 'hash' | 'gin' | 'gist';
+
+export type IndexColumn =
+  | { kind: 'column'; value: string }
+  | { kind: 'expression'; value: string };
+
+export interface IndexDef {
+  columns: IndexColumn[];
+  unique: boolean;
+  pk: boolean;
+  name?: string | null;
+  index_type?: IndexType | null;
+}
+
 export interface Endpoint {
+  schema?: string | null;
   table: string;
   column: string;
 }
@@ -27,12 +42,26 @@ export interface Column {
   fk?: boolean;
   not_null: boolean;
   unique: boolean;
+  default_value?: string | null;
+  check?: string | null;
+  note?: string | null;
 }
 
 export interface Table {
+  schema?: string | null;
   name: string;
   columns: Column[];
   color?: string | null;
+  indexes?: IndexDef[];
+  note?: string | null;
+}
+
+export function qualifiedTableName(t: Pick<Table, 'schema' | 'name'>): string {
+  return t.schema ? `${t.schema}.${t.name}` : t.name;
+}
+
+export function qualifiedEndpointTable(e: Pick<Endpoint, 'schema' | 'table'>): string {
+  return e.schema ? `${e.schema}.${e.table}` : e.table;
 }
 
 export interface Group {
@@ -117,6 +146,7 @@ export interface GroupBox {
 
 export interface TableVisual {
   name: string;
+  schema?: string | null;
   x: number;
   y: number;
   w: number;
@@ -191,7 +221,12 @@ export type Command =
   | { action: 'add_enum_value'; payload: { enum_name: string; value?: string } }
   | { action: 'delete_enum_value'; payload: { enum_name: string; value: string } }
   | { action: 'rename_enum_value'; payload: { enum_name: string; old_value: string; new_value: string } }
-  | { action: 'reorder_enum_value'; payload: { enum_name: string; value: string; up: boolean } };
+  | { action: 'reorder_enum_value'; payload: { enum_name: string; value: string; up: boolean } }
+  | { action: 'set_column_default'; payload: { table: string; column: string; default_value?: string | null } }
+  | { action: 'set_column_check'; payload: { table: string; column: string; check?: string | null } }
+  | { action: 'add_index'; payload: { table: string; index: IndexDef } }
+  | { action: 'update_index'; payload: { table: string; index_idx: number; index: IndexDef } }
+  | { action: 'delete_index'; payload: { table: string; index_idx: number } };
 
 export interface WorkspaceFileEntry {
   name: string;

@@ -5,7 +5,7 @@ use dbml_syntax::{SyntaxKind, SyntaxNode, SyntaxToken, descendant_tokens as sig,
 use schema::{RefAction, RefKind};
 use std::ops::Range;
 
-fn range(t: &SyntaxToken) -> Range<usize> {
+pub(crate) fn range(t: &SyntaxToken) -> Range<usize> {
     usize::from(t.text_range().start())..usize::from(t.text_range().end())
 }
 
@@ -13,26 +13,71 @@ fn tables(root: &SyntaxNode) -> impl Iterator<Item = SyntaxNode> {
     root.children().filter(|n| n.kind() == SyntaxKind::Table)
 }
 
-/// Token do nome no cabeçalho `Table nome ...`.
-fn name_token(t: &SyntaxNode) -> Option<SyntaxToken> {
-    t.children_with_tokens()
+pub(crate) fn bare_table_name(name: &str) -> &str {
+    name.rsplit_once('.').map_or(name, |(_, t)| t)
+}
+
+/// Returns `(optional_schema_token, table_name_token)` from a `Table` header.
+pub(crate) fn table_header_name(t: &SyntaxNode) -> Option<(Option<SyntaxToken>, SyntaxToken)> {
+    let mut header = t
+        .children_with_tokens()
         .filter_map(rowan::NodeOrToken::into_token)
-        .filter(|k| matches!(k.kind(), SyntaxKind::Ident | SyntaxKind::Str))
-        .nth(1)
+        .filter(|k| !k.kind().is_trivia())
+        .take_while(|k| k.kind() != SyntaxKind::LBrace);
+    // Skip the `Table` keyword.
+    header.find(|k| matches!(k.kind(), SyntaxKind::Ident | SyntaxKind::Str))?;
+    let first = header.next()?;
+    if !matches!(first.kind(), SyntaxKind::Ident | SyntaxKind::Str) {
+        return None;
+    }
+    match (header.next(), header.next()) {
+        (Some(dot), Some(second))
+            if dot.text() == "."
+                && matches!(second.kind(), SyntaxKind::Ident | SyntaxKind::Str) =>
+        {
+            Some((Some(first), second))
+        }
+        _ => Some((None, first)),
+    }
 }
 
-fn find_table(root: &SyntaxNode, name: &str) -> Option<SyntaxNode> {
-    tables(root).find(|t| name_token(t).is_some_and(|k| unquote(k.text()) == name))
+pub(crate) fn table_qualified_name(t: &SyntaxNode) -> Option<String> {
+    let (schema_tok, name_tok) = table_header_name(t)?;
+    let name = unquote(name_tok.text());
+    Some(match schema_tok {
+        Some(s) => format!("{}.{name}", unquote(s.text())),
+        None => name.to_string(),
+    })
 }
 
-fn find_column(t: &SyntaxNode, col: &str) -> Option<SyntaxNode> {
+pub(crate) fn table_name_range(t: &SyntaxNode) -> Option<Range<usize>> {
+    let (schema_tok, name_tok) = table_header_name(t)?;
+    let start = schema_tok.as_ref().map_or_else(
+        || usize::from(name_tok.text_range().start()),
+        |s| usize::from(s.text_range().start()),
+    );
+    Some(start..usize::from(name_tok.text_range().end()))
+}
+
+pub(crate) fn find_table(root: &SyntaxNode, name: &str) -> Option<SyntaxNode> {
+    if let Some(exact) = tables(root).find(|t| table_qualified_name(t).as_deref() == Some(name)) {
+        return Some(exact);
+    }
+    if !name.contains('.') {
+        return tables(root)
+            .find(|t| table_header_name(t).is_some_and(|(_, tbl)| unquote(tbl.text()) == name));
+    }
+    None
+}
+
+pub(crate) fn find_column(t: &SyntaxNode, col: &str) -> Option<SyntaxNode> {
     t.children()
         .filter(|n| n.kind() == SyntaxKind::Column)
         .find(|c| sig(c).first().is_some_and(|k| unquote(k.text()) == col))
 }
 
 /// Aplica substituições (intervalo → texto), da última para a primeira.
-fn apply(text: &str, mut edits: Vec<(Range<usize>, String)>) -> String {
+pub(crate) fn apply(text: &str, mut edits: Vec<(Range<usize>, String)>) -> String {
     edits.sort_by_key(|(r, _)| std::cmp::Reverse(r.start));
     edits.dedup_by_key(|(r, _)| r.start);
     let mut out = text.to_string();
@@ -43,7 +88,7 @@ fn apply(text: &str, mut edits: Vec<(Range<usize>, String)>) -> String {
 }
 
 /// Linha inteira (com o `\n`) que contém o intervalo.
-fn line_of(text: &str, r: Range<usize>) -> Range<usize> {
+pub(crate) fn line_of(text: &str, r: Range<usize>) -> Range<usize> {
     let start = text[..r.start].rfind('\n').map_or(0, |i| i + 1);
     let end = text[r.end..]
         .find('\n')
@@ -65,8 +110,7 @@ fn append_block(text: &str, block: &str) -> String {
 pub fn unique_table_name(text: &str, base: &str) -> String {
     let root = parse(text).syntax();
     let taken: Vec<String> = tables(&root)
-        .filter_map(|t| name_token(&t))
-        .map(|k| unquote(k.text()).to_string())
+        .filter_map(|t| table_qualified_name(&t))
         .collect();
     std::iter::once(base.to_string())
         .chain((2..=taken.len() + 2).map(|i| format!("{base}_{i}")))
@@ -98,25 +142,30 @@ pub fn add_table(text: &str, name: &str) -> String {
     append_block(text, &format!("Table {name} {{\n  id int [pk]\n}}\n"))
 }
 
+fn parse_endpoint(toks: &[SyntaxToken]) -> Option<(String, String, usize)> {
+    if toks.len() >= 5 && toks[1].text() == "." && toks[3].text() == "." {
+        let table = format!("{}.{}", unquote(toks[0].text()), unquote(toks[2].text()));
+        let col = unquote(toks[4].text()).to_string();
+        Some((table, col, 5))
+    } else if toks.len() >= 3 && toks[1].text() == "." {
+        let table = unquote(toks[0].text()).to_string();
+        let col = unquote(toks[2].text()).to_string();
+        Some((table, col, 3))
+    } else {
+        None
+    }
+}
+
 /// Extrai os endpoints `(from_table, from_col, to_table, to_col)` de um nó `SyntaxKind::Ref`.
 fn parse_top_ref_endpoints(r: &SyntaxNode) -> Option<(String, String, String, String)> {
     let toks = sig(r);
     let colon = toks.iter().position(|t| t.text() == ":")?;
     let body = &toks[colon + 1..];
-    if body.len() < 7 || body[1].text() != "." {
-        return None;
-    }
-    let from_t = unquote(body[0].text()).to_string();
-    let from_c = unquote(body[2].text()).to_string();
-    let mut k = 3;
+    let (from_t, from_c, mut k) = parse_endpoint(body)?;
     while k < body.len() && matches!(body[k].text(), "<" | ">" | "-") {
         k += 1;
     }
-    if body.get(k + 1).map(rowan::SyntaxToken::text) != Some(".") || k + 2 >= body.len() {
-        return None;
-    }
-    let to_t = unquote(body[k].text()).to_string();
-    let to_c = unquote(body[k + 2].text()).to_string();
+    let (to_t, to_c, _) = parse_endpoint(body.get(k..)?)?;
     Some((from_t, from_c, to_t, to_c))
 }
 
@@ -137,26 +186,21 @@ pub fn delete_table(text: &str, name: &str) -> String {
         }
         edits.push((r, String::new()));
     }
+    let bare_name = bare_table_name(name);
     for r in root.children().filter(|n| n.kind() == SyntaxKind::Ref) {
-        if let Some((ft, fc, tt, _)) = parse_top_ref_endpoints(&r)
-            && tt == name
-            && ft != name
-            && fc.starts_with(&format!("id_{name}"))
-        {
-            fk_cols_to_remove.push((ft.clone(), fc.clone()));
-        }
-        let toks = sig(&r);
-        if toks
-            .windows(2)
-            .any(|w| unquote(w[0].text()) == name && w[1].text() == ".")
-        {
-            edits.push((
-                line_of(
-                    text,
-                    usize::from(r.text_range().start())..usize::from(r.text_range().end()),
-                ),
-                String::new(),
-            ));
+        if let Some((ft, fc, tt, _)) = parse_top_ref_endpoints(&r) {
+            if tt == name && ft != name && fc.starts_with(&format!("id_{bare_name}")) {
+                fk_cols_to_remove.push((ft.clone(), fc.clone()));
+            }
+            if ft == name || tt == name {
+                edits.push((
+                    line_of(
+                        text,
+                        usize::from(r.text_range().start())..usize::from(r.text_range().end()),
+                    ),
+                    String::new(),
+                ));
+            }
         }
     }
     for (ft, fc) in fk_cols_to_remove {
@@ -182,17 +226,37 @@ pub fn delete_table(text: &str, name: &str) -> String {
 pub fn rename_table(text: &str, old: &str, new: &str) -> String {
     let root = parse(text).syntax();
     let mut edits = Vec::new();
-    if let Some(k) = find_table(&root, old).and_then(|t| name_token(&t)) {
-        edits.push((range(&k), new.to_string()));
+    if let Some(r) = find_table(&root, old).and_then(|t| table_name_range(&t)) {
+        edits.push((r, new.to_string()));
     }
     let toks: Vec<_> = root
         .descendants_with_tokens()
         .filter_map(rowan::NodeOrToken::into_token)
         .filter(|t| !t.kind().is_trivia())
         .collect();
-    for w in toks.windows(2) {
-        if unquote(w[0].text()) == old && w[1].text() == "." {
-            edits.push((range(&w[0]), new.to_string()));
+    if let Some((old_s, old_t)) = old.split_once('.') {
+        for w in toks.windows(5) {
+            if unquote(w[0].text()) == old_s
+                && w[1].text() == "."
+                && unquote(w[2].text()) == old_t
+                && w[3].text() == "."
+            {
+                let start = usize::from(w[0].text_range().start());
+                let end = usize::from(w[2].text_range().end());
+                edits.push((start..end, new.to_string()));
+            }
+        }
+    } else {
+        for (i, w) in toks.windows(2).enumerate() {
+            let prev_is_dot = i > 0 && toks[i - 1].text() == ".";
+            let next_after_col_is_dot = toks.get(i + 3).is_some_and(|t| t.text() == ".");
+            if !prev_is_dot
+                && !next_after_col_is_dot
+                && unquote(w[0].text()) == old
+                && w[1].text() == "."
+            {
+                edits.push((range(&w[0]), new.to_string()));
+            }
         }
     }
     for g in root
@@ -200,25 +264,40 @@ pub fn rename_table(text: &str, old: &str, new: &str) -> String {
         .filter(|n| n.kind() == SyntaxKind::TableGroup)
     {
         for line in g.children().filter(|n| n.kind() == SyntaxKind::Column) {
-            if let Some(k) = sig(&line).first().filter(|k| unquote(k.text()) == old) {
+            let ltoks = sig(&line);
+            if let Some((old_s, old_t)) = old.split_once('.') {
+                if ltoks.len() >= 3
+                    && unquote(ltoks[0].text()) == old_s
+                    && ltoks[1].text() == "."
+                    && unquote(ltoks[2].text()) == old_t
+                {
+                    let start = usize::from(ltoks[0].text_range().start());
+                    let end = usize::from(ltoks[2].text_range().end());
+                    edits.push((start..end, new.to_string()));
+                }
+            } else if let Some(k) = ltoks.first().filter(|k| unquote(k.text()) == old) {
                 edits.push((range(k), new.to_string()));
             }
         }
     }
     let mut out = apply(text, edits);
     // Se alguma tabela possui coluna `id_<old>`, renomeia para `id_<new>` atualizando também as Refs
-    let old_fk = format!("id_{old}");
-    let new_fk = format!("id_{new}");
-    let root2 = parse(&out).syntax();
-    let tables_with_fk: Vec<String> = tables(&root2)
-        .filter_map(|t| {
-            let tname = unquote(name_token(&t)?.text()).to_string();
-            find_column(&t, &old_fk).map(|_| tname)
-        })
-        .collect();
-    for tname in tables_with_fk {
-        if let Some(updated) = rename_column(&out, &tname, &old_fk, &new_fk) {
-            out = updated;
+    let old_bare = bare_table_name(old);
+    let new_bare = bare_table_name(new);
+    if old_bare != new_bare {
+        let old_fk = format!("id_{old_bare}");
+        let new_fk = format!("id_{new_bare}");
+        let root2 = parse(&out).syntax();
+        let tables_with_fk: Vec<String> = tables(&root2)
+            .filter_map(|t| {
+                let tname = table_qualified_name(&t)?;
+                find_column(&t, &old_fk).map(|_| tname)
+            })
+            .collect();
+        for tname in tables_with_fk {
+            if let Some(updated) = rename_column(&out, &tname, &old_fk, &new_fk) {
+                out = updated;
+            }
         }
     }
     out
@@ -263,21 +342,62 @@ pub fn delete_column(text: &str, table: &str, col: &str) -> Option<String> {
     Some(apply(text, edits).trim_end().to_string() + "\n")
 }
 
-/// Renames column `old` to `new` in `table` and updates all `table.old` references.
+/// Renames column `old` to `new` in `table` and updates all `table.old` and `indexes` references.
 #[must_use]
 pub fn rename_column(text: &str, table: &str, old: &str, new: &str) -> Option<String> {
     let root = parse(text).syntax();
-    let c = find_column(&find_table(&root, table)?, old)?;
+    let t_node = find_table(&root, table)?;
+    let c = find_column(&t_node, old)?;
     let mut edits = vec![(range(sig(&c).first()?), new.to_string())];
-    // `tabela.coluna` em qualquer lugar
+    for idx_block in t_node
+        .children()
+        .filter(|n| n.kind() == SyntaxKind::Indexes)
+    {
+        let idx_toks: Vec<_> = idx_block
+            .descendants_with_tokens()
+            .filter_map(rowan::NodeOrToken::into_token)
+            .filter(|k| k.kind() == SyntaxKind::Newline || !k.kind().is_trivia())
+            .collect();
+        for line in idx_toks.split(|k| k.kind() == SyntaxKind::Newline) {
+            let before_bracket = line.iter().take_while(|k| k.kind() != SyntaxKind::LBracket);
+            for tok in before_bracket {
+                if matches!(tok.kind(), SyntaxKind::Ident | SyntaxKind::Str)
+                    && !tok.text().starts_with('`')
+                    && !tok.text().eq_ignore_ascii_case("indexes")
+                    && unquote(tok.text()) == old
+                {
+                    edits.push((range(tok), new.to_string()));
+                }
+            }
+        }
+    }
+    // `tabela.coluna` ou `schema.tabela.coluna` em qualquer lugar
     let toks: Vec<_> = root
         .descendants_with_tokens()
         .filter_map(rowan::NodeOrToken::into_token)
         .filter(|t| !t.kind().is_trivia())
         .collect();
-    for w in toks.windows(3) {
-        if unquote(w[0].text()) == table && w[1].text() == "." && unquote(w[2].text()) == old {
-            edits.push((range(&w[2]), new.to_string()));
+    if let Some((sch, tbl)) = table.split_once('.') {
+        for w in toks.windows(5) {
+            if unquote(w[0].text()) == sch
+                && w[1].text() == "."
+                && unquote(w[2].text()) == tbl
+                && w[3].text() == "."
+                && unquote(w[4].text()) == old
+            {
+                edits.push((range(&w[4]), new.to_string()));
+            }
+        }
+    } else {
+        for (i, w) in toks.windows(3).enumerate() {
+            let prev_is_dot = i > 0 && toks[i - 1].text() == ".";
+            if !prev_is_dot
+                && unquote(w[0].text()) == table
+                && w[1].text() == "."
+                && unquote(w[2].text()) == old
+            {
+                edits.push((range(&w[2]), new.to_string()));
+            }
         }
     }
     Some(apply(text, edits))
@@ -421,7 +541,7 @@ pub fn link_tables(text: &str, source_table: &str, target_table: &str) -> String
         }
     }
 
-    let fk_base = format!("id_{source_table}");
+    let fk_base = format!("id_{}", bare_table_name(source_table));
     let fk_col = if find_table(&root, target_table)
         .and_then(|t| find_column(&t, &fk_base))
         .is_some()
@@ -907,5 +1027,88 @@ mod tests {
             },
         );
         assert!(updated.contains("user_id int [not null, ref: < users.id, delete: set null]"));
+    }
+
+    #[test]
+    fn qualified_schema_table_operations_preserve_namespaces() {
+        let src = "\
+Table auth.users {
+  id int [pk]
+}
+
+Table billing.users {
+  id int [pk]
+}
+
+Table billing.invoices {
+  id int [pk]
+}
+";
+        let linked = link_tables(src, "auth.users", "billing.invoices");
+        assert!(linked.contains("id_users int"), "{linked}");
+        assert!(
+            linked.contains("Ref: billing.invoices.id_users > auth.users.id"),
+            "{linked}"
+        );
+
+        let renamed_col =
+            rename_column(&linked, "auth.users", "id", "user_pk").expect("rename_column");
+        assert!(renamed_col.contains("user_pk int [pk]"), "{renamed_col}");
+        assert!(
+            renamed_col.contains("Ref: billing.invoices.id_users > auth.users.user_pk"),
+            "{renamed_col}"
+        );
+
+        let grouped = crate::group_tables(&renamed_col, &["auth.users", "billing.users"], "ident");
+        assert!(
+            grouped.contains("TableGroup ident {\n  auth.users\n  billing.users\n}\n"),
+            "{grouped}"
+        );
+
+        let colored = crate::set_table_color(&grouped, "auth.users", Some("#3b82f6"))
+            .expect("set_table_color");
+        assert!(
+            colored.contains("Table auth.users [headercolor: #3b82f6] {"),
+            "{colored}"
+        );
+
+        let renamed_tbl = rename_table(&colored, "auth.users", "auth.accounts");
+        assert!(
+            renamed_tbl.contains("Table auth.accounts [headercolor: #3b82f6] {"),
+            "{renamed_tbl}"
+        );
+        assert!(
+            renamed_tbl.contains("Table billing.users {"),
+            "other schema table must remain untouched: {renamed_tbl}"
+        );
+        assert!(
+            renamed_tbl.contains("id_accounts int"),
+            "FK column should update to id_accounts: {renamed_tbl}"
+        );
+        assert!(
+            renamed_tbl.contains("Ref: billing.invoices.id_accounts > auth.accounts.user_pk"),
+            "{renamed_tbl}"
+        );
+        assert!(
+            renamed_tbl.contains("TableGroup ident {\n  auth.accounts\n  billing.users\n}\n"),
+            "{renamed_tbl}"
+        );
+
+        let ungrouped = crate::ungroup_table(&renamed_tbl, "auth.accounts");
+        assert!(
+            ungrouped.contains("TableGroup ident {\n  billing.users\n}\n"),
+            "{ungrouped}"
+        );
+
+        let deleted_tbl = delete_table(&ungrouped, "auth.accounts");
+        assert!(!deleted_tbl.contains("auth.accounts"), "{deleted_tbl}");
+        assert!(
+            !deleted_tbl.contains("id_accounts"),
+            "FK column should be removed when parent table is deleted: {deleted_tbl}"
+        );
+        assert!(
+            deleted_tbl.contains("Table billing.users {"),
+            "{deleted_tbl}"
+        );
     }
 }

@@ -15,6 +15,8 @@ actions!(
         ShowSchema,
         ShowProblems,
         SaveFile,
+        Undo,
+        Redo,
         Quit,
         OpenPalette,
         ShowShortcuts,
@@ -50,6 +52,7 @@ actions!(
         ExportSqlSqlite,
         ExportSqlSqlServer,
         ExportSqlOracle,
+        ImportSqlDdl,
     ]
 );
 
@@ -100,6 +103,8 @@ pub fn catalog() -> Vec<Entry> {
         e("ctrl-shift-d", ShowSchema, "View", "Show Schema (Tables)"),
         e("ctrl-shift-m", ShowProblems, "View", "Show Problems"),
         e("ctrl-s", SaveFile, "File", "Save"),
+        e("ctrl-z", Undo, "Edit", "Undo"),
+        e("ctrl-shift-z", Redo, "Edit", "Redo"),
         e("ctrl-q", Quit, "File", "Quit"),
         e("ctrl-t", ToggleTheme, "View", "Toggle Light/Dark Theme"),
         e("ctrl-e", ToggleEditor, "View", "Toggle DBML Editor"),
@@ -159,5 +164,6 @@ pub fn catalog() -> Vec<Entry> {
         e("", ExportSqlSqlite, "Export", "Export SQL (SQLite)"),
         e("", ExportSqlSqlServer, "Export", "Export SQL (SQL Server)"),
         e("", ExportSqlOracle, "Export", "Export SQL (Oracle)"),
+        e("", ImportSqlDdl, "File", "Import SQL DDL…"),
     ]
 }

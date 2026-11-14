@@ -1,0 +1,449 @@
+---
+source: crates/sql-import/src/parser.rs
+expression: "ir(PG, SqlDialect::Postgres)"
+---
+Ir {
+    tables: [
+        Table {
+            name: Name {
+                schema: Some(
+                    "public",
+                ),
+                name: "users",
+            },
+            columns: [
+                Column {
+                    name: "id",
+                    ty: "integer",
+                    not_null: true,
+                    default: None,
+                    unique: false,
+                    primary_key: false,
+                    auto_increment: false,
+                    references: None,
+                    enum_values: None,
+                    comment: None,
+                },
+                Column {
+                    name: "email",
+                    ty: "character varying(255)",
+                    not_null: true,
+                    default: None,
+                    unique: false,
+                    primary_key: false,
+                    auto_increment: false,
+                    references: None,
+                    enum_values: None,
+                    comment: None,
+                },
+                Column {
+                    name: "name",
+                    ty: "text",
+                    not_null: false,
+                    default: None,
+                    unique: false,
+                    primary_key: false,
+                    auto_increment: false,
+                    references: None,
+                    enum_values: None,
+                    comment: None,
+                },
+                Column {
+                    name: "balance",
+                    ty: "numeric(10,2)",
+                    not_null: true,
+                    default: Some(
+                        Number(
+                            "0.00",
+                        ),
+                    ),
+                    unique: false,
+                    primary_key: false,
+                    auto_increment: false,
+                    references: None,
+                    enum_values: None,
+                    comment: None,
+                },
+                Column {
+                    name: "active",
+                    ty: "boolean",
+                    not_null: false,
+                    default: Some(
+                        Bool(
+                            true,
+                        ),
+                    ),
+                    unique: false,
+                    primary_key: false,
+                    auto_increment: false,
+                    references: None,
+                    enum_values: None,
+                    comment: None,
+                },
+                Column {
+                    name: "created_at",
+                    ty: "timestamp with time zone",
+                    not_null: true,
+                    default: Some(
+                        Raw(
+                            "now()",
+                        ),
+                    ),
+                    unique: false,
+                    primary_key: false,
+                    auto_increment: false,
+                    references: None,
+                    enum_values: None,
+                    comment: None,
+                },
+                Column {
+                    name: "tags",
+                    ty: "text[]",
+                    not_null: false,
+                    default: None,
+                    unique: false,
+                    primary_key: false,
+                    auto_increment: false,
+                    references: None,
+                    enum_values: None,
+                    comment: None,
+                },
+                Column {
+                    name: "uid",
+                    ty: "uuid",
+                    not_null: false,
+                    default: Some(
+                        Raw(
+                            "gen_random_uuid()",
+                        ),
+                    ),
+                    unique: false,
+                    primary_key: false,
+                    auto_increment: false,
+                    references: None,
+                    enum_values: None,
+                    comment: None,
+                },
+            ],
+            constraints: [],
+            comment: None,
+            line: 10,
+            col: 14,
+        },
+        Table {
+            name: Name {
+                schema: Some(
+                    "public",
+                ),
+                name: "orders",
+            },
+            columns: [
+                Column {
+                    name: "id",
+                    ty: "bigint",
+                    not_null: false,
+                    default: None,
+                    unique: false,
+                    primary_key: false,
+                    auto_increment: true,
+                    references: None,
+                    enum_values: None,
+                    comment: None,
+                },
+                Column {
+                    name: "user_id",
+                    ty: "integer",
+                    not_null: true,
+                    default: None,
+                    unique: false,
+                    primary_key: false,
+                    auto_increment: false,
+                    references: Some(
+                        Fk {
+                            name: None,
+                            from_cols: [
+                                "user_id",
+                            ],
+                            to_table: Name {
+                                schema: Some(
+                                    "public",
+                                ),
+                                name: "users",
+                            },
+                            to_cols: [
+                                "id",
+                            ],
+                            on_delete: Some(
+                                Cascade,
+                            ),
+                            on_update: None,
+                            line: 24,
+                            col: 41,
+                        },
+                    ),
+                    enum_values: None,
+                    comment: None,
+                },
+                Column {
+                    name: "status",
+                    ty: "public.order_status",
+                    not_null: true,
+                    default: Some(
+                        Str(
+                            "pending",
+                        ),
+                    ),
+                    unique: false,
+                    primary_key: false,
+                    auto_increment: false,
+                    references: None,
+                    enum_values: None,
+                    comment: None,
+                },
+                Column {
+                    name: "note",
+                    ty: "character varying(50)",
+                    not_null: false,
+                    default: Some(
+                        Str(
+                            "n/a",
+                        ),
+                    ),
+                    unique: false,
+                    primary_key: false,
+                    auto_increment: false,
+                    references: None,
+                    enum_values: None,
+                    comment: None,
+                },
+            ],
+            constraints: [],
+            comment: None,
+            line: 22,
+            col: 14,
+        },
+        Table {
+            name: Name {
+                schema: Some(
+                    "public",
+                ),
+                name: "items",
+            },
+            columns: [
+                Column {
+                    name: "id",
+                    ty: "integer",
+                    not_null: false,
+                    default: None,
+                    unique: false,
+                    primary_key: true,
+                    auto_increment: true,
+                    references: None,
+                    enum_values: None,
+                    comment: None,
+                },
+                Column {
+                    name: "order_id",
+                    ty: "integer",
+                    not_null: false,
+                    default: None,
+                    unique: false,
+                    primary_key: false,
+                    auto_increment: false,
+                    references: None,
+                    enum_values: None,
+                    comment: None,
+                },
+                Column {
+                    name: "sku",
+                    ty: "text",
+                    not_null: false,
+                    default: None,
+                    unique: false,
+                    primary_key: false,
+                    auto_increment: false,
+                    references: None,
+                    enum_values: None,
+                    comment: None,
+                },
+                Column {
+                    name: "qty",
+                    ty: "integer",
+                    not_null: false,
+                    default: Some(
+                        Number(
+                            "-1",
+                        ),
+                    ),
+                    unique: false,
+                    primary_key: false,
+                    auto_increment: false,
+                    references: None,
+                    enum_values: None,
+                    comment: None,
+                },
+            ],
+            constraints: [
+                Unique {
+                    name: None,
+                    cols: [
+                        "order_id",
+                        "sku",
+                    ],
+                },
+                ForeignKey(
+                    Fk {
+                        name: None,
+                        from_cols: [
+                            "order_id",
+                        ],
+                        to_table: Name {
+                            schema: Some(
+                                "public",
+                            ),
+                            name: "orders",
+                        },
+                        to_cols: [
+                            "id",
+                        ],
+                        on_delete: None,
+                        on_update: Some(
+                            Restrict,
+                        ),
+                        line: 29,
+                        col: 161,
+                    },
+                ),
+            ],
+            comment: None,
+            line: 29,
+            col: 14,
+        },
+    ],
+    enums: [
+        EnumType {
+            name: Name {
+                schema: Some(
+                    "public",
+                ),
+                name: "order_status",
+            },
+            values: [
+                "pending",
+                "paid",
+                "it's done",
+            ],
+        },
+    ],
+    indexes: [
+        Index {
+            name: Some(
+                "users_email_key",
+            ),
+            table: Name {
+                schema: Some(
+                    "public",
+                ),
+                name: "users",
+            },
+            cols: [
+                Column(
+                    "email",
+                ),
+            ],
+            unique: true,
+            line: 35,
+            col: 21,
+        },
+        Index {
+            name: Some(
+                "idx_lower_name",
+            ),
+            table: Name {
+                schema: Some(
+                    "public",
+                ),
+                name: "users",
+            },
+            cols: [
+                Expr(
+                    "lower(name)",
+                ),
+                Column(
+                    "id",
+                ),
+            ],
+            unique: false,
+            line: 36,
+            col: 14,
+        },
+    ],
+    alter_constraints: [
+        AlterConstraint {
+            table: Name {
+                schema: Some(
+                    "public",
+                ),
+                name: "users",
+            },
+            constraint: PrimaryKey(
+                [
+                    "id",
+                ],
+            ),
+            line: 31,
+            col: 35,
+        },
+        AlterConstraint {
+            table: Name {
+                schema: Some(
+                    "public",
+                ),
+                name: "orders",
+            },
+            constraint: PrimaryKey(
+                [
+                    "id",
+                ],
+            ),
+            line: 32,
+            col: 36,
+        },
+    ],
+    comments: [
+        Comment {
+            table: Name {
+                schema: Some(
+                    "public",
+                ),
+                name: "users",
+            },
+            column: None,
+            text: "Application users",
+        },
+        Comment {
+            table: Name {
+                schema: Some(
+                    "public",
+                ),
+                name: "users",
+            },
+            column: Some(
+                "email",
+            ),
+            text: "Login e-mail",
+        },
+    ],
+    warnings: [
+        ImportWarning {
+            line: 41,
+            column: 1,
+            message: "skipped unsupported statement: CREATE VIEW",
+        },
+        ImportWarning {
+            line: 42,
+            column: 1,
+            message: "skipped unsupported statement: CREATE FUNCTION",
+        },
+    ],
+}

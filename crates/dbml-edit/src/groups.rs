@@ -2,6 +2,7 @@
 //! tabela (`headercolor`). Cada função devolve o texto novo, tocando só os
 //! trechos necessários (comentários e formatação do resto ficam intactos).
 
+use crate::model::{find_table, table_header_name};
 use dbml_syntax::{SyntaxKind, SyntaxNode, child_tokens as sig, parse, unquote};
 use rowan::TextRange;
 use std::fmt::Write as _;
@@ -15,10 +16,18 @@ fn name_of(n: &SyntaxNode) -> Option<String> {
 }
 
 fn member(line: &SyntaxNode) -> Option<String> {
-    line.descendants_with_tokens()
+    let mut toks = line
+        .descendants_with_tokens()
         .filter_map(rowan::NodeOrToken::into_token)
-        .find(|t| !t.kind().is_trivia())
-        .map(|t| unquote(t.text()).to_string())
+        .filter(|t| !t.kind().is_trivia());
+    let first = toks.next()?;
+    let name = match (toks.next(), toks.next()) {
+        (Some(dot), Some(second)) if dot.text() == "." => {
+            format!("{}.{}", unquote(first.text()), unquote(second.text()))
+        }
+        _ => unquote(first.text()).to_string(),
+    };
+    Some(name)
 }
 
 /// Remove `ranges` (ordenados ou não) do texto.
@@ -118,18 +127,12 @@ pub fn next_group_name(text: &str) -> String {
 #[must_use]
 pub fn set_table_color(text: &str, table: &str, color: Option<&str>) -> Option<String> {
     let root = parse(text).syntax();
-    let t = root
-        .children()
-        .filter(|n| n.kind() == SyntaxKind::Table)
-        .find(|n| name_of(n).as_deref() == Some(table))?;
+    let t = find_table(&root, table)?;
     let head: Vec<_> = sig(&t)
         .into_iter()
         .take_while(|k| k.kind() != SyntaxKind::LBrace)
         .collect();
-    let name_tok = head
-        .iter()
-        .filter(|k| matches!(k.kind(), SyntaxKind::Ident | SyntaxKind::Str))
-        .nth(1)?;
+    let (_, name_tok) = table_header_name(&t)?;
     let open = head.iter().position(|k| k.kind() == SyntaxKind::LBracket);
     let close = head.iter().position(|k| k.kind() == SyntaxKind::RBracket);
     let mut out = text.to_string();

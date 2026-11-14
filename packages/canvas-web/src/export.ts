@@ -4,7 +4,7 @@
  * e sintaxe Mermaid erDiagram.
  */
 
-import { Schema, RefKind, SceneGeometry } from './types';
+import { Schema, RefKind, SceneGeometry, qualifiedEndpointTable, qualifiedTableName } from './types';
 import { Point } from './viewport';
 import { CARD_W, HEADER_H, ROW_H, cardH, getGlass, Mode, TABLE_COLORS } from './glass';
 
@@ -43,8 +43,8 @@ export function exportToMermaid(schema: Schema): string {
   }
 
   for (const ref of schema.refs) {
-    const fromTable = ref.from.table.replace(/[^a-zA-Z0-9_]/g, '_');
-    const toTable = ref.to.table.replace(/[^a-zA-Z0-9_]/g, '_');
+    const fromTable = qualifiedEndpointTable(ref.from).replace(/[^a-zA-Z0-9_]/g, '_');
+    const toTable = qualifiedEndpointTable(ref.to).replace(/[^a-zA-Z0-9_]/g, '_');
     const symbol = mermaidCardinality(ref.kind);
     const label = `"${ref.from.column} to ${ref.to.column}"`;
     lines.push(`    ${fromTable} ${symbol} ${toTable} : ${label}`);
@@ -169,12 +169,14 @@ export function exportToSvg(
     }
   } else {
     for (const ref of schema.refs) {
-      const fromPos = positions[ref.from.table];
-      const toPos = positions[ref.to.table];
+      const fromQ = qualifiedEndpointTable(ref.from);
+      const toQ = qualifiedEndpointTable(ref.to);
+      const fromPos = positions[fromQ];
+      const toPos = positions[toQ];
       if (!fromPos || !toPos) continue;
 
-      const fromTable = schema.tables.find((t) => t.name === ref.from.table);
-      const toTable = schema.tables.find((t) => t.name === ref.to.table);
+      const fromTable = schema.tables.find((t) => qualifiedTableName(t) === fromQ);
+      const toTable = schema.tables.find((t) => qualifiedTableName(t) === toQ);
       if (!fromTable || !toTable) continue;
 
       const fromIdx = fromTable.columns.findIndex((c) => c.name === ref.from.column);

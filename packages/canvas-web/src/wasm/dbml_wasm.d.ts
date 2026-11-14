@@ -44,6 +44,18 @@ export function export_sql_ddl(source: string, dialect: string): string;
 export function format_dbml(source: string): string;
 
 /**
+ * Imports SQL DDL written for `dialect` (`postgres`, `mysql`, `sqlite`) into DBML.
+ *
+ * Returns `{ dbml, warnings: [{ line, column, message }] }`. Unsupported or malformed
+ * statements never fail the call; they are reported in `warnings`.
+ *
+ * # Errors
+ *
+ * Returns an error if `dialect` is not recognized or serialization fails.
+ */
+export function import_sql_ddl(sql: string, dialect: string): any;
+
+/**
  * Analisa o código-fonte DBML e devolve a projeção semântica (`Schema`), diagnósticos e `Enum`s.
  *
  * # Errors
@@ -70,6 +82,7 @@ export interface InitOutput {
     readonly compute_scene: (a: number, b: number, c: any) => [number, number, number];
     readonly export_sql_ddl: (a: number, b: number, c: number, d: number) => [number, number, number, number];
     readonly format_dbml: (a: number, b: number) => [number, number];
+    readonly import_sql_ddl: (a: number, b: number, c: number, d: number) => [number, number, number];
     readonly parse_and_analyze: (a: number, b: number) => [number, number, number];
     readonly swap_dbml_lines: (a: number, b: number, c: number, d: number) => [number, number, number];
     readonly __wbindgen_malloc: (a: number, b: number) => number;

@@ -41,6 +41,32 @@ impl CliDialect {
     }
 }
 
+/// Source SQL dialect for `dbml import`.
+#[derive(ValueEnum, Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ImportDialect {
+    /// PostgreSQL
+    #[value(alias = "postgresql", alias = "pg")]
+    Postgres,
+    /// MySQL / MariaDB
+    #[value(alias = "mariadb")]
+    Mysql,
+    /// SQLite
+    #[value(alias = "sqlite3")]
+    Sqlite,
+}
+
+impl ImportDialect {
+    /// Converts this CLI dialect flag into [`sql_import::SqlDialect`].
+    #[must_use]
+    pub const fn to_sql_dialect(self) -> sql_import::SqlDialect {
+        match self {
+            Self::Postgres => sql_import::SqlDialect::Postgres,
+            Self::Mysql => sql_import::SqlDialect::Mysql,
+            Self::Sqlite => sql_import::SqlDialect::Sqlite,
+        }
+    }
+}
+
 #[derive(Parser, Debug)]
 #[command(name = "dbml")]
 #[command(about = "DB Modeling CLI - Interactive database schema viewer and editor")]
@@ -134,6 +160,24 @@ pub enum Commands {
         #[arg(short, long, value_name = "OUTPUT")]
         output: Option<PathBuf>,
     },
+    /// Import a SQL DDL file into DBML
+    Import {
+        /// Path to the input .sql file
+        #[arg(value_name = "FILE")]
+        file: PathBuf,
+
+        /// Source SQL dialect
+        #[arg(long, value_enum)]
+        dialect: ImportDialect,
+
+        /// Optional output .dbml file path (writes to stdout if omitted)
+        #[arg(short, long, value_name = "OUTPUT")]
+        output: Option<PathBuf>,
+
+        /// Overwrite the output file if it already exists
+        #[arg(long)]
+        force: bool,
+    },
 }
 
 pub struct RunConfig {
@@ -170,6 +214,9 @@ impl Cli {
             ) => (file, port, host, no_open, no_watch),
             Some(Commands::Export { .. }) => {
                 anyhow::bail!("export command should be handled before starting the web server")
+            }
+            Some(Commands::Import { .. }) => {
+                anyhow::bail!("import command should be handled before starting the web server")
             }
             None => (self.file, self.port, self.host, self.no_open, self.no_watch),
         };
@@ -237,5 +284,50 @@ mod tests {
                 other => panic!("expected Export command, got {other:?}"),
             }
         }
+    }
+
+    #[test]
+    fn cli_should_parse_import_with_dialect_and_output() {
+        for (flag, expected) in [
+            ("postgres", sql_import::SqlDialect::Postgres),
+            ("pg", sql_import::SqlDialect::Postgres),
+            ("postgresql", sql_import::SqlDialect::Postgres),
+            ("mysql", sql_import::SqlDialect::Mysql),
+            ("mariadb", sql_import::SqlDialect::Mysql),
+            ("sqlite", sql_import::SqlDialect::Sqlite),
+            ("sqlite3", sql_import::SqlDialect::Sqlite),
+        ] {
+            let cli = Cli::try_parse_from([
+                "dbml",
+                "import",
+                "schema.sql",
+                "--dialect",
+                flag,
+                "-o",
+                "schema.dbml",
+                "--force",
+            ])
+            .unwrap();
+            match cli.command {
+                Some(Commands::Import {
+                    file,
+                    dialect,
+                    output,
+                    force,
+                }) => {
+                    assert_eq!(file, PathBuf::from("schema.sql"));
+                    assert_eq!(dialect.to_sql_dialect(), expected);
+                    assert_eq!(output, Some(PathBuf::from("schema.dbml")));
+                    assert!(force);
+                }
+                other => panic!("expected Import command, got {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn cli_should_require_dialect_for_import() {
+        let err = Cli::try_parse_from(["dbml", "import", "schema.sql"]);
+        assert!(err.is_err());
     }
 }

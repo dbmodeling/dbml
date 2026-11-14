@@ -14,6 +14,8 @@ import {
   TextPatch,
   WorkspaceFileEntry,
   SessionSnapshot,
+  qualifiedEndpointTable,
+  qualifiedTableName,
 } from './types';
 import {
   CARD_W,
@@ -33,6 +35,7 @@ import { iconSvg, IconName } from './icons';
 import { ActionId, catalog } from './actions';
 import { WORKBENCH_CSS } from './workbench-css';
 import { exportToMermaid, exportToSvg, exportSvgStringToRasterBlob } from './export';
+import { ImportDialect, ImportSqlModel, ImportSqlResult } from './import-sql';
 
 type Pt = { x: number; y: number };
 type Pane = 'files' | 'schema' | 'problems';
@@ -86,6 +89,7 @@ export class Workbench {
   private wasm: any;
 
   private source = '';
+  private savedSource = '';
   private title = 'example.dbml';
   private files: WorkspaceFileEntry[] = [];
   private schema: Schema = { tables: [], refs: [], groups: [] };
@@ -95,6 +99,19 @@ export class Workbench {
   private scene: SceneGeometry | null = null;
   private positions: Record<string, Pt> = {};
   private extraLayout: Partial<SidecarLayout> = {};
+  private undoStack: Array<{
+    source: string;
+    positions: Record<string, Pt>;
+    selection: string[];
+    selectedEnum: string | null;
+  }> = [];
+  private redoStack: Array<{
+    source: string;
+    positions: Record<string, Pt>;
+    selection: string[];
+    selectedEnum: string | null;
+  }> = [];
+  private dragStartPositions: Record<string, Pt> | null = null;
 
   private selection: string[] = [];
   private selectedEnum: string | null = null;
@@ -114,6 +131,7 @@ export class Workbench {
   private shortcutsOpen = false;
   private paletteQuery = '';
   private paletteIdx = 0;
+  private importDialect: ImportDialect = 'postgres';
   private focusCol: [string, string] | null = null;
   private pendingNew: string | null = null;
   private sessionTimer: number | null = null;
@@ -282,6 +300,9 @@ export class Workbench {
       }
     }
     if (first) {
+      this.savedSource = source;
+      this.undoStack = [];
+      this.redoStack = [];
       const session = meta?.session ?? this.loadDocSession();
       if (session) {
         if (session.pane === 'files' || session.pane === 'schema' || session.pane === 'problems') {
@@ -332,7 +353,7 @@ export class Workbench {
     } catch (e) {
       console.error('Error analyzing DBML via Wasm:', e);
     }
-    this.selection = this.selection.filter((n) => this.schema.tables.some((t) => t.name === n));
+    this.selection = this.selection.filter((n) => this.schema.tables.some((t) => qualifiedTableName(t) === n));
     this.computeScene();
   }
 
@@ -340,7 +361,8 @@ export class Workbench {
     if (!this.wasm) return;
     const known: Record<string, Pt> = {};
     for (const t of this.schema.tables) {
-      if (this.positions[t.name]) known[t.name] = this.positions[t.name];
+      const qname = qualifiedTableName(t);
+      if (this.positions[qname]) known[qname] = this.positions[qname];
     }
     if (this.pendingNew && !known[this.pendingNew]) {
       const c = this.viewCenter();
@@ -364,6 +386,87 @@ export class Workbench {
   }
 
   // ───────────────────────── comandos / patches ─────────────────────────
+
+  private isDirty(): boolean {
+    return this.source !== this.savedSource;
+  }
+
+  private clonePositions(pos: Record<string, Pt> = this.positions): Record<string, Pt> {
+    const out: Record<string, Pt> = {};
+    for (const k of Object.keys(pos)) {
+      out[k] = { x: pos[k].x, y: pos[k].y };
+    }
+    return out;
+  }
+
+  private positionsEqual(a: Record<string, Pt>, b: Record<string, Pt>): boolean {
+    const ka = Object.keys(a);
+    const kb = Object.keys(b);
+    if (ka.length !== kb.length) return false;
+    for (const k of ka) {
+      const pa = a[k];
+      const pb = b[k];
+      if (!pb || pa.x !== pb.x || pa.y !== pb.y) return false;
+    }
+    return true;
+  }
+
+  private captureSnapshot() {
+    return {
+      source: this.source,
+      positions: this.clonePositions(),
+      selection: [...this.selection],
+      selectedEnum: this.selectedEnum,
+    };
+  }
+
+  private pushHistory(snap = this.captureSnapshot()): void {
+    const last = this.undoStack[this.undoStack.length - 1];
+    if (last && last.source === snap.source && this.positionsEqual(last.positions, snap.positions)) {
+      return;
+    }
+    if (this.undoStack.length >= 100) this.undoStack.shift();
+    this.undoStack.push(snap);
+    this.redoStack = [];
+  }
+
+  private restoreSnapshot(snap: {
+    source: string;
+    positions: Record<string, Pt>;
+    selection: string[];
+    selectedEnum: string | null;
+  }): void {
+    const sourceChanged = snap.source !== this.source;
+    this.positions = this.clonePositions(snap.positions);
+    this.selection = [...snap.selection];
+    this.selectedEnum = snap.selectedEnum;
+    this.selectedRef = null;
+    if (sourceChanged) {
+      const patch = this.fullReplace(snap.source);
+      this.source = snap.source;
+      this.transport.sendPatch(patch);
+      this.syncEditorValue();
+    }
+    this.reanalyze();
+    this.queueSaveLayout();
+    this.scheduleRender();
+  }
+
+  private undo(): void {
+    const prev = this.undoStack.pop();
+    if (!prev) return;
+    if (this.redoStack.length >= 100) this.redoStack.shift();
+    this.redoStack.push(this.captureSnapshot());
+    this.restoreSnapshot(prev);
+  }
+
+  private redo(): void {
+    const next = this.redoStack.pop();
+    if (!next) return;
+    if (this.undoStack.length >= 100) this.undoStack.shift();
+    this.undoStack.push(this.captureSnapshot());
+    this.restoreSnapshot(next);
+  }
 
   private fullReplace(updated: string): TextPatch {
     const old = this.source;
@@ -391,7 +494,11 @@ export class Workbench {
   private dispatch(cmd: Command): TextPatch | null {
     if (!this.wasm) return null;
     try {
+      const before = this.captureSnapshot();
       const patch: TextPatch = this.wasm.apply_command(this.source, cmd);
+      if (patch.new_text || patch.byte_start !== patch.byte_end) {
+        this.pushHistory(before);
+      }
       if (patch.renamed_table) {
         const [o, n] = patch.renamed_table;
         if (this.positions[o]) {
@@ -429,7 +536,7 @@ export class Workbench {
         this.prefs.inspector = true;
       }
       this.applyPatch(patch);
-      if (patch.should_relayout) this.relayout(false);
+      if (patch.should_relayout) this.relayout(false, false);
       this.scheduleRender();
       return patch;
     } catch (e: any) {
@@ -438,9 +545,10 @@ export class Workbench {
     }
   }
 
-  private relayout(fit = true): void {
+  private relayout(fit = true, recordHistory = true): void {
     if (!this.wasm) return;
     try {
+      if (recordHistory) this.pushHistory();
       const r = this.wasm.compute_layout(this.source, {});
       this.positions = { ...r.positions };
       this.computeScene();
@@ -608,7 +716,7 @@ export class Workbench {
     for (const gr of sc.groups) {
       const c = gr.color;
       // posição segue as tabelas (que podem estar sendo arrastadas)
-      const mem = gr.tables.map((n) => ({ n, p: this.positions[n], t: this.schema.tables.find((x) => x.name === n) }))
+      const mem = gr.tables.map((n) => ({ n, p: this.positions[n], t: this.schema.tables.find((x) => qualifiedTableName(x) === n) }))
         .filter((m) => m.p && m.t);
       if (!mem.length) continue;
       let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
@@ -623,30 +731,49 @@ export class Workbench {
     // cartões
     const order = [...sc.tables].sort((a, b) => Number(a.name === this.top) - Number(b.name === this.top));
     for (const tv of order) {
-      const t = this.schema.tables.find((x) => x.name === tv.name);
+      const t = this.schema.tables.find((x) => qualifiedTableName(x) === tv.name);
       const p = this.positions[tv.name];
       if (!t || !p) continue;
+      const qname = tv.name;
       const tint = tv.tint;
       const fk = new Set(tv.fk_columns);
+      const idxCols = new Set<string>();
+      for (const ix of t.indexes || []) {
+        for (const ic of ix.columns || []) {
+          if (ic.kind === 'column') idxCols.add(ic.value);
+        }
+      }
       const rows = t.columns
         .map((c) => {
           const isFk = !!c.fk || fk.has(c.name);
+          const hasIdx = idxCols.has(c.name);
           const ic = c.pk
             ? `<span style="color:var(--accent)">${ICON('KeyRound', 12)}</span>`
             : isFk
               ? `<span style="color:var(--muted)">${ICON('Link2', 12)}</span>`
               : '';
-          return `<div class="row" data-col="${esc(c.name)}" data-table="${esc(t.name)}"><div class="rail14">${ic}</div>
-            <div class="cn ${c.pk || isFk ? 'pk' : ''}">${esc(c.name)}</div><div class="ty">${esc(c.ty)}</div>${isFk ? '<div class="fk-badge">FK</div>' : ''}${c.not_null ? '<div class="nn">NN</div>' : ''}
-            <div class="port" data-port="1" data-table="${esc(t.name)}" data-col="${esc(c.name)}"></div></div>`;
+          const badges = [
+            isFk ? '<div class="fk-badge">FK</div>' : '',
+            c.not_null ? '<div class="nn">NN</div>' : '',
+            c.unique ? '<div class="nn">UQ</div>' : '',
+            hasIdx ? '<div class="nn" style="color:var(--accent)" title="Indexed">IDX</div>' : '',
+            c.default_value ? `<div class="nn" title="Default: ${esc(c.default_value)}">DEF</div>` : '',
+            c.check ? `<div class="nn" title="Check: ${esc(c.check)}">CHK</div>` : '',
+          ].join('');
+          return `<div class="row" data-col="${esc(c.name)}" data-table="${esc(qname)}"><div class="rail14">${ic}</div>
+            <div class="cn ${c.pk || isFk ? 'pk' : ''}">${esc(c.name)}</div><div class="ty">${esc(c.ty)}</div>${badges}
+            <div class="port" data-port="1" data-table="${esc(qname)}" data-col="${esc(c.name)}"></div></div>`;
         })
         .join('');
-      html += `<div class="card ${sel.has(t.name) ? 'sel' : ''}" data-table="${esc(t.name)}" style="left:${p.x}px;top:${p.y}px;height:${cardH(t.columns.length)}px">
+      const schemaBadge = t.schema
+        ? `<span style="padding:1px 5px;border-radius:4px;background:var(--sel);color:var(--muted);font-size:10px;font-weight:500;flex:none">${esc(t.schema)}</span>`
+        : '';
+      html += `<div class="card ${sel.has(qname) ? 'sel' : ''}" data-table="${esc(qname)}" style="left:${p.x}px;top:${p.y}px;height:${cardH(t.columns.length)}px">
         ${tint ? `<div class="bar" style="background:${tint}"></div>` : ''}
         <div class="head" style="${tint ? `background:${hexWithAlpha(tint, 0.08)}` : ''}"><div class="ic" style="${tint ? `color:${tint}` : ''}">${ICON('Table2', 14)}</div>
-        <div class="nm">${esc(t.name)}</div><div class="cnt">${t.columns.length}</div></div>
+        <div class="nm">${esc(t.name)}</div>${schemaBadge}<div class="cnt">${t.columns.length}</div></div>
         <div class="rows">${rows}</div>
-        <div class="plus" data-addcol="${esc(t.name)}" title="Add column">${ICON('Plus', 14)}</div></div>`;
+        <div class="plus" data-addcol="${esc(qname)}" title="Add column">${ICON('Plus', 14)}</div></div>`;
     }
     // enum cards
     for (const ev of sc.enums || []) {
@@ -691,9 +818,12 @@ export class Workbench {
   }
 
   private renderTitlebar(): void {
+    const dirtyDot = this.isDirty()
+      ? `<span title="Unsaved changes" style="width:7px;height:7px;border-radius:50%;background:var(--muted);display:inline-block;margin-left:4px"></span>`
+      : '';
     this.els['titlebar'].innerHTML = `
       <span style="color:var(--accent)">${ICON('Database', 16)}</span>
-      <div class="doc">${ICON('Braces', 13)}<span>${esc(this.title)}</span></div>
+      <div class="doc">${ICON('Braces', 13)}<span>${esc(this.title)}</span>${dirtyDot}</div>
       ${this.btn('NewFile', 'Plus', 'New .dbml File (Ctrl+N)')}
       <div class="spacer"></div>
       <button class="pill" data-act="OpenPalette">${ICON('Search', 14)}<span>DB Modeling — Ctrl+K commands</span></button>
@@ -734,6 +864,7 @@ export class Workbench {
       ${this.btn('FitView', 'Scan', 'Fit to Screen (Shift+1)')}
       <div class="sep"></div>
       ${this.btn('ToggleEditor', 'Braces', 'DBML Editor (Ctrl+E)', this.editorOpen)}
+      ${this.btn('ImportSqlDdl', 'Upload', 'Import SQL DDL…')}
       <button class="ib" data-act="menu:export" title="Export">${ICON('Download', 16)}</button>`;
     this.els['zoomi'].innerHTML = `${this.btn('ZoomOut', 'ZoomOut', 'Zoom Out (Ctrl+-)')}
       <button class="pct" data-act="FitView" title="Fit to Screen">${Math.round(this.zoom * 100)}%</button>
@@ -788,13 +919,13 @@ export class Workbench {
       for (const gr of this.scene?.groups || []) {
         body += `<div class="gh"><i style="background:${gr.color}"></i><span style="flex:1">${esc(gr.name)}</span><span style="font-weight:400;color:var(--faint)">${gr.tables.length}</span></div>`;
         for (const n of gr.tables) {
-          const t = this.schema.tables.find((x) => x.name === n);
+          const t = this.schema.tables.find((x) => qualifiedTableName(x) === n);
           if (t) { body += row(n, t.columns.length, 14); grouped.add(n); }
         }
       }
-      const loose = this.schema.tables.filter((t) => !grouped.has(t.name));
+      const loose = this.schema.tables.filter((t) => !grouped.has(qualifiedTableName(t)));
       if (grouped.size && loose.length) body += `<div class="gh" style="color:var(--faint)">No group</div>`;
-      for (const t of loose) body += row(t.name, t.columns.length);
+      for (const t of loose) body += row(qualifiedTableName(t), t.columns.length);
       const enumsHtml = (this.scene?.enums || [])
         .map(
           (ev) => `<div class="srow ${this.selectedEnum === ev.name ? 'on' : ''}" data-act="focus-enum" data-enum="${esc(ev.name)}">
@@ -802,7 +933,7 @@ export class Workbench {
         )
         .join('');
       const refs = this.schema.refs
-        .map((r) => `<div class="rel"><span style="color:var(--faint)">${ICON('Link2', 12)}</span><span class="tx">${esc(r.from.table)} → ${esc(r.to.table)}</span></div>`)
+        .map((r) => `<div class="rel"><span style="color:var(--faint)">${ICON('Link2', 12)}</span><span class="tx">${esc(qualifiedEndpointTable(r.from))} → ${esc(qualifiedEndpointTable(r.to))}</span></div>`)
         .join('');
       el.innerHTML = `<div class="sec"><span>TABLES</span><span>${this.schema.tables.length}</span></div>${body}
         ${enumsHtml ? `<div class="sec"><span>ENUMS</span><span>${(this.scene?.enums || []).length}</span></div>${enumsHtml}` : ''}
@@ -839,7 +970,7 @@ export class Workbench {
         <div style="padding:12px"><button class="btn primary" style="width:100%;justify-content:center" data-act="GroupSelection">${ICON('LayoutGrid', 14)} Group selection</button></div>`;
       return;
     }
-    const t = sel.length === 1 ? this.schema.tables.find((x) => x.name === sel[0]) : undefined;
+    const t = sel.length === 1 ? this.schema.tables.find((x) => qualifiedTableName(x) === sel[0]) : undefined;
     if (!t && this.selectedEnum) {
       const ev = this.scene?.enums?.find((x) => x.name === this.selectedEnum);
       if (ev) {
@@ -875,13 +1006,13 @@ export class Workbench {
       const sr = this.selectedRef;
       const r = this.schema.refs.find(
         (x) =>
-          (x.from.table === sr.from_table &&
+          (qualifiedEndpointTable(x.from) === sr.from_table &&
             x.from.column === sr.from_col &&
-            x.to.table === sr.to_table &&
+            qualifiedEndpointTable(x.to) === sr.to_table &&
             x.to.column === sr.to_col) ||
-          (x.from.table === sr.to_table &&
+          (qualifiedEndpointTable(x.from) === sr.to_table &&
             x.from.column === sr.to_col &&
-            x.to.table === sr.from_table &&
+            qualifiedEndpointTable(x.to) === sr.from_table &&
             x.to.column === sr.from_col)
       );
       if (r) {
@@ -913,8 +1044,8 @@ export class Workbench {
             )
             .join('');
         el.innerHTML = `<div class="ihead"><span class="eb">RELATION</span>
-          <span class="ti">${esc(r.from.table)}.${esc(r.from.column)}</span>
-          <span class="su">→ ${esc(r.to.table)}.${esc(r.to.column)}</span></div>
+          <span class="ti">${esc(qualifiedEndpointTable(r.from))}.${esc(r.from.column)}</span>
+          <span class="su">→ ${esc(qualifiedEndpointTable(r.to))}.${esc(r.to.column)}</span></div>
           <div class="sec"><span>CARDINALITY</span></div>
           <div style="display:flex;flex-wrap:wrap;gap:6px;padding:4px 12px 0 12px">${cardBtns}</div>
           <div class="sec"><span>ON DELETE</span></div>
@@ -937,30 +1068,75 @@ export class Workbench {
         ${kb('Select', 'V')}${kb('Pan view', 'H')}${kb('Fit to screen', 'Shift+1')}${kb('Group selection', 'Ctrl+G')}${kb('DBML Editor', 'Ctrl+E')}${kb('All commands', 'Ctrl+K')}</div>`;
       return;
     }
-    const grp = this.schema.groups.find((g) => g.tables.includes(t.name));
-    const refs = this.schema.refs.filter((r) => r.from.table === t.name || r.to.table === t.name);
+    const tq = qualifiedTableName(t);
+    const grp = this.schema.groups.find((g) => g.tables.includes(tq));
+    const refs = this.schema.refs.filter((r) => qualifiedEndpointTable(r.from) === tq || qualifiedEndpointTable(r.to) === tq);
     const cur = (t.color || '').toLowerCase();
-    const sw = TABLE_COLORS.map(([l, h]) => `<button class="${cur === h ? 'on' : ''}" title="${l}" style="background:${h}" data-act="set-color" data-table="${esc(t.name)}" data-color="${h}"></button>`).join('') +
-      `<button class="none" title="No color" data-act="set-color" data-table="${esc(t.name)}" data-color="">${ICON('X', 12)}</button>`;
+    const sw = TABLE_COLORS.map(([l, h]) => `<button class="${cur === h ? 'on' : ''}" title="${l}" style="background:${h}" data-act="set-color" data-table="${esc(tq)}" data-color="${h}"></button>`).join('') +
+      `<button class="none" title="No color" data-act="set-color" data-table="${esc(tq)}" data-color="">${ICON('X', 12)}</button>`;
     const tw = this.prefs.colTypeW;
-    const fkSet = new Set(this.scene?.tables.find((x) => x.name === t.name)?.fk_columns || []);
+    const fkSet = new Set(this.scene?.tables.find((x) => x.name === tq)?.fk_columns || []);
     const cols = t.columns.map((c) => {
       const isFk = !!c.fk || fkSet.has(c.name);
+      const defVal = c.default_value || '';
+      const chkVal = c.check || '';
       return `<div class="crow">
-        <div class="n"><input class="fld" data-edit="colname" data-table="${esc(t.name)}" data-col="${esc(c.name)}" data-orig="${esc(c.name)}" value="${esc(c.name)}"></div>
+        <div class="n"><input class="fld" data-edit="colname" data-table="${esc(tq)}" data-col="${esc(c.name)}" data-orig="${esc(c.name)}" value="${esc(c.name)}"></div>
         <div class="split" data-split="1"></div>
-        <div class="t" style="width:${tw}px"><input class="fld muted" data-edit="coltype" data-table="${esc(t.name)}" data-col="${esc(c.name)}" data-orig="${esc(c.ty)}" value="${esc(c.ty)}"></div>
+        <div class="t" style="width:${tw}px"><input class="fld muted" data-edit="coltype" data-table="${esc(tq)}" data-col="${esc(c.name)}" data-orig="${esc(c.ty)}" value="${esc(c.ty)}"></div>
         ${[['PK', 'pk', c.pk], ['FK', 'fk', isFk], ['NN', 'not null', c.not_null], ['UQ', 'unique', c.unique]]
-          .map(([l, f, on]) => `<button class="chip ${on ? 'on' : ''}" data-act="toggle-flag" data-table="${esc(t.name)}" data-col="${esc(c.name)}" data-flag="${f}" data-on="${on ? 1 : 0}">${l}</button>`).join('')}
-        <button class="del" data-act="del-col" data-table="${esc(t.name)}" data-col="${esc(c.name)}" title="Delete column">${ICON('Trash', 13)}</button></div>`;
+          .map(([l, f, on]) => `<button class="chip ${on ? 'on' : ''}" data-act="toggle-flag" data-table="${esc(tq)}" data-col="${esc(c.name)}" data-flag="${f}" data-on="${on ? 1 : 0}">${l}</button>`).join('')}
+        <button class="del" data-act="del-col" data-table="${esc(tq)}" data-col="${esc(c.name)}" title="Delete column">${ICON('Trash', 13)}</button></div>
+        <div class="crow" style="height:22px;padding-top:0;gap:4px;border-bottom:1px solid var(--edge-soft)">
+          <span style="font-size:10px;color:var(--faint)">DEF</span>
+          <input class="fld muted" style="flex:1;font-size:11px" placeholder="default…" data-edit="coldefault" data-table="${esc(tq)}" data-col="${esc(c.name)}" data-orig="${esc(defVal)}" value="${esc(defVal)}">
+          <span style="font-size:10px;color:var(--faint)">CHK</span>
+          <input class="fld muted" style="flex:1;font-size:11px" placeholder="check expr…" data-edit="colcheck" data-table="${esc(tq)}" data-col="${esc(c.name)}" data-orig="${esc(chkVal)}" value="${esc(chkVal)}">
+        </div>`;
+    }).join('');
+    const idxTypes: Array<[import('./types').IndexType | '', string]> = [
+      ['', 'default'],
+      ['b_tree', 'btree'],
+      ['hash', 'hash'],
+      ['gin', 'gin'],
+      ['gist', 'gist'],
+    ];
+    const indexesList = (t.indexes || []).map((ix, idx) => {
+      const activeCols = new Set(
+        (ix.columns || []).filter((ic) => ic.kind === 'column').map((ic) => ic.value)
+      );
+      const colChips = t.columns
+        .map(
+          (c) =>
+            `<button class="chip ${activeCols.has(c.name) ? 'on' : ''}" style="padding:0 6px;width:auto" data-act="idx-toggle-col" data-table="${esc(tq)}" data-idx="${idx}" data-col="${esc(c.name)}">${esc(c.name)}</button>`
+        )
+        .join('');
+      const typeBtns = idxTypes
+        .map(
+          ([val, label]) =>
+            `<button class="chip ${(ix.index_type || '') === val ? 'on' : ''}" style="padding:0 5px;width:auto" data-act="idx-set-type" data-table="${esc(tq)}" data-idx="${idx}" data-type="${val}">${label}</button>`
+        )
+        .join('');
+      return `<div style="padding:6px 12px;border-bottom:1px solid var(--edge-soft);display:flex;flex-direction:column;gap:4px">
+        <div style="display:flex;align-items:center;gap:4px">
+          <input class="fld" style="flex:1;font-size:11.5px" placeholder="index name (optional)…" data-edit="idxname" data-table="${esc(tq)}" data-idx="${idx}" data-orig="${esc(ix.name || '')}" value="${esc(ix.name || '')}">
+          <button class="chip ${ix.unique ? 'on' : ''}" data-act="idx-toggle-flag" data-table="${esc(tq)}" data-idx="${idx}" data-flag="unique" title="Unique index">UQ</button>
+          <button class="chip ${ix.pk ? 'on' : ''}" data-act="idx-toggle-flag" data-table="${esc(tq)}" data-idx="${idx}" data-flag="pk" title="Composite primary key">PK</button>
+          <button class="ib" style="width:22px;height:22px" data-act="del-index" data-table="${esc(tq)}" data-idx="${idx}" title="Delete index">${ICON('Trash', 12)}</button>
+        </div>
+        <div style="display:flex;flex-wrap:wrap;gap:4px;align-items:center"><span style="font-size:10px;color:var(--faint)">COLS</span>${colChips}</div>
+        <div style="display:flex;flex-wrap:wrap;gap:4px;align-items:center"><span style="font-size:10px;color:var(--faint)">TYPE</span>${typeBtns}</div>
+      </div>`;
     }).join('');
     const rels = refs.map((r) => {
+      const fq = qualifiedEndpointTable(r.from);
+      const tqEnd = qualifiedEndpointTable(r.to);
       const card = { ManyToOne: 'N:1', OneToMany: '1:N', OneToOne: '1:1', ManyToMany: 'N:N' }[r.kind];
-      return `<div class="rel"><span style="color:var(--faint)">${ICON('Link2', 12)}</span><span class="tx">${esc(r.from.table)}.${esc(r.from.column)} → ${esc(r.to.table)}.${esc(r.to.column)}</span><span class="tag">${card}</span><button class="ib" style="width:22px;height:22px" data-act="del-ref" data-from-table="${esc(r.from.table)}" data-from-col="${esc(r.from.column)}" data-to-table="${esc(r.to.table)}" data-to-col="${esc(r.to.column)}" title="Delete relation and FK column">${ICON('Trash', 12)}</button></div>`;
+      return `<div class="rel"><span style="color:var(--faint)">${ICON('Link2', 12)}</span><span class="tx">${esc(fq)}.${esc(r.from.column)} → ${esc(tqEnd)}.${esc(r.to.column)}</span><span class="tag">${card}</span><button class="ib" style="width:22px;height:22px" data-act="del-ref" data-from-table="${esc(fq)}" data-from-col="${esc(r.from.column)}" data-to-table="${esc(tqEnd)}" data-to-col="${esc(r.to.column)}" title="Delete relation and FK column">${ICON('Trash', 12)}</button></div>`;
     }).join('');
     el.innerHTML = `
       <div class="ihead"><span class="eb">TABLE</span>
-        <input class="fld big" id="insp-name" data-edit="table" data-table="${esc(t.name)}" data-orig="${esc(t.name)}" value="${esc(t.name)}">
+        <input class="fld big" id="insp-name" data-edit="table" data-table="${esc(tq)}" data-orig="${esc(tq)}" value="${esc(tq)}">
         <span class="su">${t.columns.length} columns · F2 to rename</span></div>
       <div class="sec"><span>COLOR</span></div><div class="sw">${sw}</div>
       <div class="sec"><span>GROUP</span></div>
@@ -970,7 +1146,9 @@ export class Workbench {
       <div class="crow hd"><div class="n">NAME</div><div class="split" data-split="1" title="Drag to resize (double-click to reset)"></div>
         <div class="t" style="width:${tw}px">TYPE</div><div style="width:62px">FLAGS</div><div style="width:20px"></div></div>
       ${cols}
-      <div style="padding:8px 12px"><button class="btn ghost" data-act="add-col" data-table="${esc(t.name)}">${ICON('Plus', 14)} Add column</button></div>
+      <div style="padding:8px 12px"><button class="btn ghost" data-act="add-col" data-table="${esc(tq)}">${ICON('Plus', 14)} Add column</button></div>
+      <div class="sec"><span>INDEXES</span><button class="ib" style="width:22px;height:22px" data-act="add-index" data-table="${esc(tq)}" title="Add index">${ICON('Plus', 13)}</button></div>
+      ${indexesList || `<div class="rel" style="color:var(--faint)">No indexes · click + to add single or composite index</div>`}
       <div class="sec"><span>RELATIONS</span></div>${rels}
       <div style="padding:12px;margin-top:8px;border-top:1px solid var(--edge-soft)"><button class="btn ghost" data-act="DeleteSelection">${ICON('Trash', 14)} Delete table</button></div>`;
     if (this.focusCol) {
@@ -1016,6 +1194,7 @@ export class Workbench {
     try {
       const patch: TextPatch = this.wasm.swap_dbml_lines(this.source, line, up);
       if (patch.updated_source && patch.updated_source !== this.source) {
+        this.pushHistory();
         this.applyPatch(patch);
         ta.value = this.source;
         const nl = up ? line - 1 : line + 1;
@@ -1033,6 +1212,14 @@ export class Workbench {
   private runAction(id: ActionId): void {
     switch (id) {
       case 'NewFile': this.transport.createNewFile?.(); return;
+      case 'SaveFile':
+        this.savedSource = this.source;
+        this.queueSaveLayout();
+        this.toast('Saved ' + this.title);
+        this.renderChrome();
+        return;
+      case 'Undo': this.undo(); return;
+      case 'Redo': this.redo(); return;
       case 'ShowFiles': this.showPane('files'); return;
       case 'ShowSchema': this.showPane('schema'); return;
       case 'ShowProblems': this.showPane('problems'); return;
@@ -1086,7 +1273,10 @@ export class Workbench {
       }
       case 'FormatDocument': {
         const f = this.wasm.format_dbml(this.source);
-        if (f !== this.source) this.applyPatch(this.fullReplace(f));
+        if (f !== this.source) {
+          this.pushHistory();
+          this.applyPatch(this.fullReplace(f));
+        }
         break;
       }
       case 'MoveLineUp': this.moveLine(true); return;
@@ -1106,6 +1296,7 @@ export class Workbench {
       case 'ExportSqlSqlite': this.doExportSql('sqlite'); return;
       case 'ExportSqlSqlServer': this.doExportSql('sqlserver'); return;
       case 'ExportSqlOracle': this.doExportSql('oracle'); return;
+      case 'ImportSqlDdl': this.openImportSqlModal(); return;
     }
     this.savePrefs();
     this.scheduleRender();
@@ -1235,6 +1426,181 @@ export class Workbench {
     this.shortcutsOpen = false;
   }
 
+  private openImportSqlModal(): void {
+    const model = new ImportSqlModel(this.importDialect);
+    const runImport = (sql: string, dialect: ImportDialect): ImportSqlResult => {
+      if (!this.wasm?.import_sql_ddl) {
+        return { dbml: '', warnings: [{ line: 1, column: 1, message: 'Wasm SQL importer is not loaded yet.' }] };
+      }
+      return this.wasm.import_sql_ddl(sql, dialect) as ImportSqlResult;
+    };
+
+    const bg = this.modal(`
+      <div role="dialog" aria-modal="true" aria-labelledby="imp-title" style="padding:16px;display:flex;flex-direction:column;gap:12px;width:min(760px,92vw);max-height:86vh">
+        <div style="display:flex;align-items:center;justify-content:space-between;gap:8px">
+          <div id="imp-title" style="font-weight:600;font-size:14px">Import SQL DDL</div>
+          <div style="display:flex;align-items:center;gap:8px">
+            <label for="imp-dialect" style="font-size:12px;color:var(--muted)">Dialect</label>
+            <select id="imp-dialect" class="btn" style="padding:4px 8px">
+              <option value="postgres"${model.dialect === 'postgres' ? ' selected' : ''}>PostgreSQL</option>
+              <option value="mysql"${model.dialect === 'mysql' ? ' selected' : ''}>MySQL</option>
+              <option value="sqlite"${model.dialect === 'sqlite' ? ' selected' : ''}>SQLite</option>
+            </select>
+            <input id="imp-file" type="file" accept=".sql,.ddl,text/plain" style="display:none">
+            <button class="btn" id="imp-pick" type="button">Choose .sql file…</button>
+          </div>
+        </div>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;min-height:260px;flex:1">
+          <div style="display:flex;flex-direction:column;gap:4px">
+            <label for="imp-sql" style="font-size:12px;color:var(--muted)">SQL DDL (paste or drop a .sql file)</label>
+            <textarea id="imp-sql" placeholder="CREATE TABLE users (id serial PRIMARY KEY, ...);" style="flex:1;min-height:220px;resize:none;font-family:var(--mono);font-size:12px;padding:8px;border-radius:6px;border:1px solid var(--edge);background:var(--bg);color:var(--text)"></textarea>
+          </div>
+          <div style="display:flex;flex-direction:column;gap:4px">
+            <label for="imp-preview" style="font-size:12px;color:var(--muted)">DBML Preview</label>
+            <textarea id="imp-preview" readonly style="flex:1;min-height:220px;resize:none;font-family:var(--mono);font-size:12px;padding:8px;border-radius:6px;border:1px solid var(--edge);background:var(--panel);color:var(--text)"></textarea>
+          </div>
+        </div>
+        <div id="imp-warns" aria-live="polite" style="max-height:90px;overflow:auto;font-size:12px;color:var(--warn, #e5a93c);display:none"></div>
+        <div style="display:flex;justify-content:flex-end;gap:8px">
+          <button class="btn" id="imp-cancel" type="button">Cancel</button>
+          <button class="btn" id="imp-replace" type="button" disabled>Replace</button>
+          <button class="btn primary" id="imp-insert" type="button" disabled>Insert</button>
+        </div>
+      </div>`);
+
+    const sel = bg.querySelector('#imp-dialect') as HTMLSelectElement;
+    const fileInput = bg.querySelector('#imp-file') as HTMLInputElement;
+    const pickBtn = bg.querySelector('#imp-pick') as HTMLButtonElement;
+    const sqlEl = bg.querySelector('#imp-sql') as HTMLTextAreaElement;
+    const previewEl = bg.querySelector('#imp-preview') as HTMLTextAreaElement;
+    const warnsEl = bg.querySelector('#imp-warns') as HTMLElement;
+    const cancelBtn = bg.querySelector('#imp-cancel') as HTMLButtonElement;
+    const replaceBtn = bg.querySelector('#imp-replace') as HTMLButtonElement;
+    const insertBtn = bg.querySelector('#imp-insert') as HTMLButtonElement;
+
+    const syncView = () => {
+      previewEl.value = model.dbml;
+      const can = model.canApply();
+      insertBtn.disabled = !can;
+      replaceBtn.disabled = !can;
+      replaceBtn.textContent = model.confirmReplace ? 'Confirm Replace?' : 'Replace';
+      if (model.tooLarge) {
+        warnsEl.style.display = 'block';
+        warnsEl.textContent = 'Input exceeds 5 MB limit; please split the dump into smaller files.';
+      } else if (model.warnings.length > 0) {
+        warnsEl.style.display = 'block';
+        warnsEl.innerHTML = model.warnings
+          .map((w) => `<div>${w.line}:${w.column}: ${esc(w.message)}</div>`)
+          .join('');
+      } else {
+        warnsEl.style.display = 'none';
+        warnsEl.textContent = '';
+      }
+    };
+
+    const applyMode = (mode: 'insert' | 'replace') => {
+      if (!model.canApply()) return;
+      if (mode === 'replace' && this.source.trim().length > 0 && !model.confirmReplace) {
+        model.confirmReplace = true;
+        syncView();
+        return;
+      }
+      const next = model.buildMergedSource(this.source, mode);
+      this.closeModal();
+      this.applyPatch(this.fullReplace(next));
+      this.relayout(true, false);
+    };
+
+    let timer: number | undefined;
+    sqlEl.addEventListener('input', () => {
+      window.clearTimeout(timer);
+      timer = window.setTimeout(() => {
+        model.setSql(sqlEl.value, runImport);
+        syncView();
+      }, 200);
+    });
+    sel.addEventListener('change', () => {
+      this.importDialect = sel.value as ImportDialect;
+      model.setDialect(this.importDialect, runImport);
+      syncView();
+    });
+    pickBtn.addEventListener('click', () => fileInput.click());
+    fileInput.addEventListener('change', async () => {
+      const f = fileInput.files?.[0];
+      if (!f) return;
+      sqlEl.value = await f.text();
+      model.setSql(sqlEl.value, runImport);
+      syncView();
+    });
+    sqlEl.addEventListener('dragover', (e) => {
+      e.preventDefault();
+    });
+    sqlEl.addEventListener('drop', async (e) => {
+      const f = e.dataTransfer?.files?.[0];
+      if (!f) return;
+      e.preventDefault();
+      sqlEl.value = await f.text();
+      model.setSql(sqlEl.value, runImport);
+      syncView();
+    });
+    cancelBtn.addEventListener('click', () => this.closeModal());
+    insertBtn.addEventListener('click', () => applyMode('insert'));
+    replaceBtn.addEventListener('click', () => applyMode('replace'));
+
+    const modalEl = bg.querySelector('.modal') as HTMLElement;
+    modalEl.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        this.closeModal();
+        return;
+      }
+      if (e.key === 'Tab') {
+        const focusables = Array.from(
+          modalEl.querySelectorAll<HTMLElement>('select, textarea, button:not([disabled])')
+        );
+        if (focusables.length === 0) return;
+        const first = focusables[0];
+        const last = focusables[focusables.length - 1];
+        if (e.shiftKey && document.activeElement === first) {
+          e.preventDefault();
+          last.focus();
+        } else if (!e.shiftKey && document.activeElement === last) {
+          e.preventDefault();
+          first.focus();
+        }
+      }
+    });
+    sqlEl.focus();
+  }
+
+  private confirmSwitchFile(path: string): void {
+    const bg = this.modal(`
+      <div style="padding:16px;display:flex;flex-direction:column;gap:14px">
+        <div style="font-weight:600;font-size:14px">Unsaved Changes</div>
+        <div style="font-size:13px;color:var(--muted)">Do you want to save the changes made to "${esc(this.title)}"?</div>
+        <div style="display:flex;justify-content:flex-end;gap:8px">
+          <button class="btn" id="dlg-cancel">Cancel</button>
+          <button class="btn" id="dlg-discard">Discard changes</button>
+          <button class="btn primary" id="dlg-save">Save</button>
+        </div>
+      </div>`);
+    bg.querySelector('#dlg-cancel')?.addEventListener('click', () => this.closeModal());
+    bg.querySelector('#dlg-discard')?.addEventListener('click', () => {
+      const revert = this.savedSource;
+      this.closeModal();
+      if (revert !== this.source) {
+        this.applyPatch(this.fullReplace(revert));
+      }
+      this.transport.openFile?.(path);
+    });
+    bg.querySelector('#dlg-save')?.addEventListener('click', () => {
+      this.savedSource = this.source;
+      this.queueSaveLayout();
+      this.closeModal();
+      this.transport.openFile?.(path);
+    });
+  }
+
   private openPalette(): void {
     this.paletteOpen = true;
     this.paletteQuery = '';
@@ -1302,6 +1668,12 @@ export class Workbench {
     surf.addEventListener('wheel', (e) => this.onWheel(e), { passive: false });
     window.addEventListener('resize', () => this.scheduleRender());
     window.addEventListener('keydown', (e) => this.onKey(e));
+    window.addEventListener('beforeunload', (e) => {
+      if (this.isDirty()) {
+        e.preventDefault();
+        e.returnValue = '';
+      }
+    });
     window.addEventListener('keyup', (e) => {
       if (e.code === 'Space') { this.space = false; this.scheduleRender(); }
     });
@@ -1309,6 +1681,7 @@ export class Workbench {
     const ta = this.els['code'] as HTMLTextAreaElement;
     ta.addEventListener('input', () => {
       if (ta.value === this.source) return;
+      this.pushHistory();
       this.applyPatch(this.fullReplace(ta.value));
       this.scheduleRender();
     });
@@ -1342,7 +1715,13 @@ export class Workbench {
       case 'menu:export': this.exportMenu(el); return;
       case 'set-mode': this.prefs.mode = d.mode as Mode; break;
       case 'set-ui': this.prefs.uiScale = parseFloat(d.ui || '1'); break;
-      case 'open-file': this.transport.openFile?.(d.path!); return;
+      case 'open-file':
+        if (this.isDirty()) {
+          this.confirmSwitchFile(d.path!);
+        } else {
+          this.transport.openFile?.(d.path!);
+        }
+        return;
       case 'focus-table': this.selectedEnum = null; this.focusTable(d.table!); return;
       case 'focus-enum': {
         this.selection = [];
@@ -1390,11 +1769,11 @@ export class Workbench {
         return;
       case 'toggle-flag':
         if (d.flag === 'fk' && d.on === '1') {
-          const ref = this.schema.refs.find((r) => r.from.table === d.table! && r.from.column === d.col!);
+          const ref = this.schema.refs.find((r) => qualifiedEndpointTable(r.from) === d.table! && r.from.column === d.col!);
           if (ref) {
             this.dispatch({
               action: 'delete_ref',
-              payload: { from_table: ref.from.table, from_col: ref.from.column, to_table: ref.to.table, to_col: ref.to.column },
+              payload: { from_table: qualifiedEndpointTable(ref.from), from_col: ref.from.column, to_table: qualifiedEndpointTable(ref.to), to_col: ref.to.column },
             });
             return;
           }
@@ -1420,13 +1799,13 @@ export class Workbench {
         const sr = this.selectedRef;
         const r = this.schema.refs.find(
           (x) =>
-            (x.from.table === sr.from_table &&
+            (qualifiedEndpointTable(x.from) === sr.from_table &&
               x.from.column === sr.from_col &&
-              x.to.table === sr.to_table &&
+              qualifiedEndpointTable(x.to) === sr.to_table &&
               x.to.column === sr.to_col) ||
-            (x.from.table === sr.to_table &&
+            (qualifiedEndpointTable(x.from) === sr.to_table &&
               x.from.column === sr.to_col &&
-              x.to.table === sr.from_table &&
+              qualifiedEndpointTable(x.to) === sr.from_table &&
               x.to.column === sr.from_col)
         );
         if (!r) return;
@@ -1443,9 +1822,9 @@ export class Workbench {
         this.dispatch({
           action: 'update_ref',
           payload: {
-            from_table: r.from.table,
+            from_table: qualifiedEndpointTable(r.from),
             from_col: r.from.column,
-            to_table: r.to.table,
+            to_table: qualifiedEndpointTable(r.to),
             to_col: r.to.column,
             kind,
             on_delete,
@@ -1460,6 +1839,65 @@ export class Workbench {
       case 'add-col':
         this.dispatch({ action: 'add_column', payload: { table: d.table! } });
         return;
+      case 'add-index': {
+        const tb = this.schema.tables.find((x) => x.name === d.table!);
+        const firstCol = tb?.columns[0]?.name;
+        if (!firstCol) return;
+        this.dispatch({
+          action: 'add_index',
+          payload: {
+            table: d.table!,
+            index: {
+              columns: [{ kind: 'column', value: firstCol }],
+              unique: false,
+              pk: false,
+              name: null,
+              index_type: null,
+            },
+          },
+        });
+        return;
+      }
+      case 'del-index':
+        this.dispatch({
+          action: 'delete_index',
+          payload: { table: d.table!, index_idx: parseInt(d.idx!, 10) },
+        });
+        return;
+      case 'idx-toggle-col':
+      case 'idx-toggle-flag':
+      case 'idx-set-type': {
+        const tb = this.schema.tables.find((x) => x.name === d.table!);
+        const idxNum = parseInt(d.idx!, 10);
+        const ix = tb?.indexes?.[idxNum];
+        if (!ix) return;
+        const next: import('./types').IndexDef = {
+          columns: [...ix.columns],
+          unique: ix.unique,
+          pk: ix.pk,
+          name: ix.name ?? null,
+          index_type: ix.index_type ?? null,
+        };
+        if (act === 'idx-toggle-col') {
+          const colName = d.col!;
+          const pos = next.columns.findIndex((c) => c.kind === 'column' && c.value === colName);
+          if (pos >= 0) {
+            if (next.columns.length > 1) next.columns.splice(pos, 1);
+          } else {
+            next.columns.push({ kind: 'column', value: colName });
+          }
+        } else if (act === 'idx-toggle-flag') {
+          if (d.flag === 'unique') next.unique = !next.unique;
+          else if (d.flag === 'pk') next.pk = !next.pk;
+        } else if (act === 'idx-set-type') {
+          next.index_type = (d.type || null) as import('./types').IndexType | null;
+        }
+        this.dispatch({
+          action: 'update_index',
+          payload: { table: d.table!, index_idx: idxNum, index: next },
+        });
+        return;
+      }
       default:
         this.closeMenus();
         this.runAction(act as ActionId);
@@ -1476,6 +1914,35 @@ export class Workbench {
     const val = t.value.trim();
     const orig = t.dataset.orig || '';
     if (val === orig) return;
+    if (kind === 'coldefault') {
+      this.dispatch({
+        action: 'set_column_default',
+        payload: { table: t.dataset.table!, column: t.dataset.col!, default_value: val || null },
+      });
+      return;
+    }
+    if (kind === 'colcheck') {
+      this.dispatch({
+        action: 'set_column_check',
+        payload: { table: t.dataset.table!, column: t.dataset.col!, check: val || null },
+      });
+      return;
+    }
+    if (kind === 'idxname') {
+      const tb = this.schema.tables.find((x) => x.name === t.dataset.table!);
+      const idxNum = parseInt(t.dataset.idx!, 10);
+      const ix = tb?.indexes?.[idxNum];
+      if (!ix) return;
+      this.dispatch({
+        action: 'update_index',
+        payload: {
+          table: t.dataset.table!,
+          index_idx: idxNum,
+          index: { ...ix, name: val || null },
+        },
+      });
+      return;
+    }
     if (kind !== 'coltype' && !IDENT.test(val)) {
       this.toast('Invalid name: use only letters, numbers, and _');
       t.value = orig;
@@ -1568,6 +2035,7 @@ export class Workbench {
     const gl = t.closest('[data-group]') as HTMLElement | null;
     if (gl) {
       this.selectedRef = null;
+      this.dragStartPositions = this.clonePositions();
       this.drag = { kind: 'group', name: gl.dataset.group!, last: wp };
       this.scheduleRender();
       return;
@@ -1582,6 +2050,7 @@ export class Workbench {
         this.runAction('RenameSelected');
         return;
       }
+      this.dragStartPositions = this.clonePositions();
       this.drag = { kind: 'enum', name: enumName, last: wp };
       this.scheduleRender();
       return;
@@ -1601,6 +2070,7 @@ export class Workbench {
         this.runAction('RenameSelected');
         return;
       }
+      this.dragStartPositions = this.clonePositions();
       this.drag = { kind: 'cards', last: wp };
       this.scheduleRender();
       return;
@@ -1683,8 +2153,9 @@ export class Workbench {
       if (x1 - x0 > 2 || y1 - y0 > 2) {
         const sel = [...d.base];
         for (const t of this.schema.tables) {
-          const p = this.positions[t.name];
-          if (p && p.x < x1 && p.x + CARD_W > x0 && p.y < y1 && p.y + cardH(t.columns.length) > y0 && !sel.includes(t.name)) sel.push(t.name);
+          const qname = qualifiedTableName(t);
+          const p = this.positions[qname];
+          if (p && p.x < x1 && p.x + CARD_W > x0 && p.y < y1 && p.y + cardH(t.columns.length) > y0 && !sel.includes(qname)) sel.push(qname);
         }
         this.selection = sel;
       }
@@ -1699,6 +2170,15 @@ export class Workbench {
         });
       }
     } else {
+      if (this.dragStartPositions && !this.positionsEqual(this.dragStartPositions, this.positions)) {
+        this.pushHistory({
+          source: this.source,
+          positions: this.dragStartPositions,
+          selection: [...this.selection],
+          selectedEnum: this.selectedEnum,
+        });
+      }
+      this.dragStartPositions = null;
       this.queueSaveLayout();
     }
     this.scheduleRender();

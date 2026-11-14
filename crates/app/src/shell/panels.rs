@@ -53,7 +53,7 @@ impl Shell {
                     // clique do meio fecha a aba (como em navegadores e no Zed)
                     .on_mouse_down(
                         MouseButton::Middle,
-                        cx.listener(move |this, _, _, cx| this.close_tab_at(i, cx)),
+                        cx.listener(move |this, _, window, cx| this.close_tab_at(i, window, cx)),
                     )
                     .child(Icon::new(IconName::Database).xsmall().text_color(if on {
                         g.accent
@@ -75,9 +75,9 @@ impl Shell {
                                 let h = g.hover;
                                 move |s| s.bg(h)
                             })
-                            .on_click(cx.listener(move |this, _, _, cx| {
+                            .on_click(cx.listener(move |this, _, window, cx| {
                                 cx.stop_propagation();
-                                this.close_tab_at(i, cx);
+                                this.close_tab_at(i, window, cx);
                             }))
                             // alterado: ponto; senão o X (visível na aba ativa ou no hover)
                             .child(if doc.dirty {
@@ -213,6 +213,18 @@ impl Shell {
                         d.child(div().flex_1().child("Search commands…"))
                             .child("Ctrl K")
                     }),
+            )
+            .child(
+                div().flex_none().child(
+                    Button::new("import-sql-btn")
+                        .ghost()
+                        .small()
+                        .icon(IconName::File)
+                        .tooltip_with_action("Import SQL DDL…", &ImportSqlDdl, Some(actions::CTX))
+                        .on_click(|_, window, cx| {
+                            window.dispatch_action(Box::new(ImportSqlDdl), cx);
+                        }),
+                ),
             )
             .child(
                 div().flex_none().child(
@@ -382,9 +394,9 @@ impl Shell {
                                 window.prevent_default();
                                 cx.stop_propagation();
                             })
-                            .on_click(|_, _, cx| {
+                            .on_click(|_, window, cx| {
                                 cx.stop_propagation();
-                                cx.quit();
+                                window.dispatch_action(Box::new(Quit), cx);
                             })
                             .child(Icon::new(IconName::WindowClose).small()),
                     ),
@@ -986,11 +998,12 @@ impl Shell {
         let sel = d.selection();
         let schema = d.schema().clone();
         let row = |t: &schema::Table, cx: &mut Context<Self>| {
-            let on = sel.contains(&t.name);
-            let name = t.name.clone();
+            let qname = t.qualified_name();
+            let on = sel.contains(&qname);
+            let name = qname.clone();
             let tint = t.color.as_deref().and_then(hex);
-            Self::row(g, SharedString::from(format!("side-{}", t.name)), on)
-                .aria_label(format!("Table {}", t.name))
+            Self::row(g, SharedString::from(format!("side-{qname}")), on)
+                .aria_label(format!("Table {qname}"))
                 .on_click(cx.listener(move |this, _, _, cx| {
                     let n = name.clone();
                     this.with_diagram(cx, |d| d.focus_table(&n));
@@ -1003,7 +1016,7 @@ impl Shell {
                         .xsmall()
                         .text_color(tint.unwrap_or(if on { g.accent } else { g.text_faint })),
                 )
-                .child(div().flex_1().truncate().child(t.name.clone()))
+                .child(div().flex_1().truncate().child(qname))
                 .child(
                     div()
                         .text_size(TEXT_XS)
@@ -1045,7 +1058,7 @@ impl Shell {
         let loose: Vec<_> = schema
             .tables
             .iter()
-            .filter(|t| schema.group_of(&t.name).is_none())
+            .filter(|t| schema.group_of(&t.qualified_name()).is_none())
             .collect();
         if !schema.groups.is_empty() && !loose.is_empty() {
             body = body.child(
@@ -1101,11 +1114,11 @@ impl Shell {
                     .text_size(TEXT_XS)
                     .text_color(g.text_muted)
                     .child(Icon::new(IconName::Link2).xsmall().text_color(g.text_faint))
-                    .child(
-                        div()
-                            .truncate()
-                            .child(format!("{} → {}", r.from.table, r.to.table)),
-                    ),
+                    .child(div().truncate().child(format!(
+                        "{} → {}",
+                        r.from.qualified_table(),
+                        r.to.qualified_table()
+                    ))),
             );
         }
         div()
@@ -1232,9 +1245,10 @@ impl Shell {
                 let d = doc.diagram.read(cx);
                 let sel = d.selection();
                 let one = d.selected().map(|t| {
+                    let qname = t.qualified_name();
                     (
                         t.clone(),
-                        d.refs_of(&t.name).into_iter().cloned().collect::<Vec<_>>(),
+                        d.refs_of(&qname).into_iter().cloned().collect::<Vec<_>>(),
                     )
                 });
                 let one_enum = d.selected_enum().map(|en| {
@@ -1246,26 +1260,28 @@ impl Shell {
                             t.columns
                                 .iter()
                                 .filter(|c| c.ty.rsplit('.').next().is_some_and(|ty| ty == en.name))
-                                .map(|c| (t.name.clone(), c.name.clone()))
+                                .map(move |c| (t.qualified_name(), c.name.clone()))
                         })
                         .collect();
                     (en.clone(), refs_by)
                 });
                 let group = one
                     .as_ref()
-                    .and_then(|(t, _)| d.schema().group_of(&t.name).cloned());
+                    .and_then(|(t, _)| d.schema().group_of(&t.qualified_name()).cloned());
                 let sref = d.selected_ref().and_then(|(from, to)| {
                     d.schema()
                         .refs
                         .iter()
                         .find(|r| {
-                            (r.from.table == from.0
+                            let fq = r.from.qualified_table();
+                            let tq = r.to.qualified_table();
+                            (fq == from.0
                                 && r.from.column == from.1
-                                && r.to.table == to.0
+                                && tq == to.0
                                 && r.to.column == to.1)
-                                || (r.from.table == to.0
+                                || (fq == to.0
                                     && r.from.column == to.1
-                                    && r.to.table == from.0
+                                    && tq == from.0
                                     && r.to.column == from.1)
                         })
                         .cloned()
@@ -1383,6 +1399,45 @@ impl Shell {
                     }
                 }
             };
+            let field_opt = |target: EditTarget,
+                             text: Option<String>,
+                             placeholder: &'static str,
+                             cx: &mut Context<Self>|
+             -> AnyElement {
+                match &editing {
+                    Some((t, st)) if *t == target => Input::new(st).small().into_any_element(),
+                    _ => {
+                        let id = SharedString::from(format!("edit-opt-{target:?}"));
+                        let value = text.clone().unwrap_or_default();
+                        let has_val = !value.is_empty();
+                        let display = if has_val {
+                            value.clone()
+                        } else {
+                            placeholder.to_string()
+                        };
+                        div()
+                            .id(id)
+                            .role(Role::Button)
+                            .aria_label(format!("Edit {display}"))
+                            .w_full()
+                            .px(px(4.))
+                            .rounded(px(4.))
+                            .truncate()
+                            .text_size(px(11.))
+                            .text_color(if has_val { g.text_muted } else { g.text_faint })
+                            .cursor_text()
+                            .hover({
+                                let h = g.hover;
+                                move |st| st.bg(h)
+                            })
+                            .on_click(cx.listener(move |this, _, window, cx| {
+                                this.start_edit(target.clone(), value.clone(), window, cx);
+                            }))
+                            .child(display)
+                            .into_any_element()
+                    }
+                }
+            };
             let col_type_w = self.col_type_w;
             let mut cols = div().flex().flex_col();
             let col_header = div()
@@ -1436,7 +1491,7 @@ impl Shell {
                             flag: &'static str,
                             on: bool,
                             cx: &mut Context<Self>| {
-                    let (table, col) = (t.name.clone(), c.name.clone());
+                    let (table, col) = (t.qualified_name(), c.name.clone());
                     div()
                         .id(SharedString::from(id))
                         .role(Role::Switch)
@@ -1471,22 +1526,23 @@ impl Shell {
                         }))
                         .child(label)
                 };
+                let qname = t.qualified_name();
                 let name_el = field(
-                    EditTarget::ColName(t.name.clone(), c.name.clone()),
+                    EditTarget::ColName(qname.clone(), c.name.clone()),
                     c.name.clone(),
                     false,
                     cx,
                 );
                 let type_el = field(
-                    EditTarget::ColType(t.name.clone(), c.name.clone()),
+                    EditTarget::ColType(qname.clone(), c.name.clone()),
                     c.ty.clone(),
                     true,
                     cx,
                 );
-                let (table, col) = (t.name.clone(), c.name.clone());
+                let (table, col) = (qname.clone(), c.name.clone());
                 let is_editing_this_type = matches!(
                     &editing,
-                    Some((EditTarget::ColType(tbl, col), _)) if tbl == &t.name && col == &c.name
+                    Some((EditTarget::ColType(tbl, col), _)) if tbl == &qname && col == &c.name
                 );
                 cols = cols.child(
                     div()
@@ -1565,6 +1621,34 @@ impl Shell {
                                 ),
                         ),
                 );
+                let def_el = field_opt(
+                    EditTarget::ColDefault(qname.clone(), c.name.clone()),
+                    c.default_value.clone(),
+                    "default…",
+                    cx,
+                );
+                let chk_el = field_opt(
+                    EditTarget::ColCheck(qname, c.name.clone()),
+                    c.check.clone(),
+                    "check expr…",
+                    cx,
+                );
+                cols = cols.child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap(px(4.))
+                        .px(SP_MD)
+                        .h(px(22.))
+                        .border_b_1()
+                        .border_color(g.edge_soft)
+                        .text_size(px(10.))
+                        .text_color(g.text_faint)
+                        .child(div().child("DEF"))
+                        .child(div().flex_1().min_w_0().child(def_el))
+                        .child(div().child("CHK"))
+                        .child(div().flex_1().min_w_0().child(chk_el)),
+                );
 
                 if is_editing_this_type {
                     let query = if let Some((_, st)) = &editing {
@@ -1622,7 +1706,7 @@ impl Shell {
 
                         for (s_type, s_desc) in suggestions {
                             let opt_type = s_type.to_string();
-                            let (tbl, cl) = (t.name.clone(), c.name.clone());
+                            let (tbl, cl) = (t.qualified_name(), c.name.clone());
                             sugg_box = sugg_box.child(
                                 div()
                                     .id(SharedString::from(format!(
@@ -1663,7 +1747,7 @@ impl Shell {
                     }
                 }
             }
-            let add_table = t.name.clone();
+            let add_table = t.qualified_name();
             cols = cols
                 .child(
                     div().px(SP_MD).py(SP_SM).child(
@@ -1696,7 +1780,231 @@ impl Shell {
                         }
                     }),
                 );
-            let title_el = field(EditTarget::Table(t.name.clone()), t.name.clone(), false, cx);
+            let t_qname = t.qualified_name();
+            let title_el = field(
+                EditTarget::Table(t_qname.clone()),
+                t_qname.clone(),
+                false,
+                cx,
+            );
+            let mut indexes_el = div().flex().flex_col().gap(px(4.)).px(SP_MD);
+            for (idx, ix) in t.indexes.iter().enumerate() {
+                let name_el = field_opt(
+                    EditTarget::IndexName(t_qname.clone(), idx),
+                    ix.name.clone(),
+                    "index name (optional)…",
+                    cx,
+                );
+                let (tbl_uq, ix_uq) = (t_qname.clone(), ix.clone());
+                let uq_chip = div()
+                    .id(SharedString::from(format!("idx-uq-{idx}")))
+                    .role(Role::Switch)
+                    .px(px(4.))
+                    .rounded(px(4.))
+                    .border_1()
+                    .text_size(px(10.))
+                    .when(ix.unique, |d| {
+                        d.bg(g.selected)
+                            .border_color(g.accent.opacity(0.5))
+                            .text_color(g.accent)
+                    })
+                    .when(!ix.unique, |d| {
+                        d.border_color(g.edge_soft).text_color(g.text_faint)
+                    })
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        let mut next = ix_uq.clone();
+                        next.unique = !next.unique;
+                        let tbl = tbl_uq.clone();
+                        this.edit_text(false, window, cx, |text| {
+                            dbml_edit::update_index(text, &tbl, idx, &next)
+                        });
+                    }))
+                    .child("UQ");
+
+                let (tbl_pk, ix_pk) = (t_qname.clone(), ix.clone());
+                let pk_chip = div()
+                    .id(SharedString::from(format!("idx-pk-{idx}")))
+                    .role(Role::Switch)
+                    .px(px(4.))
+                    .rounded(px(4.))
+                    .border_1()
+                    .text_size(px(10.))
+                    .when(ix.pk, |d| {
+                        d.bg(g.selected)
+                            .border_color(g.accent.opacity(0.5))
+                            .text_color(g.accent)
+                    })
+                    .when(!ix.pk, |d| {
+                        d.border_color(g.edge_soft).text_color(g.text_faint)
+                    })
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        let mut next = ix_pk.clone();
+                        next.pk = !next.pk;
+                        let tbl = tbl_pk.clone();
+                        this.edit_text(false, window, cx, |text| {
+                            dbml_edit::update_index(text, &tbl, idx, &next)
+                        });
+                    }))
+                    .child("PK");
+
+                let tbl_del = t_qname.clone();
+                let top_row = div()
+                    .flex()
+                    .items_center()
+                    .gap(px(4.))
+                    .child(div().flex_1().min_w_0().child(name_el))
+                    .child(uq_chip)
+                    .child(pk_chip)
+                    .child(
+                        Button::new(SharedString::from(format!("del-idx-{idx}")))
+                            .ghost()
+                            .xsmall()
+                            .icon(IconName::Trash)
+                            .tooltip("Delete index")
+                            .on_click(cx.listener(move |this, _, window, cx| {
+                                let tbl = tbl_del.clone();
+                                this.edit_text(false, window, cx, |text| {
+                                    dbml_edit::delete_index(text, &tbl, idx)
+                                });
+                            })),
+                    );
+
+                let mut cols_row = div().flex().flex_wrap().items_center().gap(px(4.)).child(
+                    div()
+                        .text_size(px(10.))
+                        .text_color(g.text_faint)
+                        .child("COLS"),
+                );
+                for col_def in &t.columns {
+                    let active = ix.references_column(&col_def.name);
+                    let (tbl_col, col_name, ix_col) =
+                        (t_qname.clone(), col_def.name.clone(), ix.clone());
+                    cols_row = cols_row.child(
+                        div()
+                            .id(SharedString::from(format!(
+                                "idx-col-{idx}-{}",
+                                col_def.name
+                            )))
+                            .role(Role::Switch)
+                            .px(px(5.))
+                            .rounded(px(4.))
+                            .border_1()
+                            .text_size(px(10.))
+                            .when(active, |d| {
+                                d.bg(g.selected)
+                                    .border_color(g.accent.opacity(0.5))
+                                    .text_color(g.accent)
+                            })
+                            .when(!active, |d| {
+                                d.border_color(g.edge_soft).text_color(g.text_faint)
+                            })
+                            .on_click(cx.listener(move |this, _, window, cx| {
+                                let mut next = ix_col.clone();
+                                if let Some(pos) = next
+                                    .columns
+                                    .iter()
+                                    .position(|ic| ic.column_name() == Some(col_name.as_str()))
+                                {
+                                    if next.columns.len() > 1 {
+                                        next.columns.remove(pos);
+                                    }
+                                } else {
+                                    next.columns
+                                        .push(schema::IndexColumn::Column(col_name.clone()));
+                                }
+                                let tbl = tbl_col.clone();
+                                this.edit_text(false, window, cx, |text| {
+                                    dbml_edit::update_index(text, &tbl, idx, &next)
+                                });
+                            }))
+                            .child(col_def.name.clone()),
+                    );
+                }
+
+                let mut type_row = div().flex().flex_wrap().items_center().gap(px(4.)).child(
+                    div()
+                        .text_size(px(10.))
+                        .text_color(g.text_faint)
+                        .child("TYPE"),
+                );
+                let type_choices: [(Option<schema::IndexType>, &'static str); 5] = [
+                    (None, "default"),
+                    (Some(schema::IndexType::BTree), "btree"),
+                    (Some(schema::IndexType::Hash), "hash"),
+                    (Some(schema::IndexType::Gin), "gin"),
+                    (Some(schema::IndexType::Gist), "gist"),
+                ];
+                for (opt_ty, label) in type_choices {
+                    let active = ix.index_type == opt_ty;
+                    let (tbl_ty, ix_ty) = (t_qname.clone(), ix.clone());
+                    type_row = type_row.child(
+                        div()
+                            .id(SharedString::from(format!("idx-ty-{idx}-{label}")))
+                            .role(Role::Button)
+                            .px(px(5.))
+                            .rounded(px(4.))
+                            .border_1()
+                            .text_size(px(10.))
+                            .when(active, |d| {
+                                d.bg(g.selected)
+                                    .border_color(g.accent.opacity(0.5))
+                                    .text_color(g.accent)
+                            })
+                            .when(!active, |d| {
+                                d.border_color(g.edge_soft).text_color(g.text_faint)
+                            })
+                            .on_click(cx.listener(move |this, _, window, cx| {
+                                let mut next = ix_ty.clone();
+                                next.index_type = opt_ty;
+                                let tbl = tbl_ty.clone();
+                                this.edit_text(false, window, cx, |text| {
+                                    dbml_edit::update_index(text, &tbl, idx, &next)
+                                });
+                            }))
+                            .child(label),
+                    );
+                }
+
+                indexes_el = indexes_el.child(
+                    div()
+                        .flex()
+                        .flex_col()
+                        .gap(px(4.))
+                        .py(px(4.))
+                        .border_b_1()
+                        .border_color(g.edge_soft)
+                        .child(top_row)
+                        .child(cols_row)
+                        .child(type_row),
+                );
+            }
+            let add_idx_table = t_qname.clone();
+            let add_idx_col = t.columns.first().map(|c| c.name.clone());
+            indexes_el = indexes_el.child(
+                div().py(px(2.)).child(
+                    Button::new("insp-add-index")
+                        .ghost()
+                        .xsmall()
+                        .icon(IconName::Plus)
+                        .label("Add index")
+                        .on_click(cx.listener(move |this, _, window, cx| {
+                            let Some(first_col) = add_idx_col.clone() else {
+                                return;
+                            };
+                            let tbl = add_idx_table.clone();
+                            let new_ix = schema::IndexDef {
+                                columns: vec![schema::IndexColumn::Column(first_col)],
+                                unique: false,
+                                pk: false,
+                                name: None,
+                                index_type: None,
+                            };
+                            this.edit_text(false, window, cx, |text| {
+                                dbml_edit::add_index(text, &tbl, &new_ix)
+                            });
+                        })),
+                ),
+            );
             let mut rels = div().flex().flex_col().gap(px(4.)).px(SP_MD);
             for (ri, r) in refs.iter().enumerate() {
                 let card = match r.kind {
@@ -1705,8 +2013,8 @@ impl Shell {
                     schema::RefKind::OneToOne => "1:1",
                     schema::RefKind::ManyToMany => "N:N",
                 };
-                let (ft, fc) = (r.from.table.clone(), r.from.column.clone());
-                let (tt, tc) = (r.to.table.clone(), r.to.column.clone());
+                let (ft, fc) = (r.from.qualified_table(), r.from.column.clone());
+                let (tt, tc) = (r.to.qualified_table(), r.to.column.clone());
                 rels = rels.child(
                     div()
                         .group("insp-rel")
@@ -1716,10 +2024,12 @@ impl Shell {
                         .text_size(TEXT_SM)
                         .text_color(g.text_muted)
                         .child(Icon::new(IconName::Link2).xsmall().text_color(g.text_faint))
-                        .child(div().flex_1().truncate().child(format!(
-                            "{}.{} → {}.{}",
-                            r.from.table, r.from.column, r.to.table, r.to.column
-                        )))
+                        .child(
+                            div()
+                                .flex_1()
+                                .truncate()
+                                .child(format!("{ft}.{} → {tt}.{}", r.from.column, r.to.column)),
+                        )
                         .child(tag(card))
                         .child(
                             Button::new(SharedString::from(format!("del-rel-{ri}")))
@@ -1746,7 +2056,7 @@ impl Shell {
             let mut swatches = div().flex().flex_wrap().gap(px(6.)).px(SP_MD);
             for (i, (label, hexv)) in TABLE_COLORS.iter().enumerate() {
                 let on = current == *hexv;
-                let table = t.name.clone();
+                let table = t_qname.clone();
                 let color = hex(hexv).unwrap_or_default();
                 swatches = swatches.child(
                     div()
@@ -1768,7 +2078,7 @@ impl Shell {
                         })),
                 );
             }
-            let table = t.name.clone();
+            let table = t_qname.clone();
             swatches = swatches.child(
                 div()
                     .id("swatch-none")
@@ -1862,6 +2172,8 @@ impl Shell {
                 .child(group_row)
                 .child(Self::section(g, "COLUMNS", None))
                 .child(cols)
+                .child(Self::section(g, "INDEXES", Some(t.indexes.len())))
+                .child(indexes_el)
                 .child(Self::section(g, "RELATIONS", None))
                 .child(rels)
                 .child(
@@ -1902,9 +2214,9 @@ impl Shell {
                     .label(label);
                 let btn = if active { btn.primary() } else { btn.ghost() };
                 card_row = card_row.child(btn.on_click(cx.listener(move |this, _, window, cx| {
-                    let ft = rf.from.table.clone();
+                    let ft = rf.from.qualified_table();
                     let fc = rf.from.column.clone();
-                    let tt = rf.to.table.clone();
+                    let tt = rf.to.qualified_table();
                     let tc = rf.to.column.clone();
                     let update = dbml_edit::RefUpdate {
                         kind,
@@ -1939,9 +2251,9 @@ impl Shell {
                         let btn = Button::new(id).xsmall().label(label);
                         let btn = if active { btn.primary() } else { btn.ghost() };
                         row = row.child(btn.on_click(cx.listener(move |this, _, window, cx| {
-                            let ft = rf.from.table.clone();
+                            let ft = rf.from.qualified_table();
                             let fc = rf.from.column.clone();
-                            let tt = rf.to.table.clone();
+                            let tt = rf.to.qualified_table();
                             let tc = rf.to.column.clone();
                             let update = dbml_edit::RefUpdate {
                                 kind: rf.kind,
@@ -1964,8 +2276,8 @@ impl Shell {
                 .flex_col()
                 .child(header(
                     "RELATION",
-                    format!("{}.{}", r.from.table, r.from.column),
-                    format!("→ {}.{}", r.to.table, r.to.column),
+                    format!("{}.{}", r.from.qualified_table(), r.from.column),
+                    format!("→ {}.{}", r.to.qualified_table(), r.to.column),
                 ))
                 .child(Self::section(g, "CARDINALITY", None))
                 .child(card_row)

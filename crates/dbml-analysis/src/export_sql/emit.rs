@@ -134,6 +134,16 @@ pub(super) fn write_create_table(
         if col.unique && !col.pk {
             out.push_str(" UNIQUE");
         }
+        if let Some(chk) = col
+            .check
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+        {
+            out.push_str(" CHECK (");
+            out.push_str(chk);
+            out.push(')');
+        }
         if dialect == SqlDialect::Mysql
             && let Some(note) = &col.note
         {

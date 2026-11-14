@@ -1,0 +1,27 @@
+---
+source: crates/sql-import/tests/import.rs
+expression: "import_sql_ddl(SQLITE, SqlDialect::Sqlite).dbml"
+---
+Enum users_status {
+  new
+  active
+  banned
+}
+
+Table users {
+  id integer [pk, increment]
+  email text [not null, unique]
+  status users_status [not null, default: 'new']
+  created text [default: `datetime('now')`]
+}
+
+Table posts {
+  id integer [pk]
+  user_id integer
+  body text
+  indexes {
+    user_id [name: 'idx_posts_user']
+  }
+}
+
+Ref: posts.user_id > users.id [delete: cascade]

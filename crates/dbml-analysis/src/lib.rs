@@ -56,16 +56,18 @@ pub fn analyze(text: &str) -> Schema {
         .refs
         .iter()
         .flat_map(|r| {
+            let qt = r.from.qualified_table();
             r.from
                 .cols()
                 .into_iter()
-                .map(|c| (r.from.table.clone(), c.to_string()))
+                .map(|c| (qt.clone(), c.to_string()))
                 .collect::<Vec<_>>()
         })
         .collect();
     for t in &mut schema.tables {
+        let qt = t.qualified_name();
         for c in &mut t.columns {
-            if fk_cols.contains(&(t.name.clone(), c.name.clone())) {
+            if fk_cols.contains(&(qt.clone(), c.name.clone())) {
                 c.fk = true;
             }
         }
@@ -123,7 +125,7 @@ pub(crate) fn setting(toks: &[SyntaxToken], key: &str) -> Option<String> {
 }
 
 /// Parses `[schema.]name [as alias]` from a `Table` or `Enum` header (tokens before `[`).
-fn parse_qualified_header(
+pub(crate) fn parse_qualified_header(
     head: &[SyntaxToken],
     kw: &str,
 ) -> (Option<String>, Option<String>, Option<String>) {
@@ -353,6 +355,7 @@ fn column(
     let mut nullability = Nullability::Unspecified;
     let mut default_value = None;
     let mut col_note = None;
+    let mut col_check = None;
 
     if i < toks.len() {
         let close_rel = toks[i..]
@@ -400,6 +403,18 @@ fn column(
                         col_note = Some(unquote(val.text()).to_string());
                     }
                 }
+                "check"
+                    if part.get(1).is_some_and(|t| t.kind() == SyntaxKind::Colon)
+                        && part.len() >= 3 =>
+                {
+                    if let (Some(vs), Some(ve)) = (part.get(2), part.last()) {
+                        let s = usize::from(vs.text_range().start());
+                        let e = usize::from(ve.text_range().end());
+                        if s <= e && e <= source.len() {
+                            col_check = Some(unquote(source[s..e].trim()).to_string());
+                        }
+                    }
+                }
                 "ref" => {
                     fk = true;
                     let rest: Vec<&str> = part[1..].iter().map(rowan::SyntaxToken::text).collect();
@@ -432,7 +447,25 @@ fn column(
         increment,
         nullability,
         note: col_note,
+        check: col_check,
     })
+}
+
+/// Parses `[schema.]table` from a `TableGroup` member item.
+pub(crate) fn qualified_member(toks: &[SyntaxToken]) -> Option<String> {
+    match toks {
+        [s, dot, t, ..]
+            if matches!(s.kind(), SyntaxKind::Ident | SyntaxKind::Str)
+                && dot.text() == "."
+                && matches!(t.kind(), SyntaxKind::Ident | SyntaxKind::Str) =>
+        {
+            Some(format!("{}.{}", unquote(s.text()), unquote(t.text())))
+        }
+        [first, ..] if matches!(first.kind(), SyntaxKind::Ident | SyntaxKind::Str) => {
+            Some(unquote(first.text()).to_string())
+        }
+        _ => None,
+    }
 }
 
 fn group(node: &SyntaxNode) -> Option<Group> {
@@ -446,7 +479,7 @@ fn group(node: &SyntaxNode) -> Option<Group> {
     let tables = node
         .children()
         .filter(|n| n.kind() == SyntaxKind::Column)
-        .filter_map(|n| tokens(&n).first().map(|t| unquote(t.text()).to_string()))
+        .filter_map(|n| qualified_member(&tokens(&n)))
         .collect();
     Some(Group {
         name,
@@ -712,5 +745,29 @@ Ref: public.orders.(org_id, user_id) > u.(org_id, id) [delete: cascade]
         assert_eq!(s.refs[0].to.schema.as_deref(), Some("auth"));
         assert_eq!(s.refs[0].to.table, "users");
         assert_eq!(s.refs[0].to.cols(), vec!["org_id", "id"]);
+    }
+
+    #[test]
+    fn parses_column_check_and_default_without_lint_errors() {
+        let src = "\
+Table products {
+  id int [pk]
+  price decimal [not null, default: 0, check: `price >= 0`]
+  sku varchar(32) [unique]
+  indexes {
+    (sku, price) [unique, type: btree, name: 'idx_products_sku_price']
+  }
+}
+";
+        let s = analyze(src);
+        let diags = crate::lint::lint(src);
+        assert!(diags.is_empty(), "expected no lint diagnostics: {diags:?}");
+        let p = s.table("products").unwrap();
+        assert_eq!(p.columns[1].default_value.as_deref(), Some("0"));
+        assert_eq!(p.columns[1].check.as_deref(), Some("price >= 0"));
+        assert_eq!(p.indexes.len(), 1);
+        assert!(p.indexes[0].unique);
+        assert_eq!(p.indexes[0].index_type, Some(IndexType::BTree));
+        assert_eq!(p.indexes[0].name.as_deref(), Some("idx_products_sku_price"));
     }
 }
