@@ -57,6 +57,10 @@ actions!(
         ExportJpeg,
         ExportSvg,
         ImportSqlDdl,
+        AddPresetUuidPk,
+        AddPresetBigIntPk,
+        AddPresetTimestamps,
+        AddPresetSoftDelete,
     ]
 );
 
@@ -213,5 +217,24 @@ pub fn catalog() -> Vec<Entry> {
             "Export Image: Vector SVG",
         ),
         e("", ImportSqlDdl, "File", "Import SQL DDL…"),
+        e("", AddPresetUuidPk, "Edit", "Add Column Preset: UUID PK"),
+        e(
+            "",
+            AddPresetBigIntPk,
+            "Edit",
+            "Add Column Preset: BigInt PK",
+        ),
+        e(
+            "",
+            AddPresetTimestamps,
+            "Edit",
+            "Add Column Preset: Timestamps",
+        ),
+        e(
+            "",
+            AddPresetSoftDelete,
+            "Edit",
+            "Add Column Preset: Soft Delete",
+        ),
     ]
 }

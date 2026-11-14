@@ -1773,6 +1773,24 @@ impl Shell {
                             })),
                     ),
                 )
+                .child(Self::section(g, "PRESETS", None))
+                .child(
+                    div()
+                        .px(SP_MD)
+                        .py(SP_SM)
+                        .flex()
+                        .flex_wrap()
+                        .gap(SP_SM)
+                        .children(dbml_edit::ColumnPreset::all().into_iter().map(|preset| {
+                            Button::new(SharedString::from(format!("insp-preset-{}", preset.id())))
+                                .ghost()
+                                .small()
+                                .label(preset.label())
+                                .on_click(cx.listener(move |this, _, window, cx| {
+                                    this.apply_column_preset(preset, window, cx);
+                                }))
+                        })),
+                )
                 .on_mouse_move(cx.listener(|this, e: &MouseMoveEvent, _, cx| {
                     if let Some((start_x, start_w)) = this.col_resize_start {
                         let delta = f32::from(e.position.x - start_x);

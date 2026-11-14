@@ -32,7 +32,7 @@ import {
   Mode,
 } from './glass';
 import { iconSvg, IconName } from './icons';
-import { ActionId, GROUP_EXPORT_CODE, GROUP_EXPORT_IMAGE, catalog } from './actions';
+import { ActionId, COLUMN_PRESET_ACTIONS, GROUP_EXPORT_CODE, GROUP_EXPORT_IMAGE, catalog } from './actions';
 import { WORKBENCH_CSS } from './workbench-css';
 import { exportToMermaid, exportToSvg, exportSvgStringToRasterBlob } from './export';
 import { IMPORT_DIALECTS, ImportDialect, ImportSqlModel, ImportSqlResult } from './import-sql';
@@ -1148,6 +1148,8 @@ export class Workbench {
         <div class="t" style="width:${tw}px">TYPE</div><div style="width:62px">FLAGS</div><div style="width:20px"></div></div>
       ${cols}
       <div style="padding:8px 12px"><button class="btn ghost" data-act="add-col" data-table="${esc(tq)}">${ICON('Plus', 14)} Add column</button></div>
+      <div class="sec"><span>PRESETS</span></div>
+      <div style="padding:6px 12px;display:flex;flex-wrap:wrap;gap:4px">${COLUMN_PRESET_ACTIONS.map((p) => `<button class="chip" style="padding:0 8px;width:auto" data-act="${p.action}" title="Add ${p.label} columns">${p.label}</button>`).join('')}</div>
       <div class="sec"><span>INDEXES</span><button class="ib" style="width:22px;height:22px" data-act="add-index" data-table="${esc(tq)}" title="Add index">${ICON('Plus', 13)}</button></div>
       ${indexesList || `<div class="rel" style="color:var(--faint)">No indexes · click + to add single or composite index</div>`}
       <div class="sec"><span>RELATIONS</span></div>${rels}
@@ -1209,6 +1211,20 @@ export class Workbench {
   }
 
   // ───────────────────────── ações ─────────────────────────
+
+  /** Aplica um preset de colunas à tabela selecionada (um passo de undo; sem tabela ou sem novidade avisa). */
+  private applyColumnPreset(id: ActionId): void {
+    const entry = COLUMN_PRESET_ACTIONS.find((p) => p.action === id);
+    const table = this.selection.length === 1 ? this.selection[0] : null;
+    if (!entry || !table) {
+      this.toast('Select a table to add a column preset');
+      return;
+    }
+    const patch = this.dispatch({ action: 'add_column_preset', payload: { table, preset: entry.preset } });
+    if (patch && !patch.new_text && patch.byte_start === patch.byte_end) {
+      this.toast(`${entry.label}: columns already exist`);
+    }
+  }
 
   private runAction(id: ActionId): void {
     switch (id) {
@@ -1298,6 +1314,9 @@ export class Workbench {
       case 'ExportSqlSqlServer': this.doExportSql('sqlserver'); return;
       case 'ExportSqlOracle': this.doExportSql('oracle'); return;
       case 'ImportSqlDdl': this.openImportSqlModal(); return;
+      case 'AddPresetUuidPk': case 'AddPresetBigIntPk': case 'AddPresetTimestamps': case 'AddPresetSoftDelete':
+        this.applyColumnPreset(id);
+        return;
     }
     this.savePrefs();
     this.scheduleRender();

@@ -48,7 +48,21 @@ export type ActionId =
   | 'ExportSqlSqlite'
   | 'ExportSqlSqlServer'
   | 'ExportSqlOracle'
-  | 'ImportSqlDdl';
+  | 'ImportSqlDdl'
+  | 'AddPresetUuidPk'
+  | 'AddPresetBigIntPk'
+  | 'AddPresetTimestamps'
+  | 'AddPresetSoftDelete';
+
+/** Presets de coluna: ação → id do preset e rótulo (iguais a `ColumnPreset` em `dbml-edit`). */
+export const COLUMN_PRESET_ACTIONS: { action: ActionId; preset: ColumnPresetId; label: string }[] = [
+  { action: 'AddPresetUuidPk', preset: 'uuid_pk', label: 'UUID PK' },
+  { action: 'AddPresetBigIntPk', preset: 'bigint_pk', label: 'BigInt PK' },
+  { action: 'AddPresetTimestamps', preset: 'timestamps', label: 'Timestamps' },
+  { action: 'AddPresetSoftDelete', preset: 'soft_delete', label: 'Soft Delete' },
+];
+
+import type { ColumnPresetId } from './types';
 
 export type KeyContext = 'Shell' | 'Canvas';
 
@@ -82,6 +96,7 @@ export function catalog(): ActionEntry[] {
     e('ctrl-n', ['Ctrl', 'N'], 'NewFile', 'File', 'New .dbml File'),
     e('ctrl-s', ['Ctrl', 'S'], 'SaveFile', 'File', 'Save'),
     e('', [], 'ImportSqlDdl', 'File', 'Import SQL DDL…'),
+    ...COLUMN_PRESET_ACTIONS.map((p) => e('', [], p.action, 'Edit', `Add Column Preset: ${p.label}`)),
     e('ctrl-z', ['Ctrl', 'Z'], 'Undo', 'Edit', 'Undo'),
     e('ctrl-shift-z', ['Ctrl', 'Shift', 'Z'], 'Redo', 'Edit', 'Redo'),
     e('ctrl-shift-e', ['Ctrl', 'Shift', 'E'], 'ShowFiles', 'View', 'Show Project Files'),

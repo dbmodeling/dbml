@@ -112,6 +112,13 @@ pub enum Command {
         /// Optional column type.
         ty: Option<String>,
     },
+    /// Add the missing columns of a preset (`uuid_pk`, `bigint_pk`, `timestamps`, `soft_delete`).
+    AddColumnPreset {
+        /// Target table name.
+        table: String,
+        /// Preset identifier.
+        preset: String,
+    },
     /// Delete a column from a table.
     DeleteColumn {
         /// Target table name.

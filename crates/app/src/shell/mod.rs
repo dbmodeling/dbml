@@ -1082,6 +1082,59 @@ impl Shell {
         None
     }
 
+    /// Aplica um preset de colunas à tabela selecionada (um passo de undo via `edit_text`).
+    pub(crate) fn apply_column_preset(
+        &mut self,
+        preset: dbml_edit::ColumnPreset,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(doc) = self.doc() else { return };
+        let Some(table) = doc.diagram.read(cx).selection_state().0 else {
+            window.push_notification("Select a table to add a column preset", cx);
+            return;
+        };
+        let text = doc.editor.read(cx).value().to_string();
+        match dbml_edit::add_column_preset_text(&text, &table, preset) {
+            None => window.push_notification(format!("Table '{table}' not found"), cx),
+            Some(new) if new == text => {
+                window.push_notification(format!("{}: columns already exist", preset.label()), cx);
+            }
+            Some(new) => self.edit_text(false, window, cx, move |_| Some(new)),
+        }
+    }
+
+    fn add_preset_uuid_pk(&mut self, _: &AddPresetUuidPk, w: &mut Window, cx: &mut Context<Self>) {
+        self.apply_column_preset(dbml_edit::ColumnPreset::UuidPk, w, cx);
+    }
+
+    fn add_preset_bigint_pk(
+        &mut self,
+        _: &AddPresetBigIntPk,
+        w: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.apply_column_preset(dbml_edit::ColumnPreset::BigIntPk, w, cx);
+    }
+
+    fn add_preset_timestamps(
+        &mut self,
+        _: &AddPresetTimestamps,
+        w: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.apply_column_preset(dbml_edit::ColumnPreset::Timestamps, w, cx);
+    }
+
+    fn add_preset_soft_delete(
+        &mut self,
+        _: &AddPresetSoftDelete,
+        w: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.apply_column_preset(dbml_edit::ColumnPreset::SoftDelete, w, cx);
+    }
+
     fn import_sql_ddl(&mut self, _: &ImportSqlDdl, window: &mut Window, cx: &mut Context<Self>) {
         let model = cx.new(|_| crate::import_sql::ImportSqlModel::new(self.import_dialect));
         let sql_editor = cx.new(|cx| EditorState::new(window, cx).line_number(true));
@@ -2113,6 +2166,10 @@ pub fn register_global_actions(win: AnyWindowHandle, shell: &Entity<Shell>, cx: 
         ExportJpeg => export_jpeg,
         ExportSvg => export_svg,
         ImportSqlDdl => import_sql_ddl,
+        AddPresetUuidPk => add_preset_uuid_pk,
+        AddPresetBigIntPk => add_preset_bigint_pk,
+        AddPresetTimestamps => add_preset_timestamps,
+        AddPresetSoftDelete => add_preset_soft_delete,
         MoveLineUp => move_line_up,
         MoveLineDown => move_line_down,
         OpenPalette => open_palette,
@@ -2311,6 +2368,10 @@ impl Render for Shell {
             .on_action(cx.listener(Self::export_png))
             .on_action(cx.listener(Self::export_jpeg))
             .on_action(cx.listener(Self::export_svg))
+            .on_action(cx.listener(Self::add_preset_uuid_pk))
+            .on_action(cx.listener(Self::add_preset_bigint_pk))
+            .on_action(cx.listener(Self::add_preset_timestamps))
+            .on_action(cx.listener(Self::add_preset_soft_delete))
             .on_action(cx.listener(Self::show_shortcuts))
             .on_action(cx.listener(Self::toggle_theme))
             .on_action(cx.listener(Self::toggle_card_transparency))
@@ -2400,6 +2461,10 @@ mod tests {
             "Self::export_png",
             "Self::export_jpeg",
             "Self::export_svg",
+            "Self::add_preset_uuid_pk",
+            "Self::add_preset_bigint_pk",
+            "Self::add_preset_timestamps",
+            "Self::add_preset_soft_delete",
         ] {
             assert!(
                 src.contains(&format!(".on_action(cx.listener({handler}))")),

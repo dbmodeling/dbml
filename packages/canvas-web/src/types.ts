@@ -186,6 +186,9 @@ export interface SidecarLayout {
   };
 }
 
+/** Presets de coluna (ids iguais a `ColumnPreset::id` em `crates/dbml-edit`). */
+export type ColumnPresetId = 'uuid_pk' | 'bigint_pk' | 'timestamps' | 'soft_delete';
+
 /** Comandos semânticos emitidos pela UI (idênticos ao enum `Command` em `crates/dbml-wasm/src/types.rs`) */
 export type Command =
   | { action: 'add_table'; payload: { name?: string } }
@@ -193,6 +196,7 @@ export type Command =
   | { action: 'delete_tables'; payload: { names: string[] } }
   | { action: 'rename_table'; payload: { old_name: string; new_name: string } }
   | { action: 'add_column'; payload: { table: string; name?: string; ty?: string } }
+  | { action: 'add_column_preset'; payload: { table: string; preset: ColumnPresetId } }
   | { action: 'delete_column'; payload: { table: string; column: string } }
   | { action: 'rename_column'; payload: { table: string; old_name: string; new_name: string } }
   | { action: 'set_column_type'; payload: { table: string; column: string; ty: string } }

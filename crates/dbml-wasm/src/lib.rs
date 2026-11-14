@@ -655,6 +655,12 @@ fn apply_command_internal(source: &str, command: Command) -> Result<TextPatch, S
             dbml_edit::add_column_text(source, &table, &col_name, &col_ty)
                 .ok_or_else(|| format!("Table '{table}' not found when adding column"))?
         }
+        Command::AddColumnPreset { table, preset } => {
+            let preset = dbml_edit::ColumnPreset::from_id(&preset)
+                .ok_or_else(|| format!("Unknown column preset '{preset}'"))?;
+            dbml_edit::add_column_preset_text(source, &table, preset)
+                .ok_or_else(|| format!("Table '{table}' not found when adding preset"))?
+        }
         Command::DeleteColumn { table, column } => {
             dbml_edit::delete_column(source, &table, &column)
                 .ok_or_else(|| format!("Column '{column}' not found in table '{table}'"))?

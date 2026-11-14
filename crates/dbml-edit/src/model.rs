@@ -70,6 +70,14 @@ pub(crate) fn find_table(root: &SyntaxNode, name: &str) -> Option<SyntaxNode> {
     None
 }
 
+/// Nomes (sem aspas) das colunas de uma tabela, na ordem do texto.
+pub(crate) fn column_names(t: &SyntaxNode) -> Vec<String> {
+    t.children()
+        .filter(|n| n.kind() == SyntaxKind::Column)
+        .filter_map(|c| sig(&c).first().map(|k| unquote(k.text()).to_string()))
+        .collect()
+}
+
 pub(crate) fn find_column(t: &SyntaxNode, col: &str) -> Option<SyntaxNode> {
     t.children()
         .filter(|n| n.kind() == SyntaxKind::Column)
@@ -301,6 +309,17 @@ pub fn rename_table(text: &str, old: &str, new: &str) -> String {
         }
     }
     out
+}
+
+/// Aplica um [`crate::ColumnPreset`] a `table`; `None` se a tabela não existe.
+/// Retorna o texto inalterado quando todas as colunas do preset já existem.
+#[must_use]
+pub fn add_column_preset(text: &str, table: &str, preset: crate::ColumnPreset) -> Option<String> {
+    let cmd = crate::Command::AddColumnPreset {
+        table: table.into(),
+        preset,
+    };
+    crate::edit(text, &cmd).ok().map(|p| p.apply(text))
 }
 
 /// Inserts a new column `name ty` into `table`, returning `None` if `table` is missing.
