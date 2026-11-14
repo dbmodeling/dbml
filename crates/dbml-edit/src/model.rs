@@ -2,6 +2,7 @@
 //! novo tocando só o necessário; comentários e formatação do resto ficam intactos.
 
 use dbml_syntax::{SyntaxKind, SyntaxNode, SyntaxToken, descendant_tokens as sig, parse, unquote};
+use schema::{RefAction, RefKind};
 use std::ops::Range;
 
 fn range(t: &SyntaxToken) -> Range<usize> {
@@ -501,6 +502,225 @@ pub fn delete_ref(text: &str, from: (&str, &str), to: (&str, &str)) -> String {
     out.trim_end().to_string() + "\n"
 }
 
+/// Desired cardinality and referential actions for [`update_ref`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RefUpdate {
+    /// Target cardinality operator (`>`, `<`, `-`, `<>`).
+    pub kind: RefKind,
+    /// Desired `ON DELETE` action (`None` clears `delete:`).
+    pub on_delete: Option<RefAction>,
+    /// Desired `ON UPDATE` action (`None` clears `update:`).
+    pub on_update: Option<RefAction>,
+}
+
+fn format_actions_parts(on_delete: Option<RefAction>, on_update: Option<RefAction>) -> Vec<String> {
+    let mut parts = Vec::new();
+    if let Some(d) = on_delete {
+        parts.push(format!("delete: {}", d.as_dbml_str()));
+    }
+    if let Some(u) = on_update {
+        parts.push(format!("update: {}", u.as_dbml_str()));
+    }
+    parts
+}
+
+fn rewrite_bracket_actions(
+    text: &str,
+    toks: &[SyntaxToken],
+    open_idx: usize,
+    close_idx: usize,
+    on_delete: Option<RefAction>,
+    on_update: Option<RefAction>,
+) -> String {
+    let inner = &toks[open_idx + 1..close_idx];
+    let mut kept: Vec<String> = Vec::new();
+    for part in inner.split(|t| t.kind() == SyntaxKind::Comma) {
+        let Some(first) = part.first() else { continue };
+        let kw = first.text().to_ascii_lowercase();
+        if matches!(kw.as_str(), "delete" | "update") {
+            continue;
+        }
+        let Some(last) = part.last() else { continue };
+        let start = usize::from(first.text_range().start());
+        let end = usize::from(last.text_range().end());
+        kept.push(text[start..end].to_string());
+    }
+    kept.extend(format_actions_parts(on_delete, on_update));
+    if kept.is_empty() {
+        String::new()
+    } else {
+        format!("[{}]", kept.join(", "))
+    }
+}
+
+/// Updates cardinality and `delete:` / `update:` actions on an existing top-level or inline `Ref`.
+#[must_use]
+pub fn update_ref(text: &str, from: (&str, &str), to: (&str, &str), update: RefUpdate) -> String {
+    let root = parse(text).syntax();
+    let mut edits = Vec::new();
+
+    for r in root.children().filter(|n| n.kind() == SyntaxKind::Ref) {
+        let toks = sig(&r);
+        let Some(colon) = toks.iter().position(|t| t.text() == ":") else {
+            continue;
+        };
+        let body = &toks[colon + 1..];
+        let Some(op_idx) = (3..body.len()).find(|&k| !matches!(body[k].text(), "<" | ">" | "-"))
+        else {
+            continue;
+        };
+        if op_idx == 3
+            || body.get(1).is_none_or(|t| t.text() != ".")
+            || body.get(op_idx + 1).is_none_or(|t| t.text() != ".")
+            || body.get(op_idx + 2).is_none()
+        {
+            continue;
+        }
+        let (ft, fc) = (unquote(body[0].text()), unquote(body[2].text()));
+        let (tt, tc) = (
+            unquote(body[op_idx].text()),
+            unquote(body[op_idx + 2].text()),
+        );
+        let forward = ft == from.0 && fc == from.1 && tt == to.0 && tc == to.1;
+        let reverse = ft == to.0 && fc == to.1 && tt == from.0 && tc == from.1;
+        if !forward && !reverse {
+            continue;
+        }
+        let effective_kind = if reverse {
+            match update.kind {
+                RefKind::ManyToOne => RefKind::OneToMany,
+                RefKind::OneToMany => RefKind::ManyToOne,
+                other => other,
+            }
+        } else {
+            update.kind
+        };
+        let op_start = usize::from(body[3].text_range().start());
+        let op_end = usize::from(body[op_idx - 1].text_range().end());
+        edits.push((op_start..op_end, effective_kind.as_dbml_op().to_string()));
+
+        let after = op_idx + 3;
+        if let Some(open_rel) = body[after..]
+            .iter()
+            .position(|t| t.kind() == SyntaxKind::LBracket)
+            && let Some(close_rel) = body[after + open_rel..]
+                .iter()
+                .position(|t| t.kind() == SyntaxKind::RBracket)
+        {
+            let open_i = after + open_rel;
+            let close_i = open_i + close_rel;
+            let rewritten = rewrite_bracket_actions(
+                text,
+                body,
+                open_i,
+                close_i,
+                update.on_delete,
+                update.on_update,
+            );
+            let mut b_start = usize::from(body[open_i].text_range().start());
+            if rewritten.is_empty() && text[..b_start].ends_with(' ') {
+                b_start -= 1;
+            }
+            let b_end = usize::from(body[close_i].text_range().end());
+            edits.push((b_start..b_end, rewritten));
+        } else {
+            let parts = format_actions_parts(update.on_delete, update.on_update);
+            if !parts.is_empty() {
+                let insert_at = usize::from(body[op_idx + 2].text_range().end());
+                edits.push((insert_at..insert_at, format!(" [{}]", parts.join(", "))));
+            }
+        }
+    }
+
+    if let Some(t) = find_table(&root, from.0)
+        && let Some(c) = find_column(&t, from.1)
+    {
+        let toks = sig(&c);
+        if let Some(open_i) = toks.iter().position(|k| k.kind() == SyntaxKind::LBracket)
+            && let Some(close_rel) = toks[open_i..]
+                .iter()
+                .position(|k| k.kind() == SyntaxKind::RBracket)
+        {
+            let close_i = open_i + close_rel;
+            let inner = &toks[open_i + 1..close_i];
+            let mut matches_inline_ref = false;
+            for part in inner.split(|k| k.kind() == SyntaxKind::Comma) {
+                if part
+                    .first()
+                    .is_some_and(|k| k.text().eq_ignore_ascii_case("ref"))
+                    && part.get(1).is_some_and(|k| k.kind() == SyntaxKind::Colon)
+                {
+                    let mut op_start_i = 2;
+                    while op_start_i < part.len()
+                        && matches!(part[op_start_i].text(), "<" | ">" | "-")
+                    {
+                        op_start_i += 1;
+                    }
+                    if op_start_i > 2
+                        && part.get(op_start_i + 1).is_some_and(|k| k.text() == ".")
+                        && part.get(op_start_i + 2).is_some()
+                        && unquote(part[op_start_i].text()) == to.0
+                        && unquote(part[op_start_i + 2].text()) == to.1
+                    {
+                        matches_inline_ref = true;
+                        let op_s = usize::from(part[2].text_range().start());
+                        let op_e = usize::from(part[op_start_i - 1].text_range().end());
+                        edits.push((op_s..op_e, update.kind.as_dbml_op().to_string()));
+                    }
+                }
+            }
+            if matches_inline_ref {
+                // Reconstruct the bracket using the updated operator slice if actions changed
+                let mut has_action_tokens = false;
+                for part in inner.split(|k| k.kind() == SyntaxKind::Comma) {
+                    if let Some(first) = part.first()
+                        && (first.text().eq_ignore_ascii_case("delete")
+                            || first.text().eq_ignore_ascii_case("update"))
+                    {
+                        has_action_tokens = true;
+                        break;
+                    }
+                }
+                if has_action_tokens || update.on_delete.is_some() || update.on_update.is_some() {
+                    // Apply operator edit first on a local string if needed, or replace the whole bracket cleanly
+                    let b_start = usize::from(toks[open_i].text_range().start());
+                    let b_end = usize::from(toks[close_i].text_range().end());
+                    let mut kept: Vec<String> = Vec::new();
+                    for part in inner.split(|k| k.kind() == SyntaxKind::Comma) {
+                        let Some(first) = part.first() else { continue };
+                        let kw = first.text().to_ascii_lowercase();
+                        if matches!(kw.as_str(), "delete" | "update") {
+                            continue;
+                        }
+                        if kw == "ref" && part.get(1).is_some_and(|k| k.kind() == SyntaxKind::Colon)
+                        {
+                            kept.push(format!(
+                                "ref: {} {}.{}",
+                                update.kind.as_dbml_op(),
+                                to.0,
+                                to.1
+                            ));
+                        } else if let Some(last) = part.last() {
+                            let s = usize::from(first.text_range().start());
+                            let e = usize::from(last.text_range().end());
+                            kept.push(text[s..e].to_string());
+                        }
+                    }
+                    kept.extend(format_actions_parts(update.on_delete, update.on_update));
+                    // Remove the earlier operator-only edit inside this bracket to avoid overlapping ranges
+                    edits.retain(|(r, _)| r.start < b_start || r.end > b_end);
+                    edits.push((b_start..b_end, format!("[{}]", kept.join(", "))));
+                }
+            }
+        }
+    }
+
+    if edits.is_empty() {
+        return text.to_string();
+    }
+    apply(text, edits)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -624,5 +844,68 @@ mod tests {
             !deleted.contains("id_clientes"),
             "Excluir tabela pai deve remover coluna FK na tabela filha: {deleted}"
         );
+    }
+
+    #[test]
+    fn update_ref_changes_top_level_cardinality_and_keeps_comment() {
+        let src = "Table users {\n  id int [pk]\n}\nTable posts {\n  id int [pk]\n  user_id int\n}\nRef: posts.user_id > users.id // keep comment\n";
+        let updated = update_ref(
+            src,
+            ("posts", "user_id"),
+            ("users", "id"),
+            RefUpdate {
+                kind: RefKind::OneToOne,
+                on_delete: None,
+                on_update: None,
+            },
+        );
+        assert!(updated.contains("Ref: posts.user_id - users.id // keep comment"));
+    }
+
+    #[test]
+    fn update_ref_sets_and_clears_actions_on_top_level_ref() {
+        let src = "Table users {\n  id int [pk]\n}\nTable posts {\n  id int [pk]\n  user_id int\n}\nRef: posts.user_id > users.id\n";
+        let with_actions = update_ref(
+            src,
+            ("posts", "user_id"),
+            ("users", "id"),
+            RefUpdate {
+                kind: RefKind::ManyToOne,
+                on_delete: Some(RefAction::Cascade),
+                on_update: Some(RefAction::NoAction),
+            },
+        );
+        assert!(
+            with_actions
+                .contains("Ref: posts.user_id > users.id [delete: cascade, update: no action]")
+        );
+
+        let cleared = update_ref(
+            &with_actions,
+            ("posts", "user_id"),
+            ("users", "id"),
+            RefUpdate {
+                kind: RefKind::ManyToOne,
+                on_delete: None,
+                on_update: None,
+            },
+        );
+        assert!(cleared.ends_with("Ref: posts.user_id > users.id\n"));
+    }
+
+    #[test]
+    fn update_ref_updates_inline_ref_and_preserves_other_settings() {
+        let src = "Table users {\n  id int [pk]\n}\nTable posts {\n  id int [pk]\n  user_id int [not null, ref: > users.id]\n}\n";
+        let updated = update_ref(
+            src,
+            ("posts", "user_id"),
+            ("users", "id"),
+            RefUpdate {
+                kind: RefKind::OneToMany,
+                on_delete: Some(RefAction::SetNull),
+                on_update: None,
+            },
+        );
+        assert!(updated.contains("user_id int [not null, ref: < users.id, delete: set null]"));
     }
 }

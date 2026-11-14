@@ -10,7 +10,7 @@ pub use lint::{Diagnostic, Severity, lint};
 use dbml_syntax::{
     SyntaxKind, SyntaxNode, SyntaxToken, descendant_tokens as tokens, parse, unquote,
 };
-use schema::{Column, Endpoint, Group, Ref, RefKind, Schema, Table};
+use schema::{Column, Endpoint, Group, Ref, RefAction, RefKind, Schema, Table};
 
 /// Parses `text` into a CST and projects it into a semantic [`Schema`].
 #[must_use]
@@ -104,6 +104,8 @@ fn column(node: &SyntaxNode, table: &str, refs: &mut Vec<Ref>) -> Option<Column>
     if i < toks.len() {
         // configurações separadas por vírgula dentro de [...]
         let settings = &toks[i + 1..];
+        let setting_texts: Vec<&str> = settings.iter().map(rowan::SyntaxToken::text).collect();
+        let (on_delete, on_update) = parse_ref_actions(&setting_texts);
         let mut j = 0;
         while j < settings.len() {
             let w = settings[j].text().to_ascii_lowercase();
@@ -128,13 +130,15 @@ fn column(node: &SyntaxNode, table: &str, refs: &mut Vec<Ref>) -> Option<Column>
                         })
                         .map(rowan::SyntaxToken::text)
                         .collect();
-                    if let Some(r) = parse_ref_tail(
+                    if let Some(mut r) = parse_ref_tail(
                         &rest,
                         Endpoint {
                             table: table.into(),
                             column: name.clone(),
                         },
                     ) {
+                        r.on_delete = on_delete;
+                        r.on_update = on_update;
                         refs.push(r);
                     }
                 }
@@ -176,19 +180,36 @@ fn group(node: &SyntaxNode) -> Option<Group> {
 /// `: > users.id` (a partir do token depois de `ref`) com a origem já conhecida.
 fn parse_ref_tail(rest: &[&str], from: Endpoint) -> Option<Ref> {
     let rest: Vec<&str> = rest.iter().copied().filter(|s| *s != ":").collect();
-    let kind = kind_of(rest.first()?)?;
+    let kind = RefKind::from_dbml_op(rest.first()?)?;
     let to = endpoint(&rest[1..])?;
-    Some(Ref { from, to, kind })
+    Some(Ref {
+        from,
+        to,
+        kind,
+        on_delete: None,
+        on_update: None,
+    })
 }
 
-fn kind_of(s: &str) -> Option<RefKind> {
-    Some(match s {
-        ">" => RefKind::ManyToOne,
-        "<" => RefKind::OneToMany,
-        "-" => RefKind::OneToOne,
-        "<>" => RefKind::ManyToMany,
-        _ => return None,
-    })
+fn parse_ref_actions(toks: &[&str]) -> (Option<RefAction>, Option<RefAction>) {
+    let mut on_delete = None;
+    let mut on_update = None;
+    for part in toks.split(|t| *t == "," || *t == "[" || *t == "]") {
+        let Some((key, rest)) = part.split_first() else {
+            continue;
+        };
+        if rest.first().copied() != Some(":") || rest.len() < 2 {
+            continue;
+        }
+        let val = rest[1..].join(" ");
+        let action = RefAction::from_dbml_str(&val);
+        if key.eq_ignore_ascii_case("delete") {
+            on_delete = action;
+        } else if key.eq_ignore_ascii_case("update") {
+            on_update = action;
+        }
+    }
+    (on_delete, on_update)
 }
 
 /// `tabela . coluna` (tokens `Ident . Ident`; o lexer entrega `.` como `Other`).
@@ -216,9 +237,16 @@ fn top_level_ref(node: &SyntaxNode) -> Option<Ref> {
         op.push_str(body[k]);
         k += 1;
     }
-    let kind = kind_of(&op)?;
+    let kind = RefKind::from_dbml_op(&op)?;
     let to = endpoint(&body[k..])?;
-    Some(Ref { from, to, kind })
+    let (on_delete, on_update) = parse_ref_actions(&body[k + 3..]);
+    Some(Ref {
+        from,
+        to,
+        kind,
+        on_delete,
+        on_update,
+    })
 }
 
 #[cfg(test)]
@@ -291,5 +319,23 @@ Ref: posts.author_id > users.id
     #[test]
     fn broken_input_does_not_panic() {
         let _ = analyze("Table {\n Table x { id\n Ref: a. > \n");
+    }
+
+    #[test]
+    fn parses_top_level_ref_with_delete_and_update_actions() {
+        let src = "Table users {\n  id int [pk]\n}\nTable posts {\n  id int [pk]\n  user_id int\n}\nRef: posts.user_id > users.id [delete: cascade, update: set null]\n";
+        let s = analyze(src);
+        assert_eq!(s.refs.len(), 1);
+        assert_eq!(s.refs[0].on_delete, Some(RefAction::Cascade));
+        assert_eq!(s.refs[0].on_update, Some(RefAction::SetNull));
+    }
+
+    #[test]
+    fn parses_inline_ref_with_delete_and_update_actions() {
+        let src = "Table users {\n  id int [pk]\n}\nTable posts {\n  id int [pk]\n  user_id int [ref: > users.id, delete: restrict, update: no action]\n}\n";
+        let s = analyze(src);
+        assert_eq!(s.refs.len(), 1);
+        assert_eq!(s.refs[0].on_delete, Some(RefAction::Restrict));
+        assert_eq!(s.refs[0].on_update, Some(RefAction::NoAction));
     }
 }

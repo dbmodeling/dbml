@@ -8,9 +8,9 @@ pub use groups::{group_tables, next_group_name, set_table_color, ungroup_table};
 mod groups;
 mod model;
 pub use model::{
-    add_column as add_column_text, add_ref, add_table, delete_column, delete_ref, delete_table,
-    link_tables, rename_column, rename_table, set_column_flag, set_column_type, unique_column_name,
-    unique_table_name,
+    RefUpdate, add_column as add_column_text, add_ref, add_table, delete_column, delete_ref,
+    delete_table, link_tables, rename_column, rename_table, set_column_flag, set_column_type,
+    unique_column_name, unique_table_name, update_ref,
 };
 
 use dbml_syntax::{SyntaxKind, SyntaxNode, parse};

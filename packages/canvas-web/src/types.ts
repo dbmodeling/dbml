@@ -5,6 +5,8 @@
 
 export type RefKind = 'ManyToOne' | 'OneToMany' | 'OneToOne' | 'ManyToMany';
 
+export type RefAction = 'no_action' | 'restrict' | 'cascade' | 'set_null' | 'set_default';
+
 export interface Endpoint {
   table: string;
   column: string;
@@ -14,6 +16,8 @@ export interface Ref {
   from: Endpoint;
   to: Endpoint;
   kind: RefKind;
+  on_delete?: RefAction | null;
+  on_update?: RefAction | null;
 }
 
 export interface Column {
@@ -152,6 +156,18 @@ export type Command =
   | { action: 'set_column_flag'; payload: { table: string; column: string; flag: string; value: boolean } }
   | { action: 'add_ref'; payload: { from_table: string; from_col?: string; to_table: string; to_col?: string } }
   | { action: 'delete_ref'; payload: { from_table: string; from_col: string; to_table: string; to_col: string } }
+  | {
+      action: 'update_ref';
+      payload: {
+        from_table: string;
+        from_col: string;
+        to_table: string;
+        to_col: string;
+        kind: RefKind;
+        on_delete?: RefAction | null;
+        on_update?: RefAction | null;
+      };
+    }
   | { action: 'group_tables'; payload: { name?: string; tables: string[] } }
   | { action: 'ungroup_table'; payload: { table: string } }
   | { action: 'ungroup_tables'; payload: { tables: string[] } }

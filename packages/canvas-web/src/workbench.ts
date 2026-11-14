@@ -780,7 +780,7 @@ export class Workbench {
   private renderInspector(): void {
     const el = this.els['inspector'];
     const sel = this.selection;
-    const show = this.prefs.inspector && !(this.prefs.autoHide && sel.length === 0);
+    const show = this.prefs.inspector && !(this.prefs.autoHide && sel.length === 0 && !this.selectedRef);
     el.style.display = show ? 'block' : 'none';
     if (!show) return;
     // não recria o inspector enquanto o usuário digita num campo dele
@@ -795,6 +795,62 @@ export class Workbench {
       return;
     }
     const t = sel.length === 1 ? this.schema.tables.find((x) => x.name === sel[0]) : undefined;
+    if (!t && this.selectedRef) {
+      const sr = this.selectedRef;
+      const r = this.schema.refs.find(
+        (x) =>
+          (x.from.table === sr.from_table &&
+            x.from.column === sr.from_col &&
+            x.to.table === sr.to_table &&
+            x.to.column === sr.to_col) ||
+          (x.from.table === sr.to_table &&
+            x.from.column === sr.to_col &&
+            x.to.table === sr.from_table &&
+            x.to.column === sr.from_col)
+      );
+      if (r) {
+        const kinds: Array<[import('./types').RefKind, string]> = [
+          ['ManyToOne', 'N:1 (>)'],
+          ['OneToMany', '1:N (<)'],
+          ['OneToOne', '1:1 (-)'],
+          ['ManyToMany', 'N:N (<>)'],
+        ];
+        const actions: Array<[import('./types').RefAction | '', string]> = [
+          ['', 'None'],
+          ['no_action', 'no action'],
+          ['restrict', 'restrict'],
+          ['cascade', 'cascade'],
+          ['set_null', 'set null'],
+          ['set_default', 'set default'],
+        ];
+        const cardBtns = kinds
+          .map(
+            ([k, label]) =>
+              `<button class="btn ${r.kind === k ? 'primary' : 'ghost'}" style="height:24px;padding:0 8px;font-size:12px" data-act="update-ref-kind" data-kind="${k}">${label}</button>`
+          )
+          .join('');
+        const mkActionBtns = (act: 'update-ref-del' | 'update-ref-upd', cur: string) =>
+          actions
+            .map(
+              ([val, label]) =>
+                `<button class="btn ${cur === val ? 'primary' : 'ghost'}" style="height:24px;padding:0 8px;font-size:12px" data-act="${act}" data-val="${val}">${label}</button>`
+            )
+            .join('');
+        el.innerHTML = `<div class="ihead"><span class="eb">RELATION</span>
+          <span class="ti">${esc(r.from.table)}.${esc(r.from.column)}</span>
+          <span class="su">→ ${esc(r.to.table)}.${esc(r.to.column)}</span></div>
+          <div class="sec"><span>CARDINALITY</span></div>
+          <div style="display:flex;flex-wrap:wrap;gap:6px;padding:4px 12px 0 12px">${cardBtns}</div>
+          <div class="sec"><span>ON DELETE</span></div>
+          <div style="display:flex;flex-wrap:wrap;gap:6px;padding:4px 12px 0 12px">${mkActionBtns('update-ref-del', r.on_delete || '')}</div>
+          <div class="sec"><span>ON UPDATE</span></div>
+          <div style="display:flex;flex-wrap:wrap;gap:6px;padding:4px 12px 0 12px">${mkActionBtns('update-ref-upd', r.on_update || '')}</div>
+          <div style="padding:12px;margin-top:8px;border-top:1px solid var(--edge-soft)">
+            <button class="btn ghost" style="width:100%;justify-content:center" data-act="del-selected-ref">${ICON('Trash', 14)} Delete relation</button>
+          </div>`;
+        return;
+      }
+    }
     if (!t) {
       const kb = (l: string, k: string) => `<div class="kb"><span>${l}</span><kbd>${k}</kbd></div>`;
       el.innerHTML = `<div class="pad"><div style="display:flex;justify-content:space-between;align-items:center">
@@ -1220,6 +1276,53 @@ export class Workbench {
           payload: { from_table: d.fromTable!, from_col: d.fromCol!, to_table: d.toTable!, to_col: d.toCol! },
         });
         return;
+      case 'del-selected-ref':
+        if (this.selectedRef) {
+          this.dispatch({ action: 'delete_ref', payload: { ...this.selectedRef } });
+          this.selectedRef = null;
+        }
+        return;
+      case 'update-ref-kind':
+      case 'update-ref-del':
+      case 'update-ref-upd': {
+        if (!this.selectedRef) return;
+        const sr = this.selectedRef;
+        const r = this.schema.refs.find(
+          (x) =>
+            (x.from.table === sr.from_table &&
+              x.from.column === sr.from_col &&
+              x.to.table === sr.to_table &&
+              x.to.column === sr.to_col) ||
+            (x.from.table === sr.to_table &&
+              x.from.column === sr.to_col &&
+              x.to.table === sr.from_table &&
+              x.to.column === sr.from_col)
+        );
+        if (!r) return;
+        const kind =
+          act === 'update-ref-kind' ? (d.kind as import('./types').RefKind) : r.kind;
+        const on_delete =
+          act === 'update-ref-del'
+            ? ((d.val || null) as import('./types').RefAction | null)
+            : (r.on_delete ?? null);
+        const on_update =
+          act === 'update-ref-upd'
+            ? ((d.val || null) as import('./types').RefAction | null)
+            : (r.on_update ?? null);
+        this.dispatch({
+          action: 'update_ref',
+          payload: {
+            from_table: r.from.table,
+            from_col: r.from.column,
+            to_table: r.to.table,
+            to_col: r.to.column,
+            kind,
+            on_delete,
+            on_update,
+          },
+        });
+        return;
+      }
       case 'del-col':
         this.dispatch({ action: 'delete_column', payload: { table: d.table!, column: d.col! } });
         return;

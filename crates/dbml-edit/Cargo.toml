@@ -8,6 +8,7 @@ publish.workspace = true
 [dependencies]
 dbml-syntax.workspace = true
 rowan.workspace = true
+schema.workspace = true
 
 [dev-dependencies]
 insta.workspace = true

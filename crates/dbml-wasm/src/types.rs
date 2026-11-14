@@ -166,6 +166,25 @@ pub enum Command {
         /// Target column name.
         to_col: String,
     },
+    /// Update cardinality and referential actions on an existing relationship.
+    UpdateRef {
+        /// Source table name.
+        from_table: String,
+        /// Source column name.
+        from_col: String,
+        /// Target table name.
+        to_table: String,
+        /// Target column name.
+        to_col: String,
+        /// Target cardinality.
+        kind: schema::RefKind,
+        /// Optional `ON DELETE` referential action.
+        #[serde(default)]
+        on_delete: Option<schema::RefAction>,
+        /// Optional `ON UPDATE` referential action.
+        #[serde(default)]
+        on_update: Option<schema::RefAction>,
+    },
     /// Group tables into a `TableGroup`.
     GroupTables {
         /// Optional group name.
@@ -244,6 +263,12 @@ pub struct RoutedEdge {
     pub to_table: String,
     /// Target column name.
     pub to_col: String,
+    /// Relationship cardinality kind.
+    pub kind: schema::RefKind,
+    /// Optional `ON DELETE` referential action.
+    pub on_delete: Option<schema::RefAction>,
+    /// Optional `ON UPDATE` referential action.
+    pub on_update: Option<schema::RefAction>,
     /// Anchor start X coordinate.
     pub ax: f32,
     /// Anchor start Y coordinate.

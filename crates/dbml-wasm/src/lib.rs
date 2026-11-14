@@ -397,6 +397,9 @@ pub fn compute_scene_internal(
             from_col: r.from.column.clone(),
             to_table: r.to.table.clone(),
             to_col: r.to.column.clone(),
+            kind: r.kind,
+            on_delete: r.on_delete,
+            on_update: r.on_update,
             ax,
             ay,
             bx,
@@ -536,6 +539,24 @@ pub fn apply_command(source: &str, command_js: JsValue) -> Result<JsValue, JsVal
             to_table,
             to_col,
         } => dbml_edit::delete_ref(source, (&from_table, &from_col), (&to_table, &to_col)),
+        Command::UpdateRef {
+            from_table,
+            from_col,
+            to_table,
+            to_col,
+            kind,
+            on_delete,
+            on_update,
+        } => dbml_edit::update_ref(
+            source,
+            (&from_table, &from_col),
+            (&to_table, &to_col),
+            dbml_edit::RefUpdate {
+                kind,
+                on_delete,
+                on_update,
+            },
+        ),
         Command::GroupTables { name, tables } => {
             should_relayout = true;
             let group_name = name.unwrap_or_else(|| dbml_edit::next_group_name(source));

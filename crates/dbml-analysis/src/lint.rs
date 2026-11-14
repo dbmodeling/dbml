@@ -478,7 +478,7 @@ fn check_column_settings(
                     ));
                 }
             }
-            "default" | "note" | "ref" => {
+            "default" | "note" | "ref" | "delete" | "update" => {
                 if kw == "default" {
                     flags.has_default = true;
                 }
@@ -490,6 +490,21 @@ fn check_column_settings(
                         Severity::Error,
                         format!("Setting `{kw}:` requires a value on column `{cname}`"),
                     ));
+                } else if matches!(kw.as_str(), "delete" | "update") {
+                    let val: String = part[2..]
+                        .iter()
+                        .map(rowan::SyntaxToken::text)
+                        .collect::<Vec<_>>()
+                        .join(" ");
+                    if schema::RefAction::from_dbml_str(&val).is_none() {
+                        out.push(diag(
+                            range(&part[2]),
+                            Severity::Error,
+                            format!(
+                                "Invalid referential action `{val}` for `{kw}:` (expected: no action, restrict, cascade, set null, set default)"
+                            ),
+                        ));
+                    }
                 }
             }
             _ => {
@@ -1313,5 +1328,19 @@ mod tests {
 
         let ok_default = "Table categories {\n  id int [pk]\n  parent_id int [not null, default: 0, ref: > categories.id]\n}\n";
         assert!(lint(ok_default).is_empty(), "{:?}", lint(ok_default));
+    }
+
+    #[test]
+    fn lint_accepts_valid_and_rejects_invalid_referential_action() {
+        let valid = "Table users {\n  id int [pk]\n}\nTable posts {\n  id int [pk]\n  user_id int [ref: > users.id, delete: cascade, update: set null]\n}\n";
+        assert!(lint(valid).is_empty(), "{:?}", lint(valid));
+
+        let invalid = "Table users {\n  id int [pk]\n}\nTable posts {\n  id int [pk]\n  user_id int [ref: > users.id, delete: explode]\n}\n";
+        let m = msgs(invalid);
+        assert!(
+            m.iter()
+                .any(|s| s.contains("Invalid referential action `explode`")),
+            "{m:?}"
+        );
     }
 }

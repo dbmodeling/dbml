@@ -1469,6 +1469,7 @@ dependencies = [
  "insta",
  "proptest",
  "rowan",
+ "schema",
 ]
 
 [[package]]

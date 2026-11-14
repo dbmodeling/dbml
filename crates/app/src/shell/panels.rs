@@ -1197,7 +1197,7 @@ impl Shell {
                 .text_color(g.text_muted)
                 .child(text)
         };
-        let (selection, selected, group) = match self.doc() {
+        let (selection, selected, group, selected_ref) = match self.doc() {
             Some(doc) => {
                 let d = doc.diagram.read(cx);
                 let sel = d.selection();
@@ -1210,9 +1210,25 @@ impl Shell {
                 let group = one
                     .as_ref()
                     .and_then(|(t, _)| d.schema().group_of(&t.name).cloned());
-                (sel, one, group)
+                let sref = d.selected_ref().and_then(|(from, to)| {
+                    d.schema()
+                        .refs
+                        .iter()
+                        .find(|r| {
+                            (r.from.table == from.0
+                                && r.from.column == from.1
+                                && r.to.table == to.0
+                                && r.to.column == to.1)
+                                || (r.from.table == to.0
+                                    && r.from.column == to.1
+                                    && r.to.table == from.0
+                                    && r.to.column == from.1)
+                        })
+                        .cloned()
+                });
+                (sel, one, group, sref)
             }
-            None => (Vec::new(), None, None),
+            None => (Vec::new(), None, None, None),
         };
         let header = |eyebrow: &'static str, title: String, sub: String| {
             div()
@@ -1818,6 +1834,115 @@ impl Shell {
                                 .label("Delete table")
                                 .tooltip_with_action(
                                     "Delete table",
+                                    &DeleteSelection,
+                                    Some(actions::CANVAS),
+                                )
+                                .on_click(|_, window, cx| {
+                                    window.dispatch_action(Box::new(DeleteSelection), cx);
+                                }),
+                        ),
+                )
+        } else if let Some(r) = selected_ref {
+            let mut card_row = div().flex().flex_wrap().gap(px(6.)).px(SP_MD);
+            for &kind in schema::RefKind::ALL {
+                let active = r.kind == kind;
+                let label = match kind {
+                    schema::RefKind::ManyToOne => "N:1 (>)",
+                    schema::RefKind::OneToMany => "1:N (<)",
+                    schema::RefKind::OneToOne => "1:1 (-)",
+                    schema::RefKind::ManyToMany => "N:N (<>)",
+                };
+                let rf = r.clone();
+                let btn = Button::new(SharedString::from(format!("ref-kind-{label}")))
+                    .xsmall()
+                    .label(label);
+                let btn = if active { btn.primary() } else { btn.ghost() };
+                card_row = card_row.child(btn.on_click(cx.listener(move |this, _, window, cx| {
+                    let ft = rf.from.table.clone();
+                    let fc = rf.from.column.clone();
+                    let tt = rf.to.table.clone();
+                    let tc = rf.to.column.clone();
+                    let update = dbml_edit::RefUpdate {
+                        kind,
+                        on_delete: rf.on_delete,
+                        on_update: rf.on_update,
+                    };
+                    this.edit_text(false, window, cx, |t| {
+                        Some(dbml_edit::update_ref(t, (&ft, &fc), (&tt, &tc), update))
+                    });
+                })));
+            }
+
+            let build_action_row =
+                |is_delete: bool, current: Option<schema::RefAction>, cx: &mut Context<Self>| {
+                    let mut row = div().flex().flex_wrap().gap(px(6.)).px(SP_MD);
+                    let choices: [Option<schema::RefAction>; 6] = [
+                        None,
+                        Some(schema::RefAction::NoAction),
+                        Some(schema::RefAction::Restrict),
+                        Some(schema::RefAction::Cascade),
+                        Some(schema::RefAction::SetNull),
+                        Some(schema::RefAction::SetDefault),
+                    ];
+                    for action in choices {
+                        let active = current == action;
+                        let label = action.map_or("None", schema::RefAction::as_dbml_str);
+                        let id = SharedString::from(format!(
+                            "ref-{}-{label}",
+                            if is_delete { "del" } else { "upd" }
+                        ));
+                        let rf = r.clone();
+                        let btn = Button::new(id).xsmall().label(label);
+                        let btn = if active { btn.primary() } else { btn.ghost() };
+                        row = row.child(btn.on_click(cx.listener(move |this, _, window, cx| {
+                            let ft = rf.from.table.clone();
+                            let fc = rf.from.column.clone();
+                            let tt = rf.to.table.clone();
+                            let tc = rf.to.column.clone();
+                            let update = dbml_edit::RefUpdate {
+                                kind: rf.kind,
+                                on_delete: if is_delete { action } else { rf.on_delete },
+                                on_update: if is_delete { rf.on_update } else { action },
+                            };
+                            this.edit_text(false, window, cx, |t| {
+                                Some(dbml_edit::update_ref(t, (&ft, &fc), (&tt, &tc), update))
+                            });
+                        })));
+                    }
+                    row
+                };
+
+            let del_row = build_action_row(true, r.on_delete, cx);
+            let upd_row = build_action_row(false, r.on_update, cx);
+
+            div()
+                .flex()
+                .flex_col()
+                .child(header(
+                    "RELATION",
+                    format!("{}.{}", r.from.table, r.from.column),
+                    format!("→ {}.{}", r.to.table, r.to.column),
+                ))
+                .child(Self::section(g, "CARDINALITY", None))
+                .child(card_row)
+                .child(Self::section(g, "ON DELETE", None))
+                .child(del_row)
+                .child(Self::section(g, "ON UPDATE", None))
+                .child(upd_row)
+                .child(
+                    div()
+                        .p(SP_MD)
+                        .mt(SP_SM)
+                        .border_t_1()
+                        .border_color(g.edge_soft)
+                        .child(
+                            Button::new("insp-del-ref")
+                                .ghost()
+                                .small()
+                                .icon(IconName::Trash)
+                                .label("Delete relation")
+                                .tooltip_with_action(
+                                    "Delete relation and FK column",
                                     &DeleteSelection,
                                     Some(actions::CANVAS),
                                 )

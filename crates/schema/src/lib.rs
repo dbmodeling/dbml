@@ -67,6 +67,70 @@ pub struct Ref {
     pub to: Endpoint,
     /// Relationship cardinality.
     pub kind: RefKind,
+    /// Optional `ON DELETE` referential action.
+    #[serde(default)]
+    pub on_delete: Option<RefAction>,
+    /// Optional `ON UPDATE` referential action.
+    #[serde(default)]
+    pub on_update: Option<RefAction>,
+}
+
+/// Referential integrity action for `ON DELETE` / `ON UPDATE` on a [`Ref`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RefAction {
+    /// `no action`
+    NoAction,
+    /// `restrict`
+    Restrict,
+    /// `cascade`
+    Cascade,
+    /// `set null`
+    SetNull,
+    /// `set default`
+    SetDefault,
+}
+
+impl RefAction {
+    /// All supported referential actions in canonical UI order.
+    pub const ALL: &[Self] = &[
+        Self::NoAction,
+        Self::Restrict,
+        Self::Cascade,
+        Self::SetNull,
+        Self::SetDefault,
+    ];
+
+    /// Returns the canonical DBML keyword string for this action.
+    #[must_use]
+    pub const fn as_dbml_str(self) -> &'static str {
+        match self {
+            Self::NoAction => "no action",
+            Self::Restrict => "restrict",
+            Self::Cascade => "cascade",
+            Self::SetNull => "set null",
+            Self::SetDefault => "set default",
+        }
+    }
+
+    /// Parses a DBML referential action string (case-insensitive, trimmed).
+    #[must_use]
+    pub fn from_dbml_str(s: &str) -> Option<Self> {
+        let normalized = s.trim();
+        if normalized.eq_ignore_ascii_case("no action") {
+            Some(Self::NoAction)
+        } else if normalized.eq_ignore_ascii_case("restrict") {
+            Some(Self::Restrict)
+        } else if normalized.eq_ignore_ascii_case("cascade") {
+            Some(Self::Cascade)
+        } else if normalized.eq_ignore_ascii_case("set null") {
+            Some(Self::SetNull)
+        } else if normalized.eq_ignore_ascii_case("set default") {
+            Some(Self::SetDefault)
+        } else {
+            None
+        }
+    }
 }
 
 /// Column reference endpoint (`table.column`) used in a [`Ref`].
@@ -79,7 +143,7 @@ pub struct Endpoint {
 }
 
 /// Cardinality of a DBML [`Ref`] relationship.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum RefKind {
     /// Many-to-one (`>`).
     ManyToOne,
@@ -89,6 +153,39 @@ pub enum RefKind {
     OneToOne,
     /// Many-to-many (`<>`).
     ManyToMany,
+}
+
+impl RefKind {
+    /// All supported cardinalities in canonical UI order.
+    pub const ALL: &[Self] = &[
+        Self::ManyToOne,
+        Self::OneToMany,
+        Self::OneToOne,
+        Self::ManyToMany,
+    ];
+
+    /// Returns the canonical DBML operator string (`>`, `<`, `-`, `<>`).
+    #[must_use]
+    pub const fn as_dbml_op(self) -> &'static str {
+        match self {
+            Self::ManyToOne => ">",
+            Self::OneToMany => "<",
+            Self::OneToOne => "-",
+            Self::ManyToMany => "<>",
+        }
+    }
+
+    /// Parses a DBML cardinality operator string.
+    #[must_use]
+    pub fn from_dbml_op(s: &str) -> Option<Self> {
+        match s.trim() {
+            ">" => Some(Self::ManyToOne),
+            "<" => Some(Self::OneToMany),
+            "-" => Some(Self::OneToOne),
+            "<>" => Some(Self::ManyToMany),
+            _ => None,
+        }
+    }
 }
 
 impl Schema {
@@ -155,5 +252,25 @@ mod tests {
     fn group_of_should_return_none_when_table_is_ungrouped() {
         let schema = sample_schema();
         assert_eq!(schema.group_of("orders"), None);
+    }
+
+    #[test]
+    fn ref_action_roundtrips_dbml_str() {
+        for &action in RefAction::ALL {
+            assert_eq!(RefAction::from_dbml_str(action.as_dbml_str()), Some(action));
+        }
+        assert_eq!(
+            RefAction::from_dbml_str("SET NULL"),
+            Some(RefAction::SetNull)
+        );
+        assert_eq!(RefAction::from_dbml_str("unknown"), None);
+    }
+
+    #[test]
+    fn ref_kind_roundtrips_dbml_op() {
+        for &kind in RefKind::ALL {
+            assert_eq!(RefKind::from_dbml_op(kind.as_dbml_op()), Some(kind));
+        }
+        assert_eq!(RefKind::from_dbml_op("??"), None);
     }
 }
