@@ -1983,6 +1983,13 @@ impl Diagram {
                             keys: "Ctrl+O",
                             action: Box::new(OpenFile),
                         },
+                        crate::widgets::EmptyAction {
+                            id: "empty-connect",
+                            icon: IconName::Database,
+                            label: "Connect to Database",
+                            keys: "",
+                            action: Box::new(ConnectDatabase),
+                        },
                     ))
                     .into_any_element(),
             );

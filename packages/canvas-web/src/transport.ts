@@ -10,6 +10,9 @@ import {
   Diagnostic,
   WorkspaceFileEntry,
   SessionSnapshot,
+  IntrospectRequest,
+  IntrospectResult,
+  TestConnectionResult,
 } from './types';
 
 declare function acquireVsCodeApi(): {
@@ -46,6 +49,15 @@ export class VsCodeTransport implements HostTransport {
   ) => void;
   private externalChangeCallback?: (newSource: string) => void;
   private errorCallback?: (diagnostics: Diagnostic[]) => void;
+  private pendingIntrospect = new Map<
+    number,
+    { resolve: (r: IntrospectResult) => void; reject: (e: Error) => void }
+  >();
+  private introspectSeq = 0;
+  private pendingTest = new Map<
+    number,
+    { resolve: (r: TestConnectionResult) => void; reject: (e: Error) => void }
+  >();
 
   constructor() {
     this.vscode = getVsCodeApi();
@@ -81,7 +93,40 @@ export class VsCodeTransport implements HostTransport {
             this.errorCallback(message.diagnostics);
           }
           break;
+        case 'test_connection_result': {
+          const p = this.pendingTest.get(message.id);
+          this.pendingTest.delete(message.id);
+          if (!p) break;
+          if (message.error) p.reject(new Error(message.error));
+          else p.resolve(message.result as TestConnectionResult);
+          break;
+        }
+        case 'introspect_result': {
+          const p = this.pendingIntrospect.get(message.id);
+          this.pendingIntrospect.delete(message.id);
+          if (!p) break;
+          if (message.error) p.reject(new Error(message.error));
+          else p.resolve(message.result as IntrospectResult);
+          break;
+        }
       }
+    });
+  }
+
+  public testConnection(req: IntrospectRequest): Promise<TestConnectionResult> {
+    const id = ++this.introspectSeq;
+    return new Promise((resolve, reject) => {
+      this.pendingTest.set(id, { resolve, reject });
+      this.vscode.postMessage({ command: 'test_connection', id, request: req });
+    });
+  }
+
+  /** O host da extensão executa `dbml import --url` (a Webview não abre sockets). */
+  public introspect(req: IntrospectRequest): Promise<IntrospectResult> {
+    const id = ++this.introspectSeq;
+    return new Promise((resolve, reject) => {
+      this.pendingIntrospect.set(id, { resolve, reject });
+      this.vscode.postMessage({ command: 'introspect', id, request: req });
     });
   }
 
@@ -237,6 +282,29 @@ export class WebSocketTransport implements HostTransport {
         })
       );
     }
+  }
+
+  public async testConnection(req: IntrospectRequest): Promise<TestConnectionResult> {
+    const res = await fetch('/api/introspect/test', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(req),
+    });
+    const body = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(body.error || `Request failed (${res.status})`);
+    return body as TestConnectionResult;
+  }
+
+  /** POST no servidor local (`dbml run`), que conecta ao banco; a senha só vai no corpo. */
+  public async introspect(req: IntrospectRequest): Promise<IntrospectResult> {
+    const res = await fetch('/api/introspect', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(req),
+    });
+    const body = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(body.error || `Request failed (${res.status})`);
+    return body as IntrospectResult;
   }
 
   public async saveLayout(layout: SidecarLayout): Promise<void> {

@@ -7,7 +7,7 @@ use axum::{
         ws::{Message, WebSocket, WebSocketUpgrade},
     },
     response::IntoResponse,
-    routing::get,
+    routing::{get, post},
 };
 use futures_util::{SinkExt, StreamExt};
 use serde::Deserialize;
@@ -34,6 +34,11 @@ const MAX_WS_PAYLOAD_BYTES: usize = 16 * 1024 * 1024;
 pub fn create_router(state: AppState) -> Router {
     Router::new()
         .route("/ws", get(ws_handler))
+        .route("/api/introspect", post(crate::introspect_api::handler))
+        .route(
+            "/api/introspect/test",
+            post(crate::introspect_api::test_handler),
+        )
         .fallback(static_handler)
         .with_state(state)
 }

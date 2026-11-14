@@ -168,15 +168,38 @@ pub enum Commands {
         #[arg(short, long, value_name = "OUTPUT")]
         output: Option<PathBuf>,
     },
-    /// Import a SQL DDL file into DBML
+    /// Import a SQL DDL file, or the live catalog of a database (`--url`), into DBML
     Import {
         /// Path to the input .sql file
-        #[arg(value_name = "FILE")]
-        file: PathBuf,
+        #[arg(
+            value_name = "FILE",
+            required_unless_present = "url",
+            conflicts_with = "url"
+        )]
+        file: Option<PathBuf>,
 
-        /// Source SQL dialect
-        #[arg(long, value_enum)]
-        dialect: ImportDialect,
+        /// Source SQL dialect (required with FILE)
+        #[arg(long, value_enum, required_unless_present = "url")]
+        dialect: Option<ImportDialect>,
+
+        /// Read the schema from a live database (read-only): `postgres://`, `mysql://`,
+        /// `sqlserver://` (add `?trustServerCertificate=true` for self-signed certificates) or a
+        /// SQLite file path / `sqlite:` URL. Oracle is not available yet. The password is never
+        /// printed; keep it out of the URL with `--password-stdin` or `DBML_PASSWORD`.
+        #[arg(long, value_name = "URL")]
+        url: Option<String>,
+
+        /// With --url: only read this schema (repeatable). Default: every user schema.
+        #[arg(long = "schema", value_name = "SCHEMA", requires = "url")]
+        schemas: Vec<String>,
+
+        /// With --url: read the password from the first line of stdin
+        #[arg(long, requires = "url")]
+        password_stdin: bool,
+
+        /// With --url: only test the connection and print `{"server":..,"schemas":[..]}` as JSON
+        #[arg(long, requires = "url")]
+        test: bool,
 
         /// Optional output .dbml file path (writes to stdout if omitted)
         #[arg(short, long, value_name = "OUTPUT")]
@@ -295,6 +318,26 @@ mod tests {
     }
 
     #[test]
+    fn cli_should_parse_import_from_url_without_file_or_dialect() {
+        let cli = Cli::try_parse_from(["dbml", "import", "--url", "app.sqlite"]).unwrap();
+        match cli.command {
+            Some(Commands::Import {
+                file, dialect, url, ..
+            }) => {
+                assert_eq!(file, None);
+                assert_eq!(dialect, None);
+                assert_eq!(url.as_deref(), Some("app.sqlite"));
+            }
+            other => panic!("expected Import command, got {other:?}"),
+        }
+        assert!(Cli::try_parse_from(["dbml", "import"]).is_err());
+        assert!(
+            Cli::try_parse_from(["dbml", "import", "a.sql", "--dialect", "pg", "--url", "x"])
+                .is_err()
+        );
+    }
+
+    #[test]
     fn cli_should_parse_import_with_dialect_and_output() {
         for (flag, expected) in [
             ("postgres", sql_import::SqlDialect::Postgres),
@@ -325,11 +368,14 @@ mod tests {
                 Some(Commands::Import {
                     file,
                     dialect,
+                    url,
                     output,
                     force,
+                    ..
                 }) => {
-                    assert_eq!(file, PathBuf::from("schema.sql"));
-                    assert_eq!(dialect.to_sql_dialect(), expected);
+                    assert_eq!(file, Some(PathBuf::from("schema.sql")));
+                    assert_eq!(dialect.unwrap().to_sql_dialect(), expected);
+                    assert_eq!(url, None);
                     assert_eq!(output, Some(PathBuf::from("schema.dbml")));
                     assert!(force);
                 }

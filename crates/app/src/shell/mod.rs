@@ -12,6 +12,7 @@ use crate::glass::*;
 use dbml_analysis::Severity;
 use gpui_kit::assets::IconName;
 use gpui_kit::component::button::{Button, ButtonVariants};
+use gpui_kit::component::checkbox::Checkbox;
 use gpui_kit::component::command::{Command, CommandGroup, CommandItem, CommandState};
 use gpui_kit::component::input::{Editor, EditorState, Input, InputEvent, InputState};
 use gpui_kit::component::kbd::Kbd;
@@ -1135,6 +1136,358 @@ impl Shell {
         self.apply_column_preset(dbml_edit::ColumnPreset::SoftDelete, w, cx);
     }
 
+    /// "Connect to Database…": lê o catálogo de um banco (somente leitura) e gera o DBML.
+    fn connect_database(
+        &mut self,
+        _: &ConnectDatabase,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        use crate::connect_db::{
+            ConnectModel, Status, introspect_blocking, parse_schemas, test_blocking,
+        };
+        use db_introspect::{ConnectionParams, Dialect};
+
+        let model = cx.new(|_| ConnectModel::new(Dialect::Postgres));
+        let input = |window: &mut Window, cx: &mut Context<Self>, ph: &'static str| {
+            cx.new(|cx| InputState::new(window, cx).placeholder(ph))
+        };
+        let host = input(window, cx, "localhost");
+        let port = input(window, cx, "default port");
+        let database = input(window, cx, "database name");
+        let user = input(window, cx, "user");
+        let password = cx.new(|cx| {
+            InputState::new(window, cx)
+                .placeholder("password")
+                .masked(true)
+        });
+        let path = input(window, cx, "/path/to/database.sqlite");
+        let schemas = input(window, cx, "all schemas (or: public, sales)");
+        let shell_entity = cx.entity().clone();
+        let has_existing = self
+            .doc()
+            .is_some_and(|d| !d.editor.read(cx).value().trim().is_empty());
+        let g = Glass::of_scaled(self.mode, self.translucent, self.ui_scale);
+
+        window.open_dialog(cx, move |dialog, _, _| {
+            let model = model.clone();
+            let shell_entity = shell_entity.clone();
+            let (host, port, database, user, password, path, schemas) = (
+                host.clone(),
+                port.clone(),
+                database.clone(),
+                user.clone(),
+                password.clone(),
+                path.clone(),
+                schemas.clone(),
+            );
+            dialog
+                .w(px(560.))
+                .title("Connect to Database")
+                .content(move |content, _, cx| {
+                    let st = model.read(cx).clone();
+                    let is_file = st.dialect == Dialect::Sqlite;
+                    let connecting = st.status == Status::Connecting;
+
+                    let engine_btn = |id: &'static str, label: &'static str, d: Dialect| {
+                        let model = model.clone();
+                        let b = Button::new(id).small().label(label);
+                        let b = if st.dialect == d {
+                            b.primary()
+                        } else {
+                            b.outline()
+                        };
+                        b.disabled(connecting).on_click(move |_, _, cx| {
+                            model.update(cx, |m, cx| {
+                                m.set_dialect(d);
+                                cx.notify();
+                            });
+                        })
+                    };
+                    let row = |label: &'static str, field: Entity<InputState>| {
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap(SP_SM)
+                            .child(
+                                div()
+                                    .w(px(84.))
+                                    .flex_none()
+                                    .text_size(TEXT_XS)
+                                    .text_color(g.text_muted)
+                                    .child(label),
+                            )
+                            .child(div().flex_1().child(Input::new(&field).small()))
+                    };
+
+                    // Button factory: `test` only checks credentials and lists schemas.
+                    let action_btn = |id: &'static str, test: bool| {
+                        let (model, host, port, database, user, password, path, schemas) = (
+                            model.clone(),
+                            host.clone(),
+                            port.clone(),
+                            database.clone(),
+                            user.clone(),
+                            password.clone(),
+                            path.clone(),
+                            schemas.clone(),
+                        );
+                        let label = match (test, connecting) {
+                            (true, _) => "Test connection",
+                            (false, true) => "Connecting…",
+                            (false, false) => "Connect",
+                        };
+                        let b = Button::new(id).small().label(label).disabled(connecting);
+                        let b = if test { b.outline() } else { b.primary() };
+                        b.on_click(move |_, window, cx| {
+                            let m = model.read(cx).clone();
+                            let mut params = ConnectionParams::new(m.dialect);
+                            params.host = host.read(cx).value().to_string();
+                            params.port = port.read(cx).value().trim().parse().ok();
+                            params.database = database.read(cx).value().to_string();
+                            params.user = user.read(cx).value().to_string();
+                            params.password = password.read(cx).value().to_string();
+                            params.path = path.read(cx).value().to_string();
+                            params.trust_server_certificate = m.trust_cert;
+                            let filter = parse_schemas(&schemas.read(cx).value());
+                            model.update(cx, |m, cx| {
+                                m.reset_result();
+                                m.status = Status::Connecting;
+                                cx.notify();
+                            });
+                            let model = model.clone();
+                            window
+                                .spawn(cx, async move |cx| {
+                                    let exec = cx.background_executor().clone();
+                                    if test {
+                                        let result = exec
+                                            .spawn(async move { test_blocking(&params, filter) })
+                                            .await;
+                                        cx.update(|_, cx| {
+                                            model.update(cx, |m, cx| {
+                                                m.finish_test(result);
+                                                cx.notify();
+                                            });
+                                        })
+                                        .ok();
+                                    } else {
+                                        let result = exec
+                                            .spawn(
+                                                async move { introspect_blocking(&params, filter) },
+                                            )
+                                            .await;
+                                        cx.update(|_, cx| {
+                                            model.update(cx, |m, cx| {
+                                                m.finish(result);
+                                                cx.notify();
+                                            });
+                                        })
+                                        .ok();
+                                    }
+                                })
+                                .detach();
+                        })
+                    };
+                    let connect_btn = action_btn("db-connect", false);
+                    let test_btn = action_btn("db-test", true);
+
+                    let can_apply = st.can_apply();
+                    let apply_btn =
+                        |id: &'static str, label: String, replace: bool, primary: bool| {
+                            let model = model.clone();
+                            let shell_entity = shell_entity.clone();
+                            let mut b = Button::new(id).small().label(label).disabled(!can_apply);
+                            b = if primary { b.primary() } else { b.outline() };
+                            b.on_click(move |_, window, cx| {
+                                if replace && has_existing && !model.read(cx).confirm_replace {
+                                    model.update(cx, |m, cx| {
+                                        m.confirm_replace = true;
+                                        cx.notify();
+                                    });
+                                    return;
+                                }
+                                let current = model.read(cx).clone();
+                                shell_entity.update(cx, |s, cx| {
+                                    s.edit_text(replace, window, cx, move |existing| {
+                                        Some(current.build_merged_source(existing, replace))
+                                    });
+                                    if let Some(doc) = s.doc() {
+                                        doc.diagram.update(cx, |d, cx| {
+                                            d.fit();
+                                            cx.notify();
+                                        });
+                                    }
+                                });
+                                window.close_dialog(cx);
+                            })
+                        };
+                    let replace_label = if st.confirm_replace {
+                        "Confirm Replace?".to_string()
+                    } else {
+                        "Replace".to_string()
+                    };
+
+                    let status_line = match &st.status {
+                        Status::Idle => {
+                            div().child("Read-only: only the catalog is read, never your data.")
+                        }
+                        Status::Connecting => div().child("Connecting and reading the schema…"),
+                        Status::Failed(msg) => div()
+                            .text_color(rgb(crate::glass::DIAG_ERROR))
+                            .child(msg.clone()),
+                        Status::Tested(msg) => div().child(msg.clone()),
+                        Status::Ready => div().child(format!(
+                            "Found {} table{}. Replace the document or insert them.",
+                            st.tables,
+                            if st.tables == 1 { "" } else { "s" }
+                        )),
+                    };
+
+                    let mut form = div().flex().flex_col().gap(SP_SM);
+                    if is_file {
+                        let pick = {
+                            let path = path.clone();
+                            Button::new("db-pick-file")
+                                .small()
+                                .outline()
+                                .label("Browse…")
+                                .on_click(move |_, window, cx| {
+                                    let rx = cx.prompt_for_paths(PathPromptOptions {
+                                        files: true,
+                                        directories: false,
+                                        multiple: false,
+                                        prompt: Some("Select SQLite database".into()),
+                                    });
+                                    let path = path.clone();
+                                    window
+                                        .spawn(cx, async move |cx| {
+                                            let Ok(Ok(Some(paths))) = rx.await else {
+                                                return;
+                                            };
+                                            let Some(p) = paths.into_iter().next() else {
+                                                return;
+                                            };
+                                            cx.update(|window, cx| {
+                                                path.update(cx, |e, cx| {
+                                                    e.replace_all(
+                                                        p.display().to_string(),
+                                                        window,
+                                                        cx,
+                                                    );
+                                                });
+                                            })
+                                            .ok();
+                                        })
+                                        .detach();
+                                })
+                        };
+                        form = form.child(
+                            div()
+                                .flex()
+                                .items_center()
+                                .gap(SP_SM)
+                                .child(div().flex_1().child(row("File", path.clone())))
+                                .child(pick),
+                        );
+                    } else {
+                        form = form
+                            .child(row("Host", host.clone()))
+                            .child(row("Port", port.clone()))
+                            .child(row("Database", database.clone()))
+                            .child(row("User", user.clone()))
+                            .child(row("Password", password.clone()))
+                            .child(row("Schemas", schemas.clone()));
+                        if st.dialect == Dialect::SqlServer {
+                            let model = model.clone();
+                            form = form.child(
+                                Checkbox::new("db-trust")
+                                    .label("Trust server certificate (self-signed, e.g. Docker)")
+                                    .checked(st.trust_cert)
+                                    .on_click(move |checked, _, cx| {
+                                        let checked = *checked;
+                                        model.update(cx, |m, cx| {
+                                            m.trust_cert = checked;
+                                            cx.notify();
+                                        });
+                                    }),
+                            );
+                        }
+                    }
+
+                    content.child(
+                        div()
+                            .flex()
+                            .flex_col()
+                            .gap(SP_MD)
+                            .child(
+                                div()
+                                    .flex()
+                                    .flex_wrap()
+                                    .items_center()
+                                    .gap(px(6.))
+                                    .child(engine_btn("db-pg", "PostgreSQL", Dialect::Postgres))
+                                    .child(engine_btn("db-my", "MySQL", Dialect::Mysql))
+                                    .child(engine_btn("db-ms", "SQL Server", Dialect::SqlServer))
+                                    .child(engine_btn("db-sq", "SQLite", Dialect::Sqlite))
+                                    .child(
+                                        Button::new("db-or")
+                                            .small()
+                                            .outline()
+                                            .label("Oracle (soon)")
+                                            .disabled(true),
+                                    ),
+                            )
+                            .child(form)
+                            .child(
+                                div()
+                                    .id("db-status")
+                                    .max_h(px(72.))
+                                    .overflow_y_scroll()
+                                    .text_size(TEXT_XS)
+                                    .text_color(g.text_muted)
+                                    .child(status_line),
+                            )
+                            .when(!st.warnings.is_empty(), |d| {
+                                let mut list = div()
+                                    .id("db-warn")
+                                    .flex()
+                                    .flex_col()
+                                    .max_h(px(64.))
+                                    .overflow_y_scroll()
+                                    .text_size(TEXT_XS)
+                                    .text_color(rgb(crate::glass::DIAG_WARNING));
+                                for w in &st.warnings {
+                                    list = list.child(w.clone());
+                                }
+                                d.child(list)
+                            })
+                            .child(
+                                div()
+                                    .flex()
+                                    .justify_end()
+                                    .gap(SP_SM)
+                                    .child(
+                                        Button::new("db-cancel")
+                                            .small()
+                                            .outline()
+                                            .label("Cancel")
+                                            .on_click(|_, window, cx| window.close_dialog(cx)),
+                                    )
+                                    .child(test_btn)
+                                    .child(connect_btn)
+                                    .child(apply_btn("db-replace", replace_label, true, false))
+                                    .child(apply_btn(
+                                        "db-insert",
+                                        "Insert".to_string(),
+                                        false,
+                                        true,
+                                    )),
+                            ),
+                    )
+                })
+        });
+    }
+
     fn import_sql_ddl(&mut self, _: &ImportSqlDdl, window: &mut Window, cx: &mut Context<Self>) {
         let model = cx.new(|_| crate::import_sql::ImportSqlModel::new(self.import_dialect));
         let sql_editor = cx.new(|cx| EditorState::new(window, cx).line_number(true));
@@ -2166,6 +2519,7 @@ pub fn register_global_actions(win: AnyWindowHandle, shell: &Entity<Shell>, cx: 
         ExportJpeg => export_jpeg,
         ExportSvg => export_svg,
         ImportSqlDdl => import_sql_ddl,
+        ConnectDatabase => connect_database,
         AddPresetUuidPk => add_preset_uuid_pk,
         AddPresetBigIntPk => add_preset_bigint_pk,
         AddPresetTimestamps => add_preset_timestamps,
@@ -2368,6 +2722,7 @@ impl Render for Shell {
             .on_action(cx.listener(Self::export_png))
             .on_action(cx.listener(Self::export_jpeg))
             .on_action(cx.listener(Self::export_svg))
+            .on_action(cx.listener(Self::connect_database))
             .on_action(cx.listener(Self::add_preset_uuid_pk))
             .on_action(cx.listener(Self::add_preset_bigint_pk))
             .on_action(cx.listener(Self::add_preset_timestamps))
@@ -2461,6 +2816,7 @@ mod tests {
             "Self::export_png",
             "Self::export_jpeg",
             "Self::export_svg",
+            "Self::connect_database",
             "Self::add_preset_uuid_pk",
             "Self::add_preset_bigint_pk",
             "Self::add_preset_timestamps",

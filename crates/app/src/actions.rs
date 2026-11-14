@@ -57,6 +57,7 @@ actions!(
         ExportJpeg,
         ExportSvg,
         ImportSqlDdl,
+        ConnectDatabase,
         AddPresetUuidPk,
         AddPresetBigIntPk,
         AddPresetTimestamps,
@@ -217,6 +218,7 @@ pub fn catalog() -> Vec<Entry> {
             "Export Image: Vector SVG",
         ),
         e("", ImportSqlDdl, "File", "Import SQL DDL…"),
+        e("", ConnectDatabase, "File", "Connect to Database…"),
         e("", AddPresetUuidPk, "Edit", "Add Column Preset: UUID PK"),
         e(
             "",

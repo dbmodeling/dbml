@@ -4,6 +4,7 @@ use crate::glass::{Glass, SP_SM, TEXT_SM, TEXT_XS};
 use gpui_kit::assets::IconName;
 use gpui_kit::component::button::{Button, ButtonVariants};
 use gpui_kit::component::{Icon, Sizable};
+use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
 pub struct EmptyAction {
@@ -23,6 +24,7 @@ pub fn empty_state(
     body: &'static str,
     primary: EmptyAction,
     secondary: EmptyAction,
+    tertiary: EmptyAction,
 ) -> Div {
     let button = |a: EmptyAction, is_primary: bool| {
         let action = a.action;
@@ -40,12 +42,14 @@ pub fn empty_state(
             .items_center()
             .gap(px(4.))
             .child(b)
-            .child(
-                div()
-                    .text_size(TEXT_XS)
-                    .text_color(g.text_faint)
-                    .child(a.keys),
-            )
+            .when(!a.keys.is_empty(), |d| {
+                d.child(
+                    div()
+                        .text_size(TEXT_XS)
+                        .text_color(g.text_faint)
+                        .child(a.keys),
+                )
+            })
     };
     let rule = || div().flex_1().h(px(1.)).bg(g.edge_soft);
     div()
@@ -84,4 +88,5 @@ pub fn empty_state(
                 .child(rule()),
         )
         .child(button(secondary, false))
+        .child(button(tertiary, false))
 }

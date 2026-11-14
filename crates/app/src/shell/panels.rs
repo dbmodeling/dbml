@@ -522,6 +522,14 @@ impl Shell {
                 self.editor_open,
                 0,
             ))
+            .child(item(
+                "rail-connect",
+                IconName::Database,
+                "Connect to Database",
+                Box::new(ConnectDatabase),
+                false,
+                0,
+            ))
             .child(div().flex_1())
             .child({
                 let (mode, translucent, ui_scale, auto_hide) = (
@@ -2687,6 +2695,13 @@ impl Shell {
                     label: "New File",
                     keys: "Ctrl+N",
                     action: Box::new(NewFile),
+                },
+                crate::widgets::EmptyAction {
+                    id: "empty-connect",
+                    icon: IconName::Database,
+                    label: "Connect to Database",
+                    keys: "",
+                    action: Box::new(ConnectDatabase),
                 },
             ))
     }

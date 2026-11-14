@@ -49,6 +49,7 @@ export type ActionId =
   | 'ExportSqlSqlServer'
   | 'ExportSqlOracle'
   | 'ImportSqlDdl'
+  | 'ConnectDatabase'
   | 'AddPresetUuidPk'
   | 'AddPresetBigIntPk'
   | 'AddPresetTimestamps'
@@ -96,6 +97,7 @@ export function catalog(): ActionEntry[] {
     e('ctrl-n', ['Ctrl', 'N'], 'NewFile', 'File', 'New .dbml File'),
     e('ctrl-s', ['Ctrl', 'S'], 'SaveFile', 'File', 'Save'),
     e('', [], 'ImportSqlDdl', 'File', 'Import SQL DDL…'),
+    e('', [], 'ConnectDatabase', 'File', 'Connect to Database…'),
     ...COLUMN_PRESET_ACTIONS.map((p) => e('', [], p.action, 'Edit', `Add Column Preset: ${p.label}`)),
     e('ctrl-z', ['Ctrl', 'Z'], 'Undo', 'Edit', 'Undo'),
     e('ctrl-shift-z', ['Ctrl', 'Shift', 'Z'], 'Redo', 'Edit', 'Redo'),

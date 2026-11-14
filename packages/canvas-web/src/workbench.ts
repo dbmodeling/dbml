@@ -35,6 +35,7 @@ import { iconSvg, IconName } from './icons';
 import { ActionId, COLUMN_PRESET_ACTIONS, GROUP_EXPORT_CODE, GROUP_EXPORT_IMAGE, catalog } from './actions';
 import { WORKBENCH_CSS } from './workbench-css';
 import { exportToMermaid, exportToSvg, exportSvgStringToRasterBlob } from './export';
+import { ConnectDbModel, DB_ENGINES, DbEngine, buildRequest } from './connect-db';
 import { IMPORT_DIALECTS, ImportDialect, ImportSqlModel, ImportSqlResult } from './import-sql';
 
 type Pt = { x: number; y: number };
@@ -131,6 +132,7 @@ export class Workbench {
   private shortcutsOpen = false;
   private paletteQuery = '';
   private paletteIdx = 0;
+  private connectEngine: DbEngine = 'postgres';
   private importDialect: ImportDialect = 'postgres';
   private focusCol: [string, string] | null = null;
   private pendingNew: string | null = null;
@@ -184,6 +186,7 @@ export class Workbench {
             <p>Write your DBML schema in the editor or create a new table.</p>
             <button class="btn" data-act="ToggleEditor">${ICON('Braces', 14)} Open DBML Editor</button>
             <button class="btn primary" data-act="NewTable">${ICON('Plus', 14)} New Table</button>
+            <button class="btn" data-act="ConnectDatabase">${ICON('Database', 14)} Connect to Database</button>
           </div>
           <div class="island tools ui" id="tools"></div>
           <div class="island zoomi ui" id="zoomi"></div>
@@ -843,6 +846,7 @@ export class Workbench {
       ${this.btn('ShowSchema', 'Table2', 'Schema (Ctrl+Shift+D)', sb && this.pane === 'schema')}
       <button class="ib ${sb && this.pane === 'problems' ? 'on' : ''}" data-act="ShowProblems" title="Problems (Ctrl+Shift+M)">${ICON('TriangleAlert', 16)}${errs ? `<span class="badge">${errs}</span>` : ''}</button>
       ${this.btn('ToggleEditor', 'Braces', 'DBML Editor (Ctrl+E)', this.editorOpen)}
+      ${this.btn('ConnectDatabase', 'Database', 'Connect to Database…')}
       <div class="grow"></div>
       <button class="ib" data-act="menu:appearance" title="Appearance">${ICON('Palette', 16)}</button>
       ${this.btn('ShowShortcuts', 'Keyboard', 'Keyboard Shortcuts (Ctrl+/)')}
@@ -1314,6 +1318,7 @@ export class Workbench {
       case 'ExportSqlSqlServer': this.doExportSql('sqlserver'); return;
       case 'ExportSqlOracle': this.doExportSql('oracle'); return;
       case 'ImportSqlDdl': this.openImportSqlModal(); return;
+      case 'ConnectDatabase': this.openConnectDbModal(); return;
       case 'AddPresetUuidPk': case 'AddPresetBigIntPk': case 'AddPresetTimestamps': case 'AddPresetSoftDelete':
         this.applyColumnPreset(id);
         return;
@@ -1439,6 +1444,188 @@ export class Workbench {
     this.wb.querySelectorAll('[data-modal]').forEach((n) => n.remove());
     this.paletteOpen = false;
     this.shortcutsOpen = false;
+  }
+
+  private openConnectDbModal(): void {
+    if (!this.transport.introspect) {
+      this.toast('Connect to Database needs the dbml run server or the dbml CLI on your PATH.');
+      return;
+    }
+    const introspect = this.transport.introspect.bind(this.transport);
+    const model = new ConnectDbModel(this.connectEngine);
+    const field = (id: string, label: string, ph: string, type = 'text') =>
+      `<div data-row="${id}" style="display:flex;align-items:center;gap:8px">
+        <label for="db-${id}" style="width:84px;flex:none;font-size:12px;color:var(--muted)">${label}</label>
+        <input id="db-${id}" type="${type}" placeholder="${esc(ph)}" autocomplete="off" spellcheck="false" class="fld" style="flex:1">
+      </div>`;
+
+    const bg = this.modal(`
+      <div role="dialog" aria-modal="true" aria-labelledby="db-title" style="padding:16px;display:flex;flex-direction:column;gap:12px;width:min(560px,92vw);max-height:86vh;overflow:auto">
+        <div id="db-title" style="font-weight:600;font-size:14px">Connect to Database</div>
+        <div id="db-engines" style="display:flex;flex-wrap:wrap;gap:6px">
+          ${DB_ENGINES.map((e) => `<button class="btn" type="button" data-engine="${e.value}">${e.label}</button>`).join('')}
+          <button class="btn" type="button" disabled title="Oracle support is coming">Oracle (soon)</button>
+        </div>
+        <div id="db-form" style="display:flex;flex-direction:column;gap:8px">
+          ${field('host', 'Host', 'localhost')}
+          ${field('port', 'Port', 'default port')}
+          ${field('database', 'Database', 'database name')}
+          ${field('user', 'User', 'user')}
+          ${field('password', 'Password', 'password', 'password')}
+          ${field('schemas', 'Schemas', 'all schemas (or: public, sales)')}
+          ${field('path', 'File', '/path/to/database.sqlite')}
+          <label data-row="trust" style="display:flex;align-items:center;gap:8px;font-size:12px;color:var(--muted)">
+            <input id="db-trust" type="checkbox"> Trust server certificate (self-signed, e.g. Docker)
+          </label>
+        </div>
+        <div id="db-status" aria-live="polite" style="font-size:12px;color:var(--muted)"></div>
+        <div id="db-warns" style="max-height:80px;overflow:auto;font-size:12px;color:var(--warn, #e5a93c);display:none"></div>
+        <div style="display:flex;justify-content:flex-end;gap:8px">
+          <button class="btn" id="db-cancel" type="button">Cancel</button>
+          <button class="btn" id="db-test" type="button">Test connection</button>
+          <button class="btn" id="db-connect" type="button">Connect</button>
+          <button class="btn" id="db-replace" type="button" disabled>Replace</button>
+          <button class="btn primary" id="db-insert" type="button" disabled>Insert</button>
+        </div>
+      </div>`);
+
+    const $ = <T extends HTMLElement>(sel: string) => bg.querySelector(sel) as T;
+    const val = (id: string) => $<HTMLInputElement>(`#db-${id}`).value;
+    const statusEl = $<HTMLElement>('#db-status');
+    const warnsEl = $<HTMLElement>('#db-warns');
+    const connectBtn = $<HTMLButtonElement>('#db-connect');
+    const testBtn = $<HTMLButtonElement>('#db-test');
+    const replaceBtn = $<HTMLButtonElement>('#db-replace');
+    const insertBtn = $<HTMLButtonElement>('#db-insert');
+
+    const syncView = () => {
+      const isFile = model.engine === 'sqlite';
+      const connecting = model.status === 'connecting';
+      for (const id of ['host', 'port', 'database', 'user', 'password', 'schemas']) {
+        bg.querySelector<HTMLElement>(`[data-row="${id}"]`)!.style.display = isFile ? 'none' : 'flex';
+      }
+      bg.querySelector<HTMLElement>('[data-row="path"]')!.style.display = isFile ? 'flex' : 'none';
+      bg.querySelector<HTMLElement>('[data-row="trust"]')!.style.display =
+        model.engine === 'sqlserver' ? 'flex' : 'none';
+      bg.querySelectorAll<HTMLButtonElement>('[data-engine]').forEach((b) => {
+        b.classList.toggle('primary', b.dataset.engine === model.engine);
+        b.disabled = connecting;
+      });
+      const port = DB_ENGINES.find((e) => e.value === model.engine)?.port;
+      $<HTMLInputElement>('#db-port').placeholder = port ? String(port) : 'default port';
+      connectBtn.disabled = connecting;
+      testBtn.disabled = connecting || !this.transport.testConnection;
+      connectBtn.textContent = connecting ? 'Connecting…' : 'Connect';
+      insertBtn.disabled = !model.canApply();
+      replaceBtn.disabled = !model.canApply();
+      replaceBtn.textContent = model.confirmReplace ? 'Confirm Replace?' : 'Replace';
+      statusEl.style.color = model.status === 'failed' ? 'var(--danger)' : 'var(--muted)';
+      statusEl.textContent =
+        model.status === 'connecting'
+          ? 'Connecting and reading the schema…'
+          : model.status === 'failed'
+            ? model.error
+            : model.status === 'ready'
+              ? `Found ${model.tables} table${model.tables === 1 ? '' : 's'}. Replace the document or insert them.`
+              : model.status === 'tested'
+                ? model.error
+                : 'Read-only: only the catalog is read, never your data.';
+      warnsEl.style.display = model.warnings.length ? 'block' : 'none';
+      warnsEl.innerHTML = model.warnings.map((w) => `<div>${esc(w)}</div>`).join('');
+    };
+
+    bg.querySelectorAll<HTMLButtonElement>('[data-engine]').forEach((b) =>
+      b.addEventListener('click', () => {
+        this.connectEngine = b.dataset.engine as DbEngine;
+        model.setEngine(this.connectEngine);
+        syncView();
+      })
+    );
+    $<HTMLInputElement>('#db-trust').addEventListener('change', (e) => {
+      model.trustCert = (e.target as HTMLInputElement).checked;
+    });
+
+    const readRequest = () =>
+      buildRequest(
+        model.engine,
+        {
+          host: val('host'),
+          port: val('port'),
+          database: val('database'),
+          user: val('user'),
+          password: val('password'),
+          path: val('path'),
+          schemas: val('schemas'),
+        },
+        model.trustCert
+      );
+
+    const test = async () => {
+      if (model.status === 'connecting' || !this.transport.testConnection) return;
+      const req = readRequest();
+      model.start();
+      syncView();
+      try {
+        const r = await this.transport.testConnection(req);
+        model.finishTest(r.server, r.schemas);
+      } catch (e) {
+        model.fail(e instanceof Error ? e.message : String(e));
+      }
+      if (bg.isConnected) syncView();
+    };
+
+    const connect = async () => {
+      if (model.status === 'connecting') return;
+      const req = readRequest();
+      model.start();
+      syncView();
+      try {
+        model.finish(await introspect(req));
+      } catch (e) {
+        model.fail(e instanceof Error ? e.message : String(e));
+      }
+      // o modal pode ter sido fechado durante a conexão
+      if (bg.isConnected) syncView();
+    };
+
+    const applyMode = (mode: 'insert' | 'replace') => {
+      if (!model.canApply()) return;
+      if (mode === 'replace' && this.source.trim().length > 0 && !model.confirmReplace) {
+        model.confirmReplace = true;
+        syncView();
+        return;
+      }
+      const next = model.buildMergedSource(this.source, mode);
+      this.closeModal();
+      this.applyPatch(this.fullReplace(next));
+      if (mode === 'replace') {
+        this.relayout(true, false);
+      } else {
+        this.computeScene();
+        this.fit();
+        this.queueSaveLayout();
+        this.scheduleRender();
+      }
+    };
+
+    testBtn.addEventListener('click', () => void test());
+    connectBtn.addEventListener('click', () => void connect());
+    replaceBtn.addEventListener('click', () => applyMode('replace'));
+    insertBtn.addEventListener('click', () => applyMode('insert'));
+    $<HTMLButtonElement>('#db-cancel').addEventListener('click', () => this.closeModal());
+
+    const modalEl = bg.querySelector('.modal') as HTMLElement;
+    modalEl.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        this.closeModal();
+      } else if (e.key === 'Enter' && (e.target as HTMLElement).tagName === 'INPUT') {
+        e.preventDefault();
+        void connect();
+      }
+    });
+    syncView();
+    ($<HTMLInputElement>(model.engine === 'sqlite' ? '#db-path' : '#db-host')).focus();
   }
 
   private openImportSqlModal(): void {

@@ -5,6 +5,7 @@
 mod actions;
 mod canvas;
 mod canvas_geom;
+mod connect_db;
 mod glass;
 mod history;
 mod ide;

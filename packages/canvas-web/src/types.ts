@@ -246,7 +246,35 @@ export interface SessionSnapshot {
 }
 
 /** Interface unificada de comunicação com o hospedeiro (VS Code Webview ou CLI WebSocket) */
+/** Campos do modal "Connect to Database" (iguais a `IntrospectRequest` em `crates/cli`). */
+export interface IntrospectRequest {
+  dialect: 'postgres' | 'mysql' | 'sqlserver' | 'sqlite';
+  host: string;
+  port: number | null;
+  database: string;
+  user: string;
+  password: string;
+  path: string;
+  trust_server_certificate: boolean;
+  schemas: string[];
+}
+
+export interface IntrospectResult {
+  dbml: string;
+  warnings: string[];
+  tables: number;
+}
+
+export interface TestConnectionResult {
+  server: string;
+  schemas: string[];
+}
+
 export interface HostTransport {
+  /** Só confere as credenciais e lista os schemas (sem ler tabelas). */
+  testConnection?(req: IntrospectRequest): Promise<TestConnectionResult>;
+  /** Lê o catálogo de um banco (somente leitura) e devolve DBML; ausente quando o host não suporta. */
+  introspect?(req: IntrospectRequest): Promise<IntrospectResult>;
   sendPatch(patch: TextPatch): Promise<void>;
   saveLayout(layout: SidecarLayout): Promise<void>;
   exportFile?(filename: string, content: string, isBinary: boolean): Promise<void>;

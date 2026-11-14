@@ -17,6 +17,7 @@ dbml-edit = { path = "crates/dbml-edit" }
 layout = { path = "crates/layout" }
 diagram-export = { path = "crates/diagram-export" }
 sql-import = { path = "crates/sql-import" }
+db-introspect = { path = "crates/db-introspect" }
 
 # Parsing & CST
 logos = "=0.16.1"

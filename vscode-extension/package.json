@@ -26,6 +26,16 @@
     "onLanguage:dbml"
   ],
   "contributes": {
+    "configuration": {
+      "title": "DB Modeling",
+      "properties": {
+        "dbmodeling.cliPath": {
+          "type": "string",
+          "default": "dbml",
+          "description": "Path of the dbml CLI used by \"Connect to Database\" (read-only schema import)."
+        }
+      }
+    },
     "languages": [
       {
         "id": "dbml",
