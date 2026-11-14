@@ -890,10 +890,32 @@ impl Shell {
         let dir = self
             .project
             .clone()
+            .or_else(|| {
+                std::env::var_os("HOME")
+                    .or_else(|| std::env::var_os("USERPROFILE"))
+                    .map(PathBuf::from)
+            })
             .unwrap_or_else(|| std::env::current_dir().unwrap_or_default());
         let rx = cx.prompt_for_new_path(&dir, Some(&suggested));
+        let fallback_default = dir.join(&suggested);
         cx.spawn_in(window, async move |_, cx| {
-            let Ok(Ok(Some(path))) = rx.await else { return };
+            let path = match rx.await {
+                Ok(Ok(Some(path))) => path,
+                Ok(Ok(None)) | Err(_) => return,
+                Ok(Err(portal_err)) => {
+                    if let Some(p) = Self::linux_save_dialog_fallback(&fallback_default) {
+                        p
+                    } else {
+                        let _ = cx.update(|window, cx| {
+                            window.push_notification(
+                                format!("File dialog unavailable ({portal_err})"),
+                                cx,
+                            );
+                        });
+                        return;
+                    }
+                }
+            };
             let res = std::fs::write(&path, sql);
             cx.update(|window, cx| match res {
                 Ok(()) => window.push_notification(
@@ -935,6 +957,42 @@ impl Shell {
 
     fn export_sql_oracle(&mut self, _: &ExportSqlOracle, w: &mut Window, cx: &mut Context<Self>) {
         self.export_sql(dbml_analysis::SqlDialect::Oracle, w, cx);
+    }
+
+    #[cfg(target_os = "linux")]
+    fn linux_save_dialog_fallback(default_path: &std::path::Path) -> Option<PathBuf> {
+        let default_str = default_path.to_string_lossy();
+        if let Ok(out) = std::process::Command::new("zenity")
+            .args([
+                "--file-selection",
+                "--save",
+                "--confirm-overwrite",
+                &format!("--filename={default_str}"),
+            ])
+            .output()
+            && out.status.success()
+        {
+            let p = String::from_utf8_lossy(&out.stdout).trim().to_string();
+            if !p.is_empty() {
+                return Some(PathBuf::from(p));
+            }
+        }
+        if let Ok(out) = std::process::Command::new("kdialog")
+            .args(["--getsavefilename", &default_str, "*.sql|SQL files"])
+            .output()
+            && out.status.success()
+        {
+            let p = String::from_utf8_lossy(&out.stdout).trim().to_string();
+            if !p.is_empty() {
+                return Some(PathBuf::from(p));
+            }
+        }
+        None
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    fn linux_save_dialog_fallback(_default_path: &std::path::Path) -> Option<PathBuf> {
+        None
     }
 
     fn import_sql_ddl(&mut self, _: &ImportSqlDdl, window: &mut Window, cx: &mut Context<Self>) {
