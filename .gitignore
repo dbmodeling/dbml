@@ -45,6 +45,6 @@ Thumbs.db
 *.profraw
 coverage/
 .vitest/
-.agents/
 .cortex/
+.agents/
 skills/
