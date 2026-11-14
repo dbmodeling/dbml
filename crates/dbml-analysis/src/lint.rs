@@ -1,7 +1,7 @@
 //! Diagnostics (lint) with byte ranges for editor underlining.
 
 use dbml_syntax::{SyntaxKind, SyntaxToken, descendant_tokens as sig_tokens, parse, unquote};
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::ops::Range;
 
 /// Severity level of a [`Diagnostic`].
@@ -208,6 +208,8 @@ fn check_column_type(
                             base_tok.text()
                         ),
                     ));
+                } else {
+                    check_type_param_values(cname, base_tok, &base, inner, out);
                 }
                 if let Some(extra) = rest.get(r + 1) {
                     out.push(diag(
@@ -249,12 +251,132 @@ fn check_column_type(
     }
 }
 
+fn check_type_param_values(
+    cname: &str,
+    base_tok: &SyntaxToken,
+    base: &str,
+    inner: &[SyntaxToken],
+    out: &mut Vec<Diagnostic>,
+) {
+    let mut nums: Vec<(u64, &SyntaxToken)> = Vec::new();
+    for part in inner.split(|k| k.kind() == SyntaxKind::Comma) {
+        if part.len() != 1 || part[0].kind() != SyntaxKind::Number {
+            let err_tok = part.first().unwrap_or(base_tok);
+            out.push(diag(
+                range(err_tok),
+                Severity::Error,
+                format!(
+                    "Malformed type parameters in `{}` on column `{cname}`",
+                    base_tok.text()
+                ),
+            ));
+            return;
+        }
+        let Ok(n) = part[0].text().parse::<u64>() else {
+            out.push(diag(
+                range(&part[0]),
+                Severity::Error,
+                format!(
+                    "Invalid integer parameter `{}` for type `{}` on column `{cname}`",
+                    part[0].text(),
+                    base_tok.text()
+                ),
+            ));
+            return;
+        };
+        nums.push((n, &part[0]));
+    }
+
+    match base {
+        "decimal" | "numeric" => {
+            if nums.len() > 2 {
+                out.push(diag(
+                    range(nums[2].1),
+                    Severity::Error,
+                    format!(
+                        "Type `{}` accepts at most 2 parameters (precision, scale)",
+                        base_tok.text()
+                    ),
+                ));
+                return;
+            }
+            let (precision, p_tok) = nums[0];
+            if precision == 0 {
+                out.push(diag(
+                    range(p_tok),
+                    Severity::Warning,
+                    format!(
+                        "Precision for `{}` on column `{cname}` should be greater than 0",
+                        base_tok.text()
+                    ),
+                ));
+            } else if precision > 65 {
+                let hint = if nums.len() == 1 && (100..=659).contains(&precision) {
+                    " — did you forget a comma (e.g., `decimal(10, 2)`)?"
+                } else {
+                    ""
+                };
+                out.push(diag(
+                    range(p_tok),
+                    Severity::Warning,
+                    format!(
+                        "Precision {precision} for `{}` on column `{cname}` exceeds SQL maximum (65){hint}",
+                        base_tok.text()
+                    ),
+                ));
+            }
+            if let Some(&(scale, s_tok)) = nums.get(1)
+                && scale > precision
+            {
+                out.push(diag(
+                    range(s_tok),
+                    Severity::Error,
+                    format!(
+                        "Scale ({scale}) cannot exceed precision ({precision}) in `{}` on column `{cname}`",
+                        base_tok.text()
+                    ),
+                ));
+            }
+        }
+        "varchar" | "char" | "nvarchar" | "nchar" => {
+            if nums.len() > 1 {
+                out.push(diag(
+                    range(nums[1].1),
+                    Severity::Error,
+                    format!("Type `{}` accepts only 1 length parameter", base_tok.text()),
+                ));
+                return;
+            }
+            let (len, l_tok) = nums[0];
+            if len == 0 {
+                out.push(diag(
+                    range(l_tok),
+                    Severity::Warning,
+                    format!(
+                        "Length for `{}` on column `{cname}` should be greater than 0",
+                        base_tok.text()
+                    ),
+                ));
+            }
+        }
+        _ => {}
+    }
+}
+
+#[derive(Default, Clone, Copy)]
+struct ColumnFlags {
+    is_unique_capable: bool,
+    has_not_null: bool,
+    has_default: bool,
+}
+
 fn check_column_settings(
     cname: &str,
     ct: &[SyntaxToken],
     open_idx: usize,
     out: &mut Vec<Diagnostic>,
-) {
+) -> ColumnFlags {
+    let mut flags = ColumnFlags::default();
     let Some(close_rel) = ct[open_idx..]
         .iter()
         .position(|k| k.kind() == SyntaxKind::RBracket)
@@ -264,7 +386,7 @@ fn check_column_settings(
             Severity::Error,
             "Missing `]` to close settings",
         ));
-        return;
+        return flags;
     };
     let close_idx = open_idx + close_rel;
     if let Some(extra) = ct.get(close_idx + 1) {
@@ -284,7 +406,7 @@ fn check_column_settings(
             Severity::Warning,
             format!("Empty settings block `[]` on column `{cname}`"),
         ));
-        return;
+        return flags;
     }
 
     let mut has_null = false;
@@ -301,6 +423,9 @@ fn check_column_settings(
             "pk" | "fk" | "unique" | "increment" => {
                 if kw == "pk" {
                     has_pk = true;
+                    flags.is_unique_capable = true;
+                } else if kw == "unique" {
+                    flags.is_unique_capable = true;
                 }
                 if let Some(extra) = part.get(1) {
                     out.push(diag(
@@ -315,6 +440,7 @@ fn check_column_settings(
             }
             "primary" => {
                 has_pk = true;
+                flags.is_unique_capable = true;
                 let ok = part
                     .get(1)
                     .is_some_and(|k| k.text().eq_ignore_ascii_case("key"))
@@ -339,6 +465,7 @@ fn check_column_settings(
             }
             "not" => {
                 has_not_null = true;
+                flags.has_not_null = true;
                 let ok = part
                     .get(1)
                     .is_some_and(|k| k.text().eq_ignore_ascii_case("null"))
@@ -352,6 +479,9 @@ fn check_column_settings(
                 }
             }
             "default" | "note" | "ref" => {
+                if kw == "default" {
+                    flags.has_default = true;
+                }
                 let has_colon = part.get(1).is_some_and(|k| k.kind() == SyntaxKind::Colon);
                 let has_val = part.len() >= 3;
                 if !has_colon || !has_val {
@@ -382,6 +512,7 @@ fn check_column_settings(
             format!("Conflicting constraints on column `{cname}`: cannot be both `null` and `not null`/`pk`"),
         ));
     }
+    flags
 }
 
 /// Analyzes `text` and returns syntax and semantic [`Diagnostic`]s.
@@ -391,6 +522,7 @@ pub fn lint(text: &str) -> Vec<Diagnostic> {
     let mut out = Vec::new();
     let mut tables: HashMap<String, HashSet<String>> = HashMap::new();
     let mut col_types: HashMap<(String, String), String> = HashMap::new();
+    let mut col_flags: HashMap<(String, String), ColumnFlags> = HashMap::new();
     let enums = collect_enums(text);
 
     // 1ª passada: tabelas, colunas, duplicatas, estrutura
@@ -470,17 +602,24 @@ pub fn lint(text: &str) -> Vec<Diagnostic> {
             }) {
                 has_pk = true;
             }
-            if let Some(open) = bracket_pos {
-                check_column_settings(&cname, &ct, open, &mut out);
-            } else if let Some(unopened_close) =
-                ct.iter().position(|k| k.kind() == SyntaxKind::RBracket)
-            {
-                out.push(diag(
-                    range(&ct[unopened_close]),
-                    Severity::Error,
-                    "Closing bracket `]` without matching `[`",
-                ));
-            }
+            let flags = if let Some(open) = bracket_pos {
+                check_column_settings(&cname, &ct, open, &mut out)
+            } else {
+                if let Some(unopened_close) =
+                    ct.iter().position(|k| k.kind() == SyntaxKind::RBracket)
+                {
+                    out.push(diag(
+                        range(&ct[unopened_close]),
+                        Severity::Error,
+                        "Closing bracket `]` without matching `[`",
+                    ));
+                }
+                ColumnFlags::default()
+            };
+            col_flags.insert((name.clone(), cname), flags);
+        }
+        for b in t.children().filter(|n| n.kind() == SyntaxKind::Block) {
+            collect_index_uniques(&name, &b, &mut col_flags, &mut has_pk);
         }
         if !has_pk && !cols.is_empty() {
             out.push(diag(
@@ -493,6 +632,8 @@ pub fn lint(text: &str) -> Vec<Diagnostic> {
     }
 
     // 2ª passada: referências (topo e inline)
+    let mut fk_graph: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+    let mut fk_anchors: BTreeMap<(String, String), Range<usize>> = BTreeMap::new();
     let check = |ts: &[SyntaxToken], out: &mut Vec<Diagnostic>| {
         // procura padrões `tabela . coluna`
         for w in ts.windows(3) {
@@ -552,30 +693,107 @@ pub fn lint(text: &str) -> Vec<Diagnostic> {
                     Severity::Error,
                     format!("A column cannot reference itself (`{ft}.{fc}`)"),
                 ));
-            } else if let (Some(t1), Some(t2)) = (
-                col_types.get(&(ft.to_string(), fc.to_string())),
-                col_types.get(&(tt.to_string(), tc.to_string())),
-            ) && t1 != t2
-            {
-                out.push(diag(
-                    range(&body[2]),
-                    Severity::Warning,
-                    format!(
-                        "Incompatible types in relation: `{ft}.{fc}` is `{t1}`, but `{tt}.{tc}` is `{t2}`"
-                    ),
-                ));
+            } else {
+                if let (Some(t1), Some(t2)) = (
+                    col_types.get(&(ft.to_string(), fc.to_string())),
+                    col_types.get(&(tt.to_string(), tc.to_string())),
+                ) && t1 != t2
+                {
+                    out.push(diag(
+                        range(&body[2]),
+                        Severity::Warning,
+                        format!(
+                            "Incompatible types in relation: `{ft}.{fc}` is `{t1}`, but `{tt}.{tc}` is `{t2}`"
+                        ),
+                    ));
+                }
+                if let Some(op) = RefOp::from_tokens(&body[3..op_idx]) {
+                    check_fk_semantics(
+                        &FkRelation {
+                            ft,
+                            fc,
+                            tt,
+                            tc,
+                            op,
+                            anchor_tok: &body[0],
+                            target_tok: &body[op_idx + 2],
+                        },
+                        &col_flags,
+                        &mut fk_graph,
+                        &mut fk_anchors,
+                        &mut out,
+                    );
+                }
             }
         }
     }
-    for c in root
-        .descendants()
-        .filter(|n| n.kind() == SyntaxKind::Column)
-    {
-        let ts = sig_tokens(&c);
-        if let Some(i) = ts.iter().position(|k| k.text().eq_ignore_ascii_case("ref")) {
-            check(&ts[i..], &mut out);
+    for t in root.children().filter(|n| n.kind() == SyntaxKind::Table) {
+        let t_head: Vec<_> = t
+            .children_with_tokens()
+            .filter_map(rowan::NodeOrToken::into_token)
+            .filter(|k| !k.kind().is_trivia())
+            .collect();
+        let Some(tname_tok) = t_head
+            .iter()
+            .find(|k| k.kind() != SyntaxKind::Ident || !k.text().eq_ignore_ascii_case("table"))
+            .filter(|k| matches!(k.kind(), SyntaxKind::Ident | SyntaxKind::Str))
+        else {
+            continue;
+        };
+        let ft = unquote(tname_tok.text());
+        for c in t.children().filter(|n| n.kind() == SyntaxKind::Column) {
+            let ts = sig_tokens(&c);
+            let Some(col_tok) = ts.first() else { continue };
+            let fc = unquote(col_tok.text());
+            if let Some(i) = ts.iter().position(|k| k.text().eq_ignore_ascii_case("ref")) {
+                check(&ts[i..], &mut out);
+                let tail: Vec<_> = ts[i + 1..]
+                    .iter()
+                    .take_while(|k| {
+                        k.kind() != SyntaxKind::Comma && k.kind() != SyntaxKind::RBracket
+                    })
+                    .collect();
+                if tail.first().is_some_and(|k| k.kind() == SyntaxKind::Colon) {
+                    let body = &tail[1..];
+                    let mut op_end = 0;
+                    while op_end < body.len() && matches!(body[op_end].text(), "<" | ">" | "-") {
+                        op_end += 1;
+                    }
+                    if op_end > 0
+                        && body.get(op_end + 1).is_some_and(|k| k.text() == ".")
+                        && body.get(op_end + 2).is_some()
+                    {
+                        let tt = unquote(body[op_end].text());
+                        let tc = unquote(body[op_end + 2].text());
+                        if ft == tt && fc == tc {
+                            out.push(diag(
+                                range(&ts[i]),
+                                Severity::Error,
+                                format!("A column cannot reference itself (`{ft}.{fc}`)"),
+                            ));
+                        } else if let Some(op) = RefOp::from_token_refs(&body[..op_end]) {
+                            check_fk_semantics(
+                                &FkRelation {
+                                    ft,
+                                    fc,
+                                    tt,
+                                    tc,
+                                    op,
+                                    anchor_tok: &ts[i],
+                                    target_tok: body[op_end + 2],
+                                },
+                                &col_flags,
+                                &mut fk_graph,
+                                &mut fk_anchors,
+                                &mut out,
+                            );
+                        }
+                    }
+                }
+            }
         }
     }
+    detect_fk_cycles(&fk_graph, &fk_anchors, &mut out);
 
     // Validação de TableGroup (tabelas inexistentes ou cabeçalho malformado)
     for g in root
@@ -649,6 +867,253 @@ pub fn lint(text: &str) -> Vec<Diagnostic> {
     }
     out.sort_by_key(|d| d.range.start);
     out
+}
+
+fn collect_index_uniques(
+    table_name: &str,
+    block: &dbml_syntax::SyntaxNode,
+    col_flags: &mut HashMap<(String, String), ColumnFlags>,
+    has_pk: &mut bool,
+) {
+    let head_toks = sig_tokens(block);
+    let Some(first) = head_toks.first() else {
+        return;
+    };
+    if !first.text().eq_ignore_ascii_case("indexes") {
+        return;
+    }
+    let all_toks: Vec<SyntaxToken> = block
+        .descendants_with_tokens()
+        .filter_map(rowan::NodeOrToken::into_token)
+        .filter(|k| k.kind() == SyntaxKind::Newline || !k.kind().is_trivia())
+        .collect();
+    for line in all_toks.split(|k| k.kind() == SyntaxKind::Newline) {
+        let ts: Vec<&SyntaxToken> = line
+            .iter()
+            .filter(|k| {
+                !matches!(k.kind(), SyntaxKind::LBrace | SyntaxKind::RBrace)
+                    && !k.text().eq_ignore_ascii_case("indexes")
+            })
+            .collect();
+        let Some(open) = ts.iter().position(|k| k.kind() == SyntaxKind::LBracket) else {
+            continue;
+        };
+        let Some(close_rel) = ts[open..]
+            .iter()
+            .position(|k| k.kind() == SyntaxKind::RBracket)
+        else {
+            continue;
+        };
+        let settings = &ts[open + 1..open + close_rel];
+        let is_pk = settings.iter().any(|k| k.text().eq_ignore_ascii_case("pk"));
+        let is_unique = settings
+            .iter()
+            .any(|k| k.text().eq_ignore_ascii_case("unique"));
+        if !is_pk && !is_unique {
+            continue;
+        }
+        let target = &ts[..open];
+        let single_col = if target.len() == 1
+            && matches!(target[0].kind(), SyntaxKind::Ident | SyntaxKind::Str)
+        {
+            Some(unquote(target[0].text()))
+        } else if target.len() == 3
+            && target[0].kind() == SyntaxKind::LParen
+            && target[2].kind() == SyntaxKind::RParen
+            && matches!(target[1].kind(), SyntaxKind::Ident | SyntaxKind::Str)
+        {
+            Some(unquote(target[1].text()))
+        } else {
+            None
+        };
+        if let Some(cname) = single_col
+            && let Some(flags) = col_flags.get_mut(&(table_name.to_string(), cname.to_string()))
+        {
+            flags.is_unique_capable = true;
+            if is_pk {
+                *has_pk = true;
+            }
+        }
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum RefOp {
+    ManyToOne,
+    OneToMany,
+    OneToOne,
+    ManyToMany,
+}
+
+impl RefOp {
+    fn from_tokens(toks: &[SyntaxToken]) -> Option<Self> {
+        match toks {
+            [t] if t.text() == ">" => Some(Self::ManyToOne),
+            [t] if t.text() == "<" => Some(Self::OneToMany),
+            [t] if t.text() == "-" => Some(Self::OneToOne),
+            [a, b] if a.text() == "<" && b.text() == ">" => Some(Self::ManyToMany),
+            _ => None,
+        }
+    }
+
+    fn from_token_refs(toks: &[&SyntaxToken]) -> Option<Self> {
+        match toks {
+            [t] if t.text() == ">" => Some(Self::ManyToOne),
+            [t] if t.text() == "<" => Some(Self::OneToMany),
+            [t] if t.text() == "-" => Some(Self::OneToOne),
+            [a, b] if a.text() == "<" && b.text() == ">" => Some(Self::ManyToMany),
+            _ => None,
+        }
+    }
+}
+
+struct FkRelation<'a> {
+    ft: &'a str,
+    fc: &'a str,
+    tt: &'a str,
+    tc: &'a str,
+    op: RefOp,
+    anchor_tok: &'a SyntaxToken,
+    target_tok: &'a SyntaxToken,
+}
+
+fn check_fk_semantics(
+    rel: &FkRelation<'_>,
+    col_flags: &HashMap<(String, String), ColumnFlags>,
+    fk_graph: &mut BTreeMap<String, BTreeSet<String>>,
+    fk_anchors: &mut BTreeMap<(String, String), Range<usize>>,
+    out: &mut Vec<Diagnostic>,
+) {
+    if rel.op == RefOp::ManyToMany {
+        return;
+    }
+    let (child_t, child_c, parent_t, parent_c) = if rel.op == RefOp::OneToMany {
+        (rel.tt, rel.tc, rel.ft, rel.fc)
+    } else {
+        (rel.ft, rel.fc, rel.tt, rel.tc)
+    };
+
+    let child_key = (child_t.to_string(), child_c.to_string());
+    let parent_key = (parent_t.to_string(), parent_c.to_string());
+
+    if let Some(parent_flags) = col_flags.get(&parent_key)
+        && !parent_flags.is_unique_capable
+    {
+        out.push(diag(
+            range(rel.target_tok),
+            Severity::Warning,
+            format!("Referenced column `{parent_t}.{parent_c}` is neither `pk` nor `unique`"),
+        ));
+    }
+
+    if child_t == parent_t {
+        if let Some(child_flags) = col_flags.get(&child_key)
+            && child_flags.has_not_null
+            && !child_flags.has_default
+        {
+            out.push(diag(
+                range(rel.anchor_tok),
+                Severity::Warning,
+                format!(
+                    "Self-referencing FK `{child_t}.{child_c}` is `not null` without a `default`, which prevents inserting the initial row"
+                ),
+            ));
+        }
+        return;
+    }
+
+    if col_flags.contains_key(&child_key) && col_flags.contains_key(&parent_key) {
+        fk_graph
+            .entry(child_key.0.clone())
+            .or_default()
+            .insert(parent_key.0.clone());
+        fk_anchors
+            .entry((child_key.0, parent_key.0))
+            .or_insert_with(|| range(rel.anchor_tok));
+    }
+}
+
+fn detect_fk_cycles(
+    fk_graph: &BTreeMap<String, BTreeSet<String>>,
+    fk_anchors: &BTreeMap<(String, String), Range<usize>>,
+    out: &mut Vec<Diagnostic>,
+) {
+    #[derive(Clone, Copy, PartialEq, Eq)]
+    enum State {
+        Visiting,
+        Visited,
+    }
+
+    fn dfs<'a>(
+        node: &'a str,
+        fk_graph: &'a BTreeMap<String, BTreeSet<String>>,
+        fk_anchors: &BTreeMap<(String, String), Range<usize>>,
+        state: &mut HashMap<&'a str, State>,
+        stack: &mut Vec<&'a str>,
+        seen_cycles: &mut HashSet<Vec<&'a str>>,
+        out: &mut Vec<Diagnostic>,
+    ) {
+        state.insert(node, State::Visiting);
+        stack.push(node);
+        if let Some(neighbors) = fk_graph.get(node) {
+            for next in neighbors {
+                match state.get(next.as_str()) {
+                    None => dfs(next, fk_graph, fk_anchors, state, stack, seen_cycles, out),
+                    Some(State::Visiting) => {
+                        if let Some(pos) = stack.iter().position(|&n| n == next) {
+                            let cycle_nodes = &stack[pos..];
+                            let min_pos = cycle_nodes
+                                .iter()
+                                .enumerate()
+                                .min_by(|(_, a), (_, b)| a.cmp(b))
+                                .map_or(0, |(i, _)| i);
+                            let canonical: Vec<&'a str> = cycle_nodes[min_pos..]
+                                .iter()
+                                .chain(cycle_nodes[..min_pos].iter())
+                                .copied()
+                                .collect();
+                            if seen_cycles.insert(canonical) {
+                                let mut path: Vec<&str> = cycle_nodes.to_vec();
+                                path.push(next.as_str());
+                                if let Some(anchor) =
+                                    fk_anchors.get(&(node.to_string(), next.clone()))
+                                {
+                                    out.push(diag(
+                                        anchor.clone(),
+                                        Severity::Warning,
+                                        format!(
+                                            "Circular foreign key dependency detected: {}",
+                                            path.join(" -> ")
+                                        ),
+                                    ));
+                                }
+                            }
+                        }
+                    }
+                    Some(State::Visited) => {}
+                }
+            }
+        }
+        stack.pop();
+        state.insert(node, State::Visited);
+    }
+
+    let mut state = HashMap::new();
+    let mut stack = Vec::new();
+    let mut seen_cycles = HashSet::new();
+    for node in fk_graph.keys() {
+        if !state.contains_key(node.as_str()) {
+            dfs(
+                node,
+                fk_graph,
+                fk_anchors,
+                &mut state,
+                &mut stack,
+                &mut seen_cycles,
+                out,
+            );
+        }
+    }
 }
 
 #[cfg(test)]
@@ -740,5 +1205,113 @@ mod tests {
         let m = msgs(src);
         assert!(m.iter().any(|s| s.contains("Incompatible types")), "{m:?}");
         assert!(m.iter().any(|s| s.contains("reference itself")), "{m:?}");
+    }
+
+    #[test]
+    fn valid_type_parameters_produce_no_diagnostics() {
+        let valid = "Table t {\n  id int [pk]\n  price decimal(10, 2)\n  code varchar(32)\n}\n";
+        assert!(lint(valid).is_empty(), "{:?}", lint(valid));
+    }
+
+    #[test]
+    fn decimal_precision_over_65_warns_with_comma_hint() {
+        let m = msgs("Table t {\n  id int [pk]\n  a decimal(102)\n}\n");
+        assert!(
+            m.iter()
+                .any(|s| s.contains("exceeds SQL maximum (65)") && s.contains("comma")),
+            "{m:?}"
+        );
+    }
+
+    #[test]
+    fn decimal_scale_exceeding_precision_errors() {
+        let m = msgs("Table t {\n  id int [pk]\n  b decimal(5, 10)\n}\n");
+        assert!(
+            m.iter()
+                .any(|s| s.contains("Scale (10) cannot exceed precision (5)")),
+            "{m:?}"
+        );
+    }
+
+    #[test]
+    fn zero_precision_or_length_and_extra_varchar_params_diagnose() {
+        let m = msgs(
+            "Table t {\n  id int [pk]\n  c decimal(0)\n  d varchar(0)\n  e varchar(10, 2)\n}\n",
+        );
+        assert!(
+            m.iter()
+                .any(|s| s.contains("Precision for `decimal`") && s.contains("greater than 0")),
+            "{m:?}"
+        );
+        assert!(
+            m.iter()
+                .any(|s| s.contains("Length for `varchar`") && s.contains("greater than 0")),
+            "{m:?}"
+        );
+        assert!(
+            m.iter()
+                .any(|s| s.contains("accepts only 1 length parameter")),
+            "{m:?}"
+        );
+    }
+
+    #[test]
+    fn ref_to_non_unique_column_warns() {
+        let non_unique = "Table a {\n  id int [pk]\n  slug varchar(64)\n}\nTable b {\n  id int [pk]\n  a_slug varchar(64) [ref: > a.slug]\n}\n";
+        let m = msgs(non_unique);
+        assert!(
+            m.iter()
+                .any(|s| s.contains("Referenced column `a.slug` is neither `pk` nor `unique`")),
+            "{m:?}"
+        );
+    }
+
+    #[test]
+    fn ref_to_unique_index_column_is_clean() {
+        let via_index = "Table a {\n  id int [pk]\n  slug varchar(64)\n  indexes {\n    slug [unique]\n  }\n}\nTable b {\n  id int [pk]\n  a_slug varchar(64) [ref: > a.slug]\n}\n";
+        assert!(lint(via_index).is_empty(), "{:?}", lint(via_index));
+    }
+
+    #[test]
+    fn fk_cycle_across_tables_warns() {
+        let cycle = "Table a {\n  id int [pk]\n  b_id int [ref: > b.id]\n}\nTable b {\n  id int [pk]\n  c_id int [ref: > c.id]\n}\nTable c {\n  id int [pk]\n  a_id int [ref: > a.id]\n}\n";
+        let m = msgs(cycle);
+        assert!(
+            m.iter()
+                .any(|s| s.contains("Circular foreign key dependency detected:")),
+            "{m:?}"
+        );
+    }
+
+    #[test]
+    fn acyclic_diamond_fks_have_no_warnings() {
+        let acyclic = "Table root {\n  id int [pk]\n}\nTable left {\n  id int [pk]\n  root_id int [ref: > root.id]\n}\nTable right {\n  id int [pk]\n  root_id int [ref: > root.id]\n}\nTable leaf {\n  id int [pk]\n  left_id int [ref: > left.id]\n  right_id int [ref: > right.id]\n}\n";
+        assert!(lint(acyclic).is_empty(), "{:?}", lint(acyclic));
+    }
+
+    #[test]
+    fn self_ref_not_null_without_default_warns_without_cycle_warning() {
+        let bad = "Table categories {\n  id int [pk]\n  parent_id int [not null, ref: > categories.id]\n}\n";
+        let m = msgs(bad);
+        assert!(
+            m.iter()
+                .any(|s| s.contains("Self-referencing FK `categories.parent_id`")
+                    && s.contains("not null")),
+            "{m:?}"
+        );
+        assert!(
+            !m.iter().any(|s| s.contains("Circular foreign key")),
+            "{m:?}"
+        );
+    }
+
+    #[test]
+    fn self_ref_nullable_or_with_default_is_clean() {
+        let ok_nullable =
+            "Table categories {\n  id int [pk]\n  parent_id int [ref: > categories.id]\n}\n";
+        assert!(lint(ok_nullable).is_empty(), "{:?}", lint(ok_nullable));
+
+        let ok_default = "Table categories {\n  id int [pk]\n  parent_id int [not null, default: 0, ref: > categories.id]\n}\n";
+        assert!(lint(ok_default).is_empty(), "{:?}", lint(ok_default));
     }
 }
