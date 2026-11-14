@@ -9,11 +9,15 @@ publish.workspace = true
 gpui-kit.workspace = true
 schema.workspace = true
 layout.workspace = true
+diagram-export.workspace = true
 dbml-analysis.workspace = true
 # Embeds icons in debug builds too (otherwise rust-embed reads from disk using the
 # Linux path, which does not exist in cross-built Windows .exe binaries).
 rust-embed = { workspace = true, features = ["debug-embed"] }
 dbml-edit.workspace = true
+sql-import.workspace = true
+db-introspect.workspace = true
+tokio = { workspace = true, features = ["rt", "time", "net", "io-util"] }
 lsp-types.workspace = true
 dbml-syntax.workspace = true
 anyhow.workspace = true

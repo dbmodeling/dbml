@@ -1,5 +1,5 @@
 ---
-status: accepted
+status: superseded by 0009 (parte: sem conexão com banco)
 ---
 
 # Scope: visual modeling only

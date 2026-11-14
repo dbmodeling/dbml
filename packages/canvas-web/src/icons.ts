@@ -33,7 +33,8 @@ export type IconName =
   | 'Folder'
   | 'FolderOpen'
   | 'PanelRightClose'
-  | 'Download';
+  | 'Download'
+  | 'Upload';
 
 const PATHS: Record<IconName, string> = {
   Table2:
@@ -91,6 +92,8 @@ const PATHS: Record<IconName, string> = {
     '<rect width="18" height="18" x="3" y="3" rx="2"/><path d="M15 3v18"/><path d="m8 9 3 3-3 3"/>',
   Download:
     '<path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" x2="12" y1="15" y2="3"/>',
+  Upload:
+    '<path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" x2="12" y1="3" y2="15"/>',
 };
 
 export function iconSvg(name: IconName, size = 16, color = 'currentColor'): string {

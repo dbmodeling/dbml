@@ -3,7 +3,7 @@
  * Molduras de Grupo (`TableGroup`), Arestas Ortogonais SVG, Cartões de Tabela DOM e Ilhas Flutuantes.
  */
 
-import { Schema, SceneGeometry } from './types';
+import { Schema, SceneGeometry, qualifiedEndpointTable, qualifiedTableName } from './types';
 import { Point } from './viewport';
 import {
   Glass,
@@ -117,10 +117,12 @@ export function renderCanvasWorld(params: {
     scene?.edges ??
     schema.refs
       .map((r) => {
-        const ft = schema.tables.find((t) => t.name === r.from.table);
-        const tt = schema.tables.find((t) => t.name === r.to.table);
-        const aPos = positions[r.from.table];
-        const bPos = positions[r.to.table];
+        const fromQ = qualifiedEndpointTable(r.from);
+        const toQ = qualifiedEndpointTable(r.to);
+        const ft = schema.tables.find((t) => qualifiedTableName(t) === fromQ);
+        const tt = schema.tables.find((t) => qualifiedTableName(t) === toQ);
+        const aPos = positions[fromQ];
+        const bPos = positions[toQ];
         if (!ft || !tt || !aPos || !bPos) return null;
         const fc = ft.columns.findIndex((c) => c.name === r.from.column);
         const tc = tt.columns.findIndex((c) => c.name === r.to.column);
@@ -146,9 +148,9 @@ export function renderCanvasWorld(params: {
             ? ['1', '1']
             : ['N', 'N'];
         return {
-          from_table: r.from.table,
+          from_table: fromQ,
           from_col: r.from.column,
-          to_table: r.to.table,
+          to_table: toQ,
           to_col: r.to.column,
           ax,
           ay,
@@ -193,26 +195,27 @@ export function renderCanvasWorld(params: {
   html += labelsHtml;
 
   // 3. Cartões de Tabela (`canvas.rs` linhas 859-1152)
-  const fkSet = new Set(schema.refs.map((r) => `${r.from.table}::${r.from.column}`));
+  const fkSet = new Set(schema.refs.map((r) => `${qualifiedEndpointTable(r.from)}::${r.from.column}`));
   const orderedTables = [...schema.tables].sort((a, b) =>
-    a.name === topTable ? 1 : b.name === topTable ? -1 : 0
+    qualifiedTableName(a) === topTable ? 1 : qualifiedTableName(b) === topTable ? -1 : 0
   );
 
   for (const t of orderedTables) {
-    const pos = positions[t.name] || { x: 0, y: 0 };
-    const on = isSelected(t.name);
-    const visual = scene?.tables.find((tv) => tv.name === t.name);
+    const qname = qualifiedTableName(t);
+    const pos = positions[qname] || { x: 0, y: 0 };
+    const on = isSelected(qname);
+    const visual = scene?.tables.find((tv) => tv.name === qname);
     const tint =
       visual?.tint ||
       t.color ||
       (() => {
-        const gIdx = schema.groups.findIndex((gr) => gr.tables.includes(t.name));
+        const gIdx = schema.groups.findIndex((gr) => gr.tables.includes(qname));
         return gIdx >= 0 ? TABLE_COLORS[gIdx % TABLE_COLORS.length][1] : null;
       })();
 
     let rowsHtml = '';
     t.columns.forEach((c) => {
-      const isFk = fkSet.has(`${t.name}::${c.name}`);
+      const isFk = fkSet.has(`${qname}::${c.name}`);
       const icon = c.pk
         ? iconSvg('KeyRound', 12 * g.uiScale, g.accent)
         : isFk
@@ -220,12 +223,12 @@ export function renderCanvasWorld(params: {
         : '';
 
       rowsHtml += `
-        <div class="dbm-col-row" data-table="${escHtml(t.name)}" data-col="${escHtml(c.name)}">
+        <div class="dbm-col-row" data-table="${escHtml(qname)}" data-col="${escHtml(c.name)}">
           <div style="width:14px;display:flex;justify-content:center;flex:none;">${icon}</div>
           <div style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:${g.text};font-weight:${c.pk ? 500 : 400};">${escHtml(c.name)}</div>
           <div style="font-size:${11.5 * g.uiScale}px;color:${g.textMuted};">${escHtml(c.ty)}</div>
           ${c.not_null ? `<div style="font-size:${10 * g.uiScale}px;color:${g.textMuted};">NN</div>` : ''}
-          <div class="dbm-col-port" title="Drag to another column to create relation" data-port-table="${escHtml(t.name)}" data-port-col="${escHtml(c.name)}"></div>
+          <div class="dbm-col-port" title="Drag to another column to create relation" data-port-table="${escHtml(qname)}" data-port-col="${escHtml(c.name)}"></div>
         </div>
       `;
     });
@@ -234,19 +237,23 @@ export function renderCanvasWorld(params: {
     const iconBg = tint ? hexWithAlpha(tint, 0.2) : g.selected;
     const iconFg = tint || g.accent;
     const hdrBg = tint ? hexWithAlpha(tint, 0.08) : 'transparent';
+    const schemaBadge = t.schema
+      ? `<span style="padding:1px 5px;border-radius:4px;background:${g.selected};color:${g.textMuted};font-size:${10 * g.uiScale}px;font-weight:500;flex:none;">${escHtml(t.schema)}</span>`
+      : '';
 
     html += `
-      <div class="dbm-card ${on ? 'selected' : ''}" data-card-table="${escHtml(t.name)}" style="left:${pos.x}px;top:${pos.y}px;height:${cardHeight}px;cursor:${tool === 'select' ? 'move' : 'grab'};">
+      <div class="dbm-card ${on ? 'selected' : ''}" data-card-table="${escHtml(qname)}" style="left:${pos.x}px;top:${pos.y}px;height:${cardHeight}px;cursor:${tool === 'select' ? 'move' : 'grab'};">
         ${tint ? `<div class="dbm-card-tint" style="background:${tint};"></div>` : ''}
         <div class="dbm-card-hdr" style="background:${hdrBg};">
           <div class="dbm-card-icon" style="background:${iconBg};">
             ${iconSvg('Table2', 13 * g.uiScale, iconFg)}
           </div>
           <div class="dbm-card-title">${escHtml(t.name)}</div>
+          ${schemaBadge}
           <div class="dbm-card-count">${t.columns.length}</div>
         </div>
         <div class="dbm-card-rows">${rowsHtml}</div>
-        <button class="dbm-card-addcol" title="Add column" data-add-col-table="${escHtml(t.name)}">
+        <button class="dbm-card-addcol" title="Add column" data-add-col-table="${escHtml(qname)}">
           ${iconSvg('Plus', 12, g.textMuted)}
         </button>
       </div>

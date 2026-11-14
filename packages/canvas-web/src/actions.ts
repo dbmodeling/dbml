@@ -5,6 +5,9 @@
 
 export type ActionId =
   | 'NewFile'
+  | 'SaveFile'
+  | 'Undo'
+  | 'Redo'
   | 'ShowFiles'
   | 'ShowSchema'
   | 'ShowProblems'
@@ -24,6 +27,7 @@ export type ActionId =
   | 'GroupSelection'
   | 'UngroupSelection'
   | 'NewTable'
+  | 'NewEnum'
   | 'DeleteSelection'
   | 'RenameSelected'
   | 'FormatDocument'
@@ -38,9 +42,34 @@ export type ActionId =
   | 'ExportSvg'
   | 'ExportPng'
   | 'ExportJpeg'
-  | 'ExportMermaid';
+  | 'ExportMermaid'
+  | 'ExportSqlPostgres'
+  | 'ExportSqlMysql'
+  | 'ExportSqlSqlite'
+  | 'ExportSqlSqlServer'
+  | 'ExportSqlOracle'
+  | 'ImportSqlDdl'
+  | 'ConnectDatabase'
+  | 'AddPresetUuidPk'
+  | 'AddPresetBigIntPk'
+  | 'AddPresetTimestamps'
+  | 'AddPresetSoftDelete';
+
+/** Presets de coluna: ação → id do preset e rótulo (iguais a `ColumnPreset` em `dbml-edit`). */
+export const COLUMN_PRESET_ACTIONS: { action: ActionId; preset: ColumnPresetId; label: string }[] = [
+  { action: 'AddPresetUuidPk', preset: 'uuid_pk', label: 'UUID PK' },
+  { action: 'AddPresetBigIntPk', preset: 'bigint_pk', label: 'BigInt PK' },
+  { action: 'AddPresetTimestamps', preset: 'timestamps', label: 'Timestamps' },
+  { action: 'AddPresetSoftDelete', preset: 'soft_delete', label: 'Soft Delete' },
+];
+
+import type { ColumnPresetId } from './types';
 
 export type KeyContext = 'Shell' | 'Canvas';
+
+/** Grupos dos dropdowns de exportação (iguais aos de `crates/app/src/actions.rs`). */
+export const GROUP_EXPORT_CODE = 'Export Code';
+export const GROUP_EXPORT_IMAGE = 'Export Image';
 
 export interface ActionEntry {
   id: ActionId;
@@ -66,6 +95,12 @@ export function catalog(): ActionEntry[] {
 
   return [
     e('ctrl-n', ['Ctrl', 'N'], 'NewFile', 'File', 'New .dbml File'),
+    e('ctrl-s', ['Ctrl', 'S'], 'SaveFile', 'File', 'Save'),
+    e('', [], 'ImportSqlDdl', 'File', 'Import SQL DDL…'),
+    e('', [], 'ConnectDatabase', 'File', 'Connect to Database…'),
+    ...COLUMN_PRESET_ACTIONS.map((p) => e('', [], p.action, 'Edit', `Add Column Preset: ${p.label}`)),
+    e('ctrl-z', ['Ctrl', 'Z'], 'Undo', 'Edit', 'Undo'),
+    e('ctrl-shift-z', ['Ctrl', 'Shift', 'Z'], 'Redo', 'Edit', 'Redo'),
     e('ctrl-shift-e', ['Ctrl', 'Shift', 'E'], 'ShowFiles', 'View', 'Show Project Files'),
     e('ctrl-shift-d', ['Ctrl', 'Shift', 'D'], 'ShowSchema', 'View', 'Show Schema (Tables)'),
     e('ctrl-shift-m', ['Ctrl', 'Shift', 'M'], 'ShowProblems', 'View', 'Show Problems'),
@@ -82,6 +117,7 @@ export function catalog(): ActionEntry[] {
     e('ctrl--', ['Ctrl', '-'], 'ZoomOut', 'Canvas', 'Zoom Out'),
     e('escape', ['Esc'], 'Deselect', 'Canvas', 'Clear Selection'),
     e('t', ['T'], 'NewTable', 'Canvas', 'New Table'),
+    e('', [], 'NewEnum', 'Canvas', 'New Enum'),
     e('delete', ['Del'], 'DeleteSelection', 'Canvas', 'Delete Selected Tables'),
     e('f2', ['F2'], 'RenameSelected', 'Canvas', 'Rename Table'),
     e('ctrl-g', ['Ctrl', 'G'], 'GroupSelection', 'Canvas', 'Group Selected Tables'),
@@ -112,10 +148,15 @@ export function catalog(): ActionEntry[] {
     e('alt-shift-f', ['Alt', 'Shift', 'F'], 'FormatDocument', 'Editor', 'Format Document'),
     e('alt-up', ['Alt', '↑'], 'MoveLineUp', 'Editor', 'Move Line Up'),
     e('alt-down', ['Alt', '↓'], 'MoveLineDown', 'Editor', 'Move Line Down'),
-    e('', [], 'ExportSvg', 'Export', 'Export diagram as vector SVG'),
-    e('', [], 'ExportPng', 'Export', 'Export diagram as PNG image'),
-    e('', [], 'ExportJpeg', 'Export', 'Export diagram as JPEG image'),
-    e('', [], 'ExportMermaid', 'Export', 'Export diagram as Mermaid erDiagram'),
+    e('', [], 'ExportSqlPostgres', GROUP_EXPORT_CODE, 'Export Code: PostgreSQL (.sql)'),
+    e('', [], 'ExportSqlMysql', GROUP_EXPORT_CODE, 'Export Code: MySQL (.sql)'),
+    e('', [], 'ExportSqlSqlite', GROUP_EXPORT_CODE, 'Export Code: SQLite (.sql)'),
+    e('', [], 'ExportSqlSqlServer', GROUP_EXPORT_CODE, 'Export Code: SQL Server (.sql)'),
+    e('', [], 'ExportSqlOracle', GROUP_EXPORT_CODE, 'Export Code: Oracle (.sql)'),
+    e('', [], 'ExportMermaid', GROUP_EXPORT_CODE, 'Export Code: Mermaid erDiagram (.mmd)'),
+    e('', [], 'ExportPng', GROUP_EXPORT_IMAGE, 'Export Image: PNG'),
+    e('', [], 'ExportJpeg', GROUP_EXPORT_IMAGE, 'Export Image: JPEG'),
+    e('', [], 'ExportSvg', GROUP_EXPORT_IMAGE, 'Export Image: Vector SVG'),
     e('ctrl-k', ['Ctrl', 'K'], 'OpenPalette', 'Help', 'Command Palette'),
     e('ctrl-/', ['Ctrl', '/'], 'ShowShortcuts', 'Help', 'Keyboard Shortcuts'),
   ];

@@ -14,6 +14,8 @@ import {
   TextPatch,
   WorkspaceFileEntry,
   SessionSnapshot,
+  qualifiedEndpointTable,
+  qualifiedTableName,
 } from './types';
 import {
   CARD_W,
@@ -30,15 +32,18 @@ import {
   Mode,
 } from './glass';
 import { iconSvg, IconName } from './icons';
-import { ActionId, catalog } from './actions';
+import { ActionId, COLUMN_PRESET_ACTIONS, GROUP_EXPORT_CODE, GROUP_EXPORT_IMAGE, catalog } from './actions';
 import { WORKBENCH_CSS } from './workbench-css';
 import { exportToMermaid, exportToSvg, exportSvgStringToRasterBlob } from './export';
+import { ConnectDbModel, DB_ENGINES, DbEngine, buildRequest } from './connect-db';
+import { IMPORT_DIALECTS, ImportDialect, ImportSqlModel, ImportSqlResult } from './import-sql';
 
 type Pt = { x: number; y: number };
 type Pane = 'files' | 'schema' | 'problems';
 type Drag =
   | { kind: 'pan'; lx: number; ly: number }
   | { kind: 'cards'; last: Pt }
+  | { kind: 'enum'; name: string; last: Pt }
   | { kind: 'group'; name: string; last: Pt }
   | { kind: 'marquee'; start: Pt; now: Pt; base: string[] }
   | { kind: 'link'; table: string; col: string; now: Pt };
@@ -85,6 +90,7 @@ export class Workbench {
   private wasm: any;
 
   private source = '';
+  private savedSource = '';
   private title = 'example.dbml';
   private files: WorkspaceFileEntry[] = [];
   private schema: Schema = { tables: [], refs: [], groups: [] };
@@ -94,8 +100,22 @@ export class Workbench {
   private scene: SceneGeometry | null = null;
   private positions: Record<string, Pt> = {};
   private extraLayout: Partial<SidecarLayout> = {};
+  private undoStack: Array<{
+    source: string;
+    positions: Record<string, Pt>;
+    selection: string[];
+    selectedEnum: string | null;
+  }> = [];
+  private redoStack: Array<{
+    source: string;
+    positions: Record<string, Pt>;
+    selection: string[];
+    selectedEnum: string | null;
+  }> = [];
+  private dragStartPositions: Record<string, Pt> | null = null;
 
   private selection: string[] = [];
+  private selectedEnum: string | null = null;
   private selectedRef: { from_table: string; from_col: string; to_table: string; to_col: string } | null = null;
   private top: string | null = null;
   private tool: 'select' | 'hand' = 'select';
@@ -112,6 +132,8 @@ export class Workbench {
   private shortcutsOpen = false;
   private paletteQuery = '';
   private paletteIdx = 0;
+  private connectEngine: DbEngine = 'postgres';
+  private importDialect: ImportDialect = 'postgres';
   private focusCol: [string, string] | null = null;
   private pendingNew: string | null = null;
   private sessionTimer: number | null = null;
@@ -164,6 +186,7 @@ export class Workbench {
             <p>Write your DBML schema in the editor or create a new table.</p>
             <button class="btn" data-act="ToggleEditor">${ICON('Braces', 14)} Open DBML Editor</button>
             <button class="btn primary" data-act="NewTable">${ICON('Plus', 14)} New Table</button>
+            <button class="btn" data-act="ConnectDatabase">${ICON('Database', 14)} Connect to Database</button>
           </div>
           <div class="island tools ui" id="tools"></div>
           <div class="island zoomi ui" id="zoomi"></div>
@@ -280,6 +303,9 @@ export class Workbench {
       }
     }
     if (first) {
+      this.savedSource = source;
+      this.undoStack = [];
+      this.redoStack = [];
       const session = meta?.session ?? this.loadDocSession();
       if (session) {
         if (session.pane === 'files' || session.pane === 'schema' || session.pane === 'problems') {
@@ -330,7 +356,7 @@ export class Workbench {
     } catch (e) {
       console.error('Error analyzing DBML via Wasm:', e);
     }
-    this.selection = this.selection.filter((n) => this.schema.tables.some((t) => t.name === n));
+    this.selection = this.selection.filter((n) => this.schema.tables.some((t) => qualifiedTableName(t) === n));
     this.computeScene();
   }
 
@@ -338,7 +364,8 @@ export class Workbench {
     if (!this.wasm) return;
     const known: Record<string, Pt> = {};
     for (const t of this.schema.tables) {
-      if (this.positions[t.name]) known[t.name] = this.positions[t.name];
+      const qname = qualifiedTableName(t);
+      if (this.positions[qname]) known[qname] = this.positions[qname];
     }
     if (this.pendingNew && !known[this.pendingNew]) {
       const c = this.viewCenter();
@@ -362,6 +389,87 @@ export class Workbench {
   }
 
   // ───────────────────────── comandos / patches ─────────────────────────
+
+  private isDirty(): boolean {
+    return this.source !== this.savedSource;
+  }
+
+  private clonePositions(pos: Record<string, Pt> = this.positions): Record<string, Pt> {
+    const out: Record<string, Pt> = {};
+    for (const k of Object.keys(pos)) {
+      out[k] = { x: pos[k].x, y: pos[k].y };
+    }
+    return out;
+  }
+
+  private positionsEqual(a: Record<string, Pt>, b: Record<string, Pt>): boolean {
+    const ka = Object.keys(a);
+    const kb = Object.keys(b);
+    if (ka.length !== kb.length) return false;
+    for (const k of ka) {
+      const pa = a[k];
+      const pb = b[k];
+      if (!pb || pa.x !== pb.x || pa.y !== pb.y) return false;
+    }
+    return true;
+  }
+
+  private captureSnapshot() {
+    return {
+      source: this.source,
+      positions: this.clonePositions(),
+      selection: [...this.selection],
+      selectedEnum: this.selectedEnum,
+    };
+  }
+
+  private pushHistory(snap = this.captureSnapshot()): void {
+    const last = this.undoStack[this.undoStack.length - 1];
+    if (last && last.source === snap.source && this.positionsEqual(last.positions, snap.positions)) {
+      return;
+    }
+    if (this.undoStack.length >= 100) this.undoStack.shift();
+    this.undoStack.push(snap);
+    this.redoStack = [];
+  }
+
+  private restoreSnapshot(snap: {
+    source: string;
+    positions: Record<string, Pt>;
+    selection: string[];
+    selectedEnum: string | null;
+  }): void {
+    const sourceChanged = snap.source !== this.source;
+    this.positions = this.clonePositions(snap.positions);
+    this.selection = [...snap.selection];
+    this.selectedEnum = snap.selectedEnum;
+    this.selectedRef = null;
+    if (sourceChanged) {
+      const patch = this.fullReplace(snap.source);
+      this.source = snap.source;
+      this.transport.sendPatch(patch);
+      this.syncEditorValue();
+    }
+    this.reanalyze();
+    this.queueSaveLayout();
+    this.scheduleRender();
+  }
+
+  private undo(): void {
+    const prev = this.undoStack.pop();
+    if (!prev) return;
+    if (this.redoStack.length >= 100) this.redoStack.shift();
+    this.redoStack.push(this.captureSnapshot());
+    this.restoreSnapshot(prev);
+  }
+
+  private redo(): void {
+    const next = this.redoStack.pop();
+    if (!next) return;
+    if (this.undoStack.length >= 100) this.undoStack.shift();
+    this.undoStack.push(this.captureSnapshot());
+    this.restoreSnapshot(next);
+  }
 
   private fullReplace(updated: string): TextPatch {
     const old = this.source;
@@ -389,7 +497,11 @@ export class Workbench {
   private dispatch(cmd: Command): TextPatch | null {
     if (!this.wasm) return null;
     try {
+      const before = this.captureSnapshot();
       const patch: TextPatch = this.wasm.apply_command(this.source, cmd);
+      if (patch.new_text || patch.byte_start !== patch.byte_end) {
+        this.pushHistory(before);
+      }
       if (patch.renamed_table) {
         const [o, n] = patch.renamed_table;
         if (this.positions[o]) {
@@ -402,8 +514,24 @@ export class Workbench {
       if (patch.created_table) {
         this.pendingNew = patch.created_table;
         this.selection = [patch.created_table];
+        this.selectedEnum = null;
         this.prefs.inspector = true;
         this.focusCol = null;
+      }
+      if (patch.renamed_enum) {
+        const [o, n] = patch.renamed_enum;
+        const ok = `enum:${o}`, nk = `enum:${n}`;
+        if (this.positions[ok]) {
+          this.positions[nk] = this.positions[ok];
+          delete this.positions[ok];
+        }
+        if (this.selectedEnum === o) this.selectedEnum = n;
+      }
+      if (patch.created_enum) {
+        this.selectedEnum = patch.created_enum;
+        this.selection = [];
+        this.selectedRef = null;
+        this.prefs.inspector = true;
       }
       if (patch.created_column) {
         this.selection = [patch.created_column[0]];
@@ -411,7 +539,7 @@ export class Workbench {
         this.prefs.inspector = true;
       }
       this.applyPatch(patch);
-      if (patch.should_relayout) this.relayout(false);
+      if (patch.should_relayout) this.relayout(false, false);
       this.scheduleRender();
       return patch;
     } catch (e: any) {
@@ -420,9 +548,10 @@ export class Workbench {
     }
   }
 
-  private relayout(fit = true): void {
+  private relayout(fit = true, recordHistory = true): void {
     if (!this.wasm) return;
     try {
+      if (recordHistory) this.pushHistory();
       const r = this.wasm.compute_layout(this.source, {});
       this.positions = { ...r.positions };
       this.computeScene();
@@ -590,7 +719,7 @@ export class Workbench {
     for (const gr of sc.groups) {
       const c = gr.color;
       // posição segue as tabelas (que podem estar sendo arrastadas)
-      const mem = gr.tables.map((n) => ({ n, p: this.positions[n], t: this.schema.tables.find((x) => x.name === n) }))
+      const mem = gr.tables.map((n) => ({ n, p: this.positions[n], t: this.schema.tables.find((x) => qualifiedTableName(x) === n) }))
         .filter((m) => m.p && m.t);
       if (!mem.length) continue;
       let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
@@ -605,30 +734,67 @@ export class Workbench {
     // cartões
     const order = [...sc.tables].sort((a, b) => Number(a.name === this.top) - Number(b.name === this.top));
     for (const tv of order) {
-      const t = this.schema.tables.find((x) => x.name === tv.name);
+      const t = this.schema.tables.find((x) => qualifiedTableName(x) === tv.name);
       const p = this.positions[tv.name];
       if (!t || !p) continue;
+      const qname = tv.name;
       const tint = tv.tint;
       const fk = new Set(tv.fk_columns);
+      const idxCols = new Set<string>();
+      for (const ix of t.indexes || []) {
+        for (const ic of ix.columns || []) {
+          if (ic.kind === 'column') idxCols.add(ic.value);
+        }
+      }
       const rows = t.columns
         .map((c) => {
           const isFk = !!c.fk || fk.has(c.name);
+          const hasIdx = idxCols.has(c.name);
           const ic = c.pk
             ? `<span style="color:var(--accent)">${ICON('KeyRound', 12)}</span>`
             : isFk
               ? `<span style="color:var(--muted)">${ICON('Link2', 12)}</span>`
               : '';
-          return `<div class="row" data-col="${esc(c.name)}" data-table="${esc(t.name)}"><div class="rail14">${ic}</div>
-            <div class="cn ${c.pk || isFk ? 'pk' : ''}">${esc(c.name)}</div><div class="ty">${esc(c.ty)}</div>${isFk ? '<div class="fk-badge">FK</div>' : ''}${c.not_null ? '<div class="nn">NN</div>' : ''}
-            <div class="port" data-port="1" data-table="${esc(t.name)}" data-col="${esc(c.name)}"></div></div>`;
+          const badges = [
+            isFk ? '<div class="fk-badge">FK</div>' : '',
+            c.not_null ? '<div class="nn">NN</div>' : '',
+            c.unique ? '<div class="nn">UQ</div>' : '',
+            hasIdx ? '<div class="nn" style="color:var(--accent)" title="Indexed">IDX</div>' : '',
+            c.default_value ? `<div class="nn" title="Default: ${esc(c.default_value)}">DEF</div>` : '',
+            c.check ? `<div class="nn" title="Check: ${esc(c.check)}">CHK</div>` : '',
+          ].join('');
+          return `<div class="row" data-col="${esc(c.name)}" data-table="${esc(qname)}"><div class="rail14">${ic}</div>
+            <div class="cn ${c.pk || isFk ? 'pk' : ''}">${esc(c.name)}</div><div class="ty">${esc(c.ty)}</div>${badges}
+            <div class="port" data-port="1" data-table="${esc(qname)}" data-col="${esc(c.name)}"></div></div>`;
         })
         .join('');
-      html += `<div class="card ${sel.has(t.name) ? 'sel' : ''}" data-table="${esc(t.name)}" style="left:${p.x}px;top:${p.y}px;height:${cardH(t.columns.length)}px">
+      const schemaBadge = t.schema
+        ? `<span style="padding:1px 5px;border-radius:4px;background:var(--sel);color:var(--muted);font-size:10px;font-weight:500;flex:none">${esc(t.schema)}</span>`
+        : '';
+      html += `<div class="card ${sel.has(qname) ? 'sel' : ''}" data-table="${esc(qname)}" style="left:${p.x}px;top:${p.y}px;height:${cardH(t.columns.length)}px">
         ${tint ? `<div class="bar" style="background:${tint}"></div>` : ''}
         <div class="head" style="${tint ? `background:${hexWithAlpha(tint, 0.08)}` : ''}"><div class="ic" style="${tint ? `color:${tint}` : ''}">${ICON('Table2', 14)}</div>
-        <div class="nm">${esc(t.name)}</div><div class="cnt">${t.columns.length}</div></div>
+        <div class="nm">${esc(t.name)}</div>${schemaBadge}<div class="cnt">${t.columns.length}</div></div>
         <div class="rows">${rows}</div>
-        <div class="plus" data-addcol="${esc(t.name)}" title="Add column">${ICON('Plus', 14)}</div></div>`;
+        <div class="plus" data-addcol="${esc(qname)}" title="Add column">${ICON('Plus', 14)}</div></div>`;
+    }
+    // enum cards
+    for (const ev of sc.enums || []) {
+      const p = this.positions[`enum:${ev.name}`] || { x: ev.x, y: ev.y };
+      const on = this.selectedEnum === ev.name;
+      const referencedBySelected = !on && ev.referenced_by.some((tb) => sel.has(tb));
+      const valRows = ev.values.length
+        ? ev.values
+            .map(
+              (v) =>
+                `<div class="row"><div class="rail14"></div><div class="cn">${esc(v)}</div></div>`
+            )
+            .join('')
+        : `<div class="row"><div class="rail14"></div><div class="cn" style="color:var(--faint)">(empty)</div></div>`;
+      html += `<div class="card enum-card ${on ? 'sel' : ''}" data-enum="${esc(ev.name)}" style="left:${p.x}px;top:${p.y}px;height:${ev.h}px;${referencedBySelected ? 'border-color:var(--accent);box-shadow:0 0 0 1px var(--accent);' : ''}">
+        <div class="head"><div class="ic" style="color:var(--accent)">${ICON('Braces', 14)}</div>
+        <div class="nm">${esc(ev.name)}</div><div class="cnt" style="font-size:10px;font-weight:600;color:var(--accent)">ENUM</div></div>
+        <div class="rows">${valRows}</div></div>`;
     }
     w.innerHTML = html;
     // marquee
@@ -655,9 +821,12 @@ export class Workbench {
   }
 
   private renderTitlebar(): void {
+    const dirtyDot = this.isDirty()
+      ? `<span title="Unsaved changes" style="width:7px;height:7px;border-radius:50%;background:var(--muted);display:inline-block;margin-left:4px"></span>`
+      : '';
     this.els['titlebar'].innerHTML = `
       <span style="color:var(--accent)">${ICON('Database', 16)}</span>
-      <div class="doc">${ICON('Braces', 13)}<span>${esc(this.title)}</span></div>
+      <div class="doc">${ICON('Braces', 13)}<span>${esc(this.title)}</span>${dirtyDot}</div>
       ${this.btn('NewFile', 'Plus', 'New .dbml File (Ctrl+N)')}
       <div class="spacer"></div>
       <button class="pill" data-act="OpenPalette">${ICON('Search', 14)}<span>DB Modeling — Ctrl+K commands</span></button>
@@ -677,6 +846,7 @@ export class Workbench {
       ${this.btn('ShowSchema', 'Table2', 'Schema (Ctrl+Shift+D)', sb && this.pane === 'schema')}
       <button class="ib ${sb && this.pane === 'problems' ? 'on' : ''}" data-act="ShowProblems" title="Problems (Ctrl+Shift+M)">${ICON('TriangleAlert', 16)}${errs ? `<span class="badge">${errs}</span>` : ''}</button>
       ${this.btn('ToggleEditor', 'Braces', 'DBML Editor (Ctrl+E)', this.editorOpen)}
+      ${this.btn('ConnectDatabase', 'Database', 'Connect to Database…')}
       <div class="grow"></div>
       <button class="ib" data-act="menu:appearance" title="Appearance">${ICON('Palette', 16)}</button>
       ${this.btn('ShowShortcuts', 'Keyboard', 'Keyboard Shortcuts (Ctrl+/)')}
@@ -692,12 +862,15 @@ export class Workbench {
       ${this.btn('ToolHand', 'Hand', 'Hand: pan view (H)', this.tool === 'hand')}
       <div class="sep"></div>
       ${this.btn('NewTable', 'Plus', 'New Table (T)')}
+      ${this.btn('NewEnum', 'Braces', 'New Enum')}
       <div class="sep"></div>
       ${this.btn('Relayout', 'LayoutGrid', 'Auto-Layout (Ctrl+L)')}
       ${this.btn('FitView', 'Scan', 'Fit to Screen (Shift+1)')}
       <div class="sep"></div>
       ${this.btn('ToggleEditor', 'Braces', 'DBML Editor (Ctrl+E)', this.editorOpen)}
-      <button class="ib" data-act="menu:export" title="Export">${ICON('Download', 16)}</button>`;
+      ${this.btn('ImportSqlDdl', 'Upload', 'Import SQL DDL…')}
+      <button class="ib" data-act="menu:export-code" title="Export code (SQL / Mermaid)">${ICON('Braces', 16)}</button>
+      <button class="ib" data-act="menu:export-image" title="Export image (PNG / JPEG / SVG)">${ICON('Download', 16)}</button>`;
     this.els['zoomi'].innerHTML = `${this.btn('ZoomOut', 'ZoomOut', 'Zoom Out (Ctrl+-)')}
       <button class="pct" data-act="FitView" title="Fit to Screen">${Math.round(this.zoom * 100)}%</button>
       ${this.btn('ZoomIn', 'ZoomIn', 'Zoom In (Ctrl+=)')}`;
@@ -709,6 +882,7 @@ export class Workbench {
     if (d?.kind === 'group') return `Moving group ${d.name}`;
     if (d?.kind === 'link') return `Relation from ${d.table}.${d.col}: drop on target table`;
     if (d?.kind === 'marquee') return 'Release to select tables inside rectangle';
+    if (this.selectedEnum) return 'Enum selected · Edit values in Inspector · Delete removes Enum · Esc clears selection';
     if (this.selectedRef) return 'Relation selected · Delete removes line and FK column · Esc clears selection';
     if (this.selection.length > 1) return `${this.selection.length} tables selected · Ctrl+G groups`;
     if (this.selection.length === 1) return `${this.selection[0]} · F2 renames · Del deletes`;
@@ -750,17 +924,24 @@ export class Workbench {
       for (const gr of this.scene?.groups || []) {
         body += `<div class="gh"><i style="background:${gr.color}"></i><span style="flex:1">${esc(gr.name)}</span><span style="font-weight:400;color:var(--faint)">${gr.tables.length}</span></div>`;
         for (const n of gr.tables) {
-          const t = this.schema.tables.find((x) => x.name === n);
+          const t = this.schema.tables.find((x) => qualifiedTableName(x) === n);
           if (t) { body += row(n, t.columns.length, 14); grouped.add(n); }
         }
       }
-      const loose = this.schema.tables.filter((t) => !grouped.has(t.name));
+      const loose = this.schema.tables.filter((t) => !grouped.has(qualifiedTableName(t)));
       if (grouped.size && loose.length) body += `<div class="gh" style="color:var(--faint)">No group</div>`;
-      for (const t of loose) body += row(t.name, t.columns.length);
+      for (const t of loose) body += row(qualifiedTableName(t), t.columns.length);
+      const enumsHtml = (this.scene?.enums || [])
+        .map(
+          (ev) => `<div class="srow ${this.selectedEnum === ev.name ? 'on' : ''}" data-act="focus-enum" data-enum="${esc(ev.name)}">
+          <span style="color:var(--accent)">${ICON('Braces', 14)}</span><span class="g">${esc(ev.name)}</span><span class="c">${ev.values.length}</span></div>`
+        )
+        .join('');
       const refs = this.schema.refs
-        .map((r) => `<div class="rel"><span style="color:var(--faint)">${ICON('Link2', 12)}</span><span class="tx">${esc(r.from.table)} → ${esc(r.to.table)}</span></div>`)
+        .map((r) => `<div class="rel"><span style="color:var(--faint)">${ICON('Link2', 12)}</span><span class="tx">${esc(qualifiedEndpointTable(r.from))} → ${esc(qualifiedEndpointTable(r.to))}</span></div>`)
         .join('');
       el.innerHTML = `<div class="sec"><span>TABLES</span><span>${this.schema.tables.length}</span></div>${body}
+        ${enumsHtml ? `<div class="sec"><span>ENUMS</span><span>${(this.scene?.enums || []).length}</span></div>${enumsHtml}` : ''}
         <div class="sec"><span>RELATIONS</span><span>${this.schema.refs.length}</span></div>${refs}`;
     } else {
       const items = this.diags
@@ -780,7 +961,7 @@ export class Workbench {
   private renderInspector(): void {
     const el = this.els['inspector'];
     const sel = this.selection;
-    const show = this.prefs.inspector && !(this.prefs.autoHide && sel.length === 0);
+    const show = this.prefs.inspector && !(this.prefs.autoHide && sel.length === 0 && !this.selectedRef && !this.selectedEnum);
     el.style.display = show ? 'block' : 'none';
     if (!show) return;
     // não recria o inspector enquanto o usuário digita num campo dele
@@ -794,7 +975,94 @@ export class Workbench {
         <div style="padding:12px"><button class="btn primary" style="width:100%;justify-content:center" data-act="GroupSelection">${ICON('LayoutGrid', 14)} Group selection</button></div>`;
       return;
     }
-    const t = sel.length === 1 ? this.schema.tables.find((x) => x.name === sel[0]) : undefined;
+    const t = sel.length === 1 ? this.schema.tables.find((x) => qualifiedTableName(x) === sel[0]) : undefined;
+    if (!t && this.selectedEnum) {
+      const ev = this.scene?.enums?.find((x) => x.name === this.selectedEnum);
+      if (ev) {
+        const valsHtml = ev.values
+          .map(
+            (v, idx) => `<div class="icr" style="gap:4px">
+            <input style="flex:1" data-edit="enumval" data-enum="${esc(ev.name)}" data-orig="${esc(v)}" value="${esc(v)}">
+            <button class="ib" style="width:22px;height:22px" data-act="enum-move" data-enum="${esc(ev.name)}" data-val="${esc(v)}" data-up="1" ${idx === 0 ? 'disabled' : ''} title="Move up">↑</button>
+            <button class="ib" style="width:22px;height:22px" data-act="enum-move" data-enum="${esc(ev.name)}" data-val="${esc(v)}" data-up="0" ${idx + 1 === ev.values.length ? 'disabled' : ''} title="Move down">↓</button>
+            <button class="ib" style="width:22px;height:22px" data-act="enum-delval" data-enum="${esc(ev.name)}" data-val="${esc(v)}" title="Remove value">${ICON('Trash', 12)}</button>
+          </div>`
+          )
+          .join('');
+        const refsHtml = ev.referenced_by.length
+          ? ev.referenced_by
+              .map(
+                (tb) => `<div class="rel" data-act="focus-table" data-table="${esc(tb)}" style="cursor:pointer"><span style="color:var(--accent)">${ICON('Table2', 12)}</span><span class="tx">${esc(tb)}</span></div>`
+              )
+              .join('')
+          : `<div class="pad" style="padding:4px 12px;font-size:12px">Not referenced by any column</div>`;
+        el.innerHTML = `<div class="ihead"><span class="eb">ENUM</span>
+          <input id="insp-name" data-edit="enum" data-enum="${esc(ev.name)}" data-orig="${esc(ev.name)}" value="${esc(ev.name)}">
+          <span class="su">${ev.values.length} values</span></div>
+          <div class="sec"><span>VALUES</span><button class="ib" style="width:22px;height:22px" data-act="enum-addval" data-enum="${esc(ev.name)}" title="Add value">${ICON('Plus', 13)}</button></div>
+          ${valsHtml}
+          <div class="sec"><span>REFERENCED BY</span><span>${ev.referenced_by.length}</span></div>
+          ${refsHtml}
+          <div style="padding:12px"><button class="btn" style="width:100%;justify-content:center;color:var(--err)" data-act="enum-del" data-enum="${esc(ev.name)}">${ICON('Trash', 14)} Delete enum</button></div>`;
+        return;
+      }
+    }
+    if (!t && this.selectedRef) {
+      const sr = this.selectedRef;
+      const r = this.schema.refs.find(
+        (x) =>
+          (qualifiedEndpointTable(x.from) === sr.from_table &&
+            x.from.column === sr.from_col &&
+            qualifiedEndpointTable(x.to) === sr.to_table &&
+            x.to.column === sr.to_col) ||
+          (qualifiedEndpointTable(x.from) === sr.to_table &&
+            x.from.column === sr.to_col &&
+            qualifiedEndpointTable(x.to) === sr.from_table &&
+            x.to.column === sr.from_col)
+      );
+      if (r) {
+        const kinds: Array<[import('./types').RefKind, string]> = [
+          ['ManyToOne', 'N:1 (>)'],
+          ['OneToMany', '1:N (<)'],
+          ['OneToOne', '1:1 (-)'],
+          ['ManyToMany', 'N:N (<>)'],
+        ];
+        const actions: Array<[import('./types').RefAction | '', string]> = [
+          ['', 'None'],
+          ['no_action', 'no action'],
+          ['restrict', 'restrict'],
+          ['cascade', 'cascade'],
+          ['set_null', 'set null'],
+          ['set_default', 'set default'],
+        ];
+        const cardBtns = kinds
+          .map(
+            ([k, label]) =>
+              `<button class="btn ${r.kind === k ? 'primary' : 'ghost'}" style="height:24px;padding:0 8px;font-size:12px" data-act="update-ref-kind" data-kind="${k}">${label}</button>`
+          )
+          .join('');
+        const mkActionBtns = (act: 'update-ref-del' | 'update-ref-upd', cur: string) =>
+          actions
+            .map(
+              ([val, label]) =>
+                `<button class="btn ${cur === val ? 'primary' : 'ghost'}" style="height:24px;padding:0 8px;font-size:12px" data-act="${act}" data-val="${val}">${label}</button>`
+            )
+            .join('');
+        el.innerHTML = `<div class="ihead"><span class="eb">RELATION</span>
+          <span class="ti">${esc(qualifiedEndpointTable(r.from))}.${esc(r.from.column)}</span>
+          <span class="su">→ ${esc(qualifiedEndpointTable(r.to))}.${esc(r.to.column)}</span></div>
+          <div class="sec"><span>CARDINALITY</span></div>
+          <div style="display:flex;flex-wrap:wrap;gap:6px;padding:4px 12px 0 12px">${cardBtns}</div>
+          <div class="sec"><span>ON DELETE</span></div>
+          <div style="display:flex;flex-wrap:wrap;gap:6px;padding:4px 12px 0 12px">${mkActionBtns('update-ref-del', r.on_delete || '')}</div>
+          <div class="sec"><span>ON UPDATE</span></div>
+          <div style="display:flex;flex-wrap:wrap;gap:6px;padding:4px 12px 0 12px">${mkActionBtns('update-ref-upd', r.on_update || '')}</div>
+          <div style="padding:12px;margin-top:8px;border-top:1px solid var(--edge-soft)">
+            <button class="btn ghost" style="width:100%;justify-content:center" data-act="del-selected-ref">${ICON('Trash', 14)} Delete relation</button>
+          </div>`;
+        return;
+      }
+    }
     if (!t) {
       const kb = (l: string, k: string) => `<div class="kb"><span>${l}</span><kbd>${k}</kbd></div>`;
       el.innerHTML = `<div class="pad"><div style="display:flex;justify-content:space-between;align-items:center">
@@ -805,30 +1073,75 @@ export class Workbench {
         ${kb('Select', 'V')}${kb('Pan view', 'H')}${kb('Fit to screen', 'Shift+1')}${kb('Group selection', 'Ctrl+G')}${kb('DBML Editor', 'Ctrl+E')}${kb('All commands', 'Ctrl+K')}</div>`;
       return;
     }
-    const grp = this.schema.groups.find((g) => g.tables.includes(t.name));
-    const refs = this.schema.refs.filter((r) => r.from.table === t.name || r.to.table === t.name);
+    const tq = qualifiedTableName(t);
+    const grp = this.schema.groups.find((g) => g.tables.includes(tq));
+    const refs = this.schema.refs.filter((r) => qualifiedEndpointTable(r.from) === tq || qualifiedEndpointTable(r.to) === tq);
     const cur = (t.color || '').toLowerCase();
-    const sw = TABLE_COLORS.map(([l, h]) => `<button class="${cur === h ? 'on' : ''}" title="${l}" style="background:${h}" data-act="set-color" data-table="${esc(t.name)}" data-color="${h}"></button>`).join('') +
-      `<button class="none" title="No color" data-act="set-color" data-table="${esc(t.name)}" data-color="">${ICON('X', 12)}</button>`;
+    const sw = TABLE_COLORS.map(([l, h]) => `<button class="${cur === h ? 'on' : ''}" title="${l}" style="background:${h}" data-act="set-color" data-table="${esc(tq)}" data-color="${h}"></button>`).join('') +
+      `<button class="none" title="No color" data-act="set-color" data-table="${esc(tq)}" data-color="">${ICON('X', 12)}</button>`;
     const tw = this.prefs.colTypeW;
-    const fkSet = new Set(this.scene?.tables.find((x) => x.name === t.name)?.fk_columns || []);
+    const fkSet = new Set(this.scene?.tables.find((x) => x.name === tq)?.fk_columns || []);
     const cols = t.columns.map((c) => {
       const isFk = !!c.fk || fkSet.has(c.name);
+      const defVal = c.default_value || '';
+      const chkVal = c.check || '';
       return `<div class="crow">
-        <div class="n"><input class="fld" data-edit="colname" data-table="${esc(t.name)}" data-col="${esc(c.name)}" data-orig="${esc(c.name)}" value="${esc(c.name)}"></div>
+        <div class="n"><input class="fld" data-edit="colname" data-table="${esc(tq)}" data-col="${esc(c.name)}" data-orig="${esc(c.name)}" value="${esc(c.name)}"></div>
         <div class="split" data-split="1"></div>
-        <div class="t" style="width:${tw}px"><input class="fld muted" data-edit="coltype" data-table="${esc(t.name)}" data-col="${esc(c.name)}" data-orig="${esc(c.ty)}" value="${esc(c.ty)}"></div>
+        <div class="t" style="width:${tw}px"><input class="fld muted" data-edit="coltype" data-table="${esc(tq)}" data-col="${esc(c.name)}" data-orig="${esc(c.ty)}" value="${esc(c.ty)}"></div>
         ${[['PK', 'pk', c.pk], ['FK', 'fk', isFk], ['NN', 'not null', c.not_null], ['UQ', 'unique', c.unique]]
-          .map(([l, f, on]) => `<button class="chip ${on ? 'on' : ''}" data-act="toggle-flag" data-table="${esc(t.name)}" data-col="${esc(c.name)}" data-flag="${f}" data-on="${on ? 1 : 0}">${l}</button>`).join('')}
-        <button class="del" data-act="del-col" data-table="${esc(t.name)}" data-col="${esc(c.name)}" title="Delete column">${ICON('Trash', 13)}</button></div>`;
+          .map(([l, f, on]) => `<button class="chip ${on ? 'on' : ''}" data-act="toggle-flag" data-table="${esc(tq)}" data-col="${esc(c.name)}" data-flag="${f}" data-on="${on ? 1 : 0}">${l}</button>`).join('')}
+        <button class="del" data-act="del-col" data-table="${esc(tq)}" data-col="${esc(c.name)}" title="Delete column">${ICON('Trash', 13)}</button></div>
+        <div class="crow" style="height:22px;padding-top:0;gap:4px;border-bottom:1px solid var(--edge-soft)">
+          <span style="font-size:10px;color:var(--faint)">DEF</span>
+          <input class="fld muted" style="flex:1;font-size:11px" placeholder="default…" data-edit="coldefault" data-table="${esc(tq)}" data-col="${esc(c.name)}" data-orig="${esc(defVal)}" value="${esc(defVal)}">
+          <span style="font-size:10px;color:var(--faint)">CHK</span>
+          <input class="fld muted" style="flex:1;font-size:11px" placeholder="check expr…" data-edit="colcheck" data-table="${esc(tq)}" data-col="${esc(c.name)}" data-orig="${esc(chkVal)}" value="${esc(chkVal)}">
+        </div>`;
+    }).join('');
+    const idxTypes: Array<[import('./types').IndexType | '', string]> = [
+      ['', 'default'],
+      ['b_tree', 'btree'],
+      ['hash', 'hash'],
+      ['gin', 'gin'],
+      ['gist', 'gist'],
+    ];
+    const indexesList = (t.indexes || []).map((ix, idx) => {
+      const activeCols = new Set(
+        (ix.columns || []).filter((ic) => ic.kind === 'column').map((ic) => ic.value)
+      );
+      const colChips = t.columns
+        .map(
+          (c) =>
+            `<button class="chip ${activeCols.has(c.name) ? 'on' : ''}" style="padding:0 6px;width:auto" data-act="idx-toggle-col" data-table="${esc(tq)}" data-idx="${idx}" data-col="${esc(c.name)}">${esc(c.name)}</button>`
+        )
+        .join('');
+      const typeBtns = idxTypes
+        .map(
+          ([val, label]) =>
+            `<button class="chip ${(ix.index_type || '') === val ? 'on' : ''}" style="padding:0 5px;width:auto" data-act="idx-set-type" data-table="${esc(tq)}" data-idx="${idx}" data-type="${val}">${label}</button>`
+        )
+        .join('');
+      return `<div style="padding:6px 12px;border-bottom:1px solid var(--edge-soft);display:flex;flex-direction:column;gap:4px">
+        <div style="display:flex;align-items:center;gap:4px">
+          <input class="fld" style="flex:1;font-size:11.5px" placeholder="index name (optional)…" data-edit="idxname" data-table="${esc(tq)}" data-idx="${idx}" data-orig="${esc(ix.name || '')}" value="${esc(ix.name || '')}">
+          <button class="chip ${ix.unique ? 'on' : ''}" data-act="idx-toggle-flag" data-table="${esc(tq)}" data-idx="${idx}" data-flag="unique" title="Unique index">UQ</button>
+          <button class="chip ${ix.pk ? 'on' : ''}" data-act="idx-toggle-flag" data-table="${esc(tq)}" data-idx="${idx}" data-flag="pk" title="Composite primary key">PK</button>
+          <button class="ib" style="width:22px;height:22px" data-act="del-index" data-table="${esc(tq)}" data-idx="${idx}" title="Delete index">${ICON('Trash', 12)}</button>
+        </div>
+        <div style="display:flex;flex-wrap:wrap;gap:4px;align-items:center"><span style="font-size:10px;color:var(--faint)">COLS</span>${colChips}</div>
+        <div style="display:flex;flex-wrap:wrap;gap:4px;align-items:center"><span style="font-size:10px;color:var(--faint)">TYPE</span>${typeBtns}</div>
+      </div>`;
     }).join('');
     const rels = refs.map((r) => {
+      const fq = qualifiedEndpointTable(r.from);
+      const tqEnd = qualifiedEndpointTable(r.to);
       const card = { ManyToOne: 'N:1', OneToMany: '1:N', OneToOne: '1:1', ManyToMany: 'N:N' }[r.kind];
-      return `<div class="rel"><span style="color:var(--faint)">${ICON('Link2', 12)}</span><span class="tx">${esc(r.from.table)}.${esc(r.from.column)} → ${esc(r.to.table)}.${esc(r.to.column)}</span><span class="tag">${card}</span><button class="ib" style="width:22px;height:22px" data-act="del-ref" data-from-table="${esc(r.from.table)}" data-from-col="${esc(r.from.column)}" data-to-table="${esc(r.to.table)}" data-to-col="${esc(r.to.column)}" title="Delete relation and FK column">${ICON('Trash', 12)}</button></div>`;
+      return `<div class="rel"><span style="color:var(--faint)">${ICON('Link2', 12)}</span><span class="tx">${esc(fq)}.${esc(r.from.column)} → ${esc(tqEnd)}.${esc(r.to.column)}</span><span class="tag">${card}</span><button class="ib" style="width:22px;height:22px" data-act="del-ref" data-from-table="${esc(fq)}" data-from-col="${esc(r.from.column)}" data-to-table="${esc(tqEnd)}" data-to-col="${esc(r.to.column)}" title="Delete relation and FK column">${ICON('Trash', 12)}</button></div>`;
     }).join('');
     el.innerHTML = `
       <div class="ihead"><span class="eb">TABLE</span>
-        <input class="fld big" id="insp-name" data-edit="table" data-table="${esc(t.name)}" data-orig="${esc(t.name)}" value="${esc(t.name)}">
+        <input class="fld big" id="insp-name" data-edit="table" data-table="${esc(tq)}" data-orig="${esc(tq)}" value="${esc(tq)}">
         <span class="su">${t.columns.length} columns · F2 to rename</span></div>
       <div class="sec"><span>COLOR</span></div><div class="sw">${sw}</div>
       <div class="sec"><span>GROUP</span></div>
@@ -838,7 +1151,11 @@ export class Workbench {
       <div class="crow hd"><div class="n">NAME</div><div class="split" data-split="1" title="Drag to resize (double-click to reset)"></div>
         <div class="t" style="width:${tw}px">TYPE</div><div style="width:62px">FLAGS</div><div style="width:20px"></div></div>
       ${cols}
-      <div style="padding:8px 12px"><button class="btn ghost" data-act="add-col" data-table="${esc(t.name)}">${ICON('Plus', 14)} Add column</button></div>
+      <div style="padding:8px 12px"><button class="btn ghost" data-act="add-col" data-table="${esc(tq)}">${ICON('Plus', 14)} Add column</button></div>
+      <div class="sec"><span>PRESETS</span></div>
+      <div style="padding:6px 12px;display:flex;flex-wrap:wrap;gap:4px">${COLUMN_PRESET_ACTIONS.map((p) => `<button class="chip" style="padding:0 8px;width:auto" data-act="${p.action}" title="Add ${p.label} columns">${p.label}</button>`).join('')}</div>
+      <div class="sec"><span>INDEXES</span><button class="ib" style="width:22px;height:22px" data-act="add-index" data-table="${esc(tq)}" title="Add index">${ICON('Plus', 13)}</button></div>
+      ${indexesList || `<div class="rel" style="color:var(--faint)">No indexes · click + to add single or composite index</div>`}
       <div class="sec"><span>RELATIONS</span></div>${rels}
       <div style="padding:12px;margin-top:8px;border-top:1px solid var(--edge-soft)"><button class="btn ghost" data-act="DeleteSelection">${ICON('Trash', 14)} Delete table</button></div>`;
     if (this.focusCol) {
@@ -884,6 +1201,7 @@ export class Workbench {
     try {
       const patch: TextPatch = this.wasm.swap_dbml_lines(this.source, line, up);
       if (patch.updated_source && patch.updated_source !== this.source) {
+        this.pushHistory();
         this.applyPatch(patch);
         ta.value = this.source;
         const nl = up ? line - 1 : line + 1;
@@ -898,9 +1216,31 @@ export class Workbench {
 
   // ───────────────────────── ações ─────────────────────────
 
+  /** Aplica um preset de colunas à tabela selecionada (um passo de undo; sem tabela ou sem novidade avisa). */
+  private applyColumnPreset(id: ActionId): void {
+    const entry = COLUMN_PRESET_ACTIONS.find((p) => p.action === id);
+    const table = this.selection.length === 1 ? this.selection[0] : null;
+    if (!entry || !table) {
+      this.toast('Select a table to add a column preset');
+      return;
+    }
+    const patch = this.dispatch({ action: 'add_column_preset', payload: { table, preset: entry.preset } });
+    if (patch && !patch.new_text && patch.byte_start === patch.byte_end) {
+      this.toast(`${entry.label}: columns already exist`);
+    }
+  }
+
   private runAction(id: ActionId): void {
     switch (id) {
       case 'NewFile': this.transport.createNewFile?.(); return;
+      case 'SaveFile':
+        this.savedSource = this.source;
+        this.queueSaveLayout();
+        this.toast('Saved ' + this.title);
+        this.renderChrome();
+        return;
+      case 'Undo': this.undo(); return;
+      case 'Redo': this.redo(); return;
       case 'ShowFiles': this.showPane('files'); return;
       case 'ShowSchema': this.showPane('schema'); return;
       case 'ShowProblems': this.showPane('problems'); return;
@@ -922,7 +1262,7 @@ export class Workbench {
       }
       case 'ToolSelect': this.tool = 'select'; break;
       case 'ToolHand': this.tool = 'hand'; break;
-      case 'Deselect': this.selection = []; this.selectedRef = null; break;
+      case 'Deselect': this.selection = []; this.selectedRef = null; this.selectedEnum = null; break;
       case 'ToggleCardTransparency': this.prefs.translucent = !this.prefs.translucent; break;
       case 'GroupSelection':
         if (this.selection.length) this.dispatch({ action: 'group_tables', payload: { tables: [...this.selection] } });
@@ -931,8 +1271,12 @@ export class Workbench {
         if (this.selection.length) this.dispatch({ action: 'ungroup_tables', payload: { tables: [...this.selection] } });
         return;
       case 'NewTable': this.dispatch({ action: 'add_table', payload: {} }); return;
+      case 'NewEnum': this.dispatch({ action: 'add_enum', payload: {} }); return;
       case 'DeleteSelection':
-        if (this.selectedRef) {
+        if (this.selectedEnum) {
+          this.dispatch({ action: 'delete_enum', payload: { name: this.selectedEnum } });
+          this.selectedEnum = null;
+        } else if (this.selectedRef) {
           this.dispatch({ action: 'delete_ref', payload: { ...this.selectedRef } });
           this.selectedRef = null;
         } else if (this.selection.length) {
@@ -941,7 +1285,7 @@ export class Workbench {
         }
         break;
       case 'RenameSelected': {
-        if (this.selection.length !== 1) return;
+        if (this.selection.length !== 1 && !this.selectedEnum) return;
         this.prefs.inspector = true;
         this.renderChrome();
         const i = this.els['inspector'].querySelector('#insp-name') as HTMLInputElement | null;
@@ -950,7 +1294,10 @@ export class Workbench {
       }
       case 'FormatDocument': {
         const f = this.wasm.format_dbml(this.source);
-        if (f !== this.source) this.applyPatch(this.fullReplace(f));
+        if (f !== this.source) {
+          this.pushHistory();
+          this.applyPatch(this.fullReplace(f));
+        }
         break;
       }
       case 'MoveLineUp': this.moveLine(true); return;
@@ -965,6 +1312,16 @@ export class Workbench {
       case 'ExportPng': this.doExport('png'); return;
       case 'ExportJpeg': this.doExport('jpeg'); return;
       case 'ExportMermaid': this.doExport('mermaid'); return;
+      case 'ExportSqlPostgres': this.doExportSql('postgres'); return;
+      case 'ExportSqlMysql': this.doExportSql('mysql'); return;
+      case 'ExportSqlSqlite': this.doExportSql('sqlite'); return;
+      case 'ExportSqlSqlServer': this.doExportSql('sqlserver'); return;
+      case 'ExportSqlOracle': this.doExportSql('oracle'); return;
+      case 'ImportSqlDdl': this.openImportSqlModal(); return;
+      case 'ConnectDatabase': this.openConnectDbModal(); return;
+      case 'AddPresetUuidPk': case 'AddPresetBigIntPk': case 'AddPresetTimestamps': case 'AddPresetSoftDelete':
+        this.applyColumnPreset(id);
+        return;
     }
     this.savePrefs();
     this.scheduleRender();
@@ -1009,6 +1366,18 @@ export class Workbench {
     }
   }
 
+  private async doExportSql(
+    dialect: 'postgres' | 'mysql' | 'sqlite' | 'sqlserver' | 'oracle'
+  ): Promise<void> {
+    if (!this.transport.exportFile || !this.wasm?.export_sql_ddl) return;
+    try {
+      const sql = this.wasm.export_sql_ddl(this.source, dialect) as string;
+      await this.transport.exportFile(`schema.${dialect}.sql`, sql, false);
+    } catch (e) {
+      this.toast('SQL export failed: ' + e);
+    }
+  }
+
   private toast(msg: string): void {
     const t = this.els['toast'];
     t.textContent = msg;
@@ -1049,12 +1418,13 @@ export class Workbench {
       <button class="mi" data-act="ToggleCardTransparency">${ck(p.translucent)}Translucent cards</button>`);
   }
 
-  private exportMenu(anchor: HTMLElement): void {
-    this.openMenu(anchor, `
-      <button class="mi" data-act="ExportPng"><span class="ck"></span>PNG</button>
-      <button class="mi" data-act="ExportJpeg"><span class="ck"></span>JPEG</button>
-      <button class="mi" data-act="ExportSvg"><span class="ck"></span>Vector SVG</button>
-      <button class="mi" data-act="ExportMermaid"><span class="ck"></span>Mermaid erDiagram</button>`);
+  /** Dropdown gerado do catálogo (um grupo por botão): barra e command palette não divergem. */
+  private exportMenu(anchor: HTMLElement, group: string): void {
+    const items = catalog()
+      .filter((e) => e.group === group)
+      .map((e) => `<button class="mi" data-act="${e.id}"><span class="ck"></span>${e.label}</button>`)
+      .join('');
+    this.openMenu(anchor, `<div class="lb">${group}</div>${items}`);
   }
 
   private modal(inner: string): HTMLElement {
@@ -1074,6 +1444,370 @@ export class Workbench {
     this.wb.querySelectorAll('[data-modal]').forEach((n) => n.remove());
     this.paletteOpen = false;
     this.shortcutsOpen = false;
+  }
+
+  private openConnectDbModal(): void {
+    if (!this.transport.introspect) {
+      this.toast('Connect to Database needs the dbml run server or the dbml CLI on your PATH.');
+      return;
+    }
+    const introspect = this.transport.introspect.bind(this.transport);
+    const model = new ConnectDbModel(this.connectEngine);
+    const field = (id: string, label: string, ph: string, type = 'text') =>
+      `<div data-row="${id}" style="display:flex;align-items:center;gap:8px">
+        <label for="db-${id}" style="width:84px;flex:none;font-size:12px;color:var(--muted)">${label}</label>
+        <input id="db-${id}" type="${type}" placeholder="${esc(ph)}" autocomplete="off" spellcheck="false" class="fld" style="flex:1">
+      </div>`;
+
+    const bg = this.modal(`
+      <div role="dialog" aria-modal="true" aria-labelledby="db-title" style="padding:16px;display:flex;flex-direction:column;gap:12px;width:min(560px,92vw);max-height:86vh;overflow:auto">
+        <div id="db-title" style="font-weight:600;font-size:14px">Connect to Database</div>
+        <div id="db-engines" style="display:flex;flex-wrap:wrap;gap:6px">
+          ${DB_ENGINES.map((e) => `<button class="btn" type="button" data-engine="${e.value}">${e.label}</button>`).join('')}
+          <button class="btn" type="button" disabled title="Oracle support is coming">Oracle (soon)</button>
+        </div>
+        <div id="db-form" style="display:flex;flex-direction:column;gap:8px">
+          ${field('host', 'Host', 'localhost')}
+          ${field('port', 'Port', 'default port')}
+          ${field('database', 'Database', 'database name')}
+          ${field('user', 'User', 'user')}
+          ${field('password', 'Password', 'password', 'password')}
+          ${field('schemas', 'Schemas', 'all schemas (or: public, sales)')}
+          ${field('path', 'File', '/path/to/database.sqlite')}
+          <label data-row="trust" style="display:flex;align-items:center;gap:8px;font-size:12px;color:var(--muted)">
+            <input id="db-trust" type="checkbox"> Trust server certificate (self-signed, e.g. Docker)
+          </label>
+        </div>
+        <div id="db-status" aria-live="polite" style="font-size:12px;color:var(--muted)"></div>
+        <div id="db-warns" style="max-height:80px;overflow:auto;font-size:12px;color:var(--warn, #e5a93c);display:none"></div>
+        <div style="display:flex;justify-content:flex-end;gap:8px">
+          <button class="btn" id="db-cancel" type="button">Cancel</button>
+          <button class="btn" id="db-test" type="button">Test connection</button>
+          <button class="btn" id="db-connect" type="button">Connect</button>
+          <button class="btn" id="db-replace" type="button" disabled>Replace</button>
+          <button class="btn primary" id="db-insert" type="button" disabled>Insert</button>
+        </div>
+      </div>`);
+
+    const $ = <T extends HTMLElement>(sel: string) => bg.querySelector(sel) as T;
+    const val = (id: string) => $<HTMLInputElement>(`#db-${id}`).value;
+    const statusEl = $<HTMLElement>('#db-status');
+    const warnsEl = $<HTMLElement>('#db-warns');
+    const connectBtn = $<HTMLButtonElement>('#db-connect');
+    const testBtn = $<HTMLButtonElement>('#db-test');
+    const replaceBtn = $<HTMLButtonElement>('#db-replace');
+    const insertBtn = $<HTMLButtonElement>('#db-insert');
+
+    const syncView = () => {
+      const isFile = model.engine === 'sqlite';
+      const connecting = model.status === 'connecting';
+      for (const id of ['host', 'port', 'database', 'user', 'password', 'schemas']) {
+        bg.querySelector<HTMLElement>(`[data-row="${id}"]`)!.style.display = isFile ? 'none' : 'flex';
+      }
+      bg.querySelector<HTMLElement>('[data-row="path"]')!.style.display = isFile ? 'flex' : 'none';
+      bg.querySelector<HTMLElement>('[data-row="trust"]')!.style.display =
+        model.engine === 'sqlserver' ? 'flex' : 'none';
+      bg.querySelectorAll<HTMLButtonElement>('[data-engine]').forEach((b) => {
+        b.classList.toggle('primary', b.dataset.engine === model.engine);
+        b.disabled = connecting;
+      });
+      const port = DB_ENGINES.find((e) => e.value === model.engine)?.port;
+      $<HTMLInputElement>('#db-port').placeholder = port ? String(port) : 'default port';
+      connectBtn.disabled = connecting;
+      testBtn.disabled = connecting || !this.transport.testConnection;
+      connectBtn.textContent = connecting ? 'Connecting…' : 'Connect';
+      insertBtn.disabled = !model.canApply();
+      replaceBtn.disabled = !model.canApply();
+      replaceBtn.textContent = model.confirmReplace ? 'Confirm Replace?' : 'Replace';
+      statusEl.style.color = model.status === 'failed' ? 'var(--danger)' : 'var(--muted)';
+      statusEl.textContent =
+        model.status === 'connecting'
+          ? 'Connecting and reading the schema…'
+          : model.status === 'failed'
+            ? model.error
+            : model.status === 'ready'
+              ? `Found ${model.tables} table${model.tables === 1 ? '' : 's'}. Replace the document or insert them.`
+              : model.status === 'tested'
+                ? model.error
+                : 'Read-only: only the catalog is read, never your data.';
+      warnsEl.style.display = model.warnings.length ? 'block' : 'none';
+      warnsEl.innerHTML = model.warnings.map((w) => `<div>${esc(w)}</div>`).join('');
+    };
+
+    bg.querySelectorAll<HTMLButtonElement>('[data-engine]').forEach((b) =>
+      b.addEventListener('click', () => {
+        this.connectEngine = b.dataset.engine as DbEngine;
+        model.setEngine(this.connectEngine);
+        syncView();
+      })
+    );
+    $<HTMLInputElement>('#db-trust').addEventListener('change', (e) => {
+      model.trustCert = (e.target as HTMLInputElement).checked;
+    });
+
+    const readRequest = () =>
+      buildRequest(
+        model.engine,
+        {
+          host: val('host'),
+          port: val('port'),
+          database: val('database'),
+          user: val('user'),
+          password: val('password'),
+          path: val('path'),
+          schemas: val('schemas'),
+        },
+        model.trustCert
+      );
+
+    const test = async () => {
+      if (model.status === 'connecting' || !this.transport.testConnection) return;
+      const req = readRequest();
+      model.start();
+      syncView();
+      try {
+        const r = await this.transport.testConnection(req);
+        model.finishTest(r.server, r.schemas);
+      } catch (e) {
+        model.fail(e instanceof Error ? e.message : String(e));
+      }
+      if (bg.isConnected) syncView();
+    };
+
+    const connect = async () => {
+      if (model.status === 'connecting') return;
+      const req = readRequest();
+      model.start();
+      syncView();
+      try {
+        model.finish(await introspect(req));
+      } catch (e) {
+        model.fail(e instanceof Error ? e.message : String(e));
+      }
+      // o modal pode ter sido fechado durante a conexão
+      if (bg.isConnected) syncView();
+    };
+
+    const applyMode = (mode: 'insert' | 'replace') => {
+      if (!model.canApply()) return;
+      if (mode === 'replace' && this.source.trim().length > 0 && !model.confirmReplace) {
+        model.confirmReplace = true;
+        syncView();
+        return;
+      }
+      const next = model.buildMergedSource(this.source, mode);
+      this.closeModal();
+      this.applyPatch(this.fullReplace(next));
+      if (mode === 'replace') {
+        this.relayout(true, false);
+      } else {
+        this.computeScene();
+        this.fit();
+        this.queueSaveLayout();
+        this.scheduleRender();
+      }
+    };
+
+    testBtn.addEventListener('click', () => void test());
+    connectBtn.addEventListener('click', () => void connect());
+    replaceBtn.addEventListener('click', () => applyMode('replace'));
+    insertBtn.addEventListener('click', () => applyMode('insert'));
+    $<HTMLButtonElement>('#db-cancel').addEventListener('click', () => this.closeModal());
+
+    const modalEl = bg.querySelector('.modal') as HTMLElement;
+    modalEl.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        this.closeModal();
+      } else if (e.key === 'Enter' && (e.target as HTMLElement).tagName === 'INPUT') {
+        e.preventDefault();
+        void connect();
+      }
+    });
+    syncView();
+    ($<HTMLInputElement>(model.engine === 'sqlite' ? '#db-path' : '#db-host')).focus();
+  }
+
+  private openImportSqlModal(): void {
+    const model = new ImportSqlModel(this.importDialect);
+    const runImport = (sql: string, dialect: ImportDialect): ImportSqlResult => {
+      if (!this.wasm?.import_sql_ddl) {
+        return { dbml: '', warnings: [{ line: 1, column: 1, message: 'Wasm SQL importer is not loaded yet.' }] };
+      }
+      return this.wasm.import_sql_ddl(sql, dialect) as ImportSqlResult;
+    };
+
+    const bg = this.modal(`
+      <div role="dialog" aria-modal="true" aria-labelledby="imp-title" style="padding:16px;display:flex;flex-direction:column;gap:12px;width:min(760px,92vw);max-height:86vh">
+        <div style="display:flex;align-items:center;justify-content:space-between;gap:8px">
+          <div id="imp-title" style="font-weight:600;font-size:14px">Import SQL DDL</div>
+          <div style="display:flex;align-items:center;gap:8px">
+            <label for="imp-dialect" style="font-size:12px;color:var(--muted)">Dialect</label>
+            <select id="imp-dialect" class="btn" style="padding:4px 8px">
+              ${IMPORT_DIALECTS.map((d) => `<option value="${d.value}"${model.dialect === d.value ? ' selected' : ''}>${d.label}</option>`).join('')}
+            </select>
+            <input id="imp-file" type="file" accept=".sql,.ddl,text/plain" style="display:none">
+            <button class="btn" id="imp-pick" type="button">Choose .sql file…</button>
+          </div>
+        </div>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;min-height:260px;flex:1">
+          <div style="display:flex;flex-direction:column;gap:4px">
+            <label for="imp-sql" style="font-size:12px;color:var(--muted)">SQL DDL (paste or drop a .sql file)</label>
+            <textarea id="imp-sql" placeholder="CREATE TABLE users (id serial PRIMARY KEY, ...);" style="flex:1;min-height:220px;resize:none;font-family:var(--mono);font-size:12px;padding:8px;border-radius:6px;border:1px solid var(--edge);background:var(--bg);color:var(--text)"></textarea>
+          </div>
+          <div style="display:flex;flex-direction:column;gap:4px">
+            <label for="imp-preview" style="font-size:12px;color:var(--muted)">DBML Preview</label>
+            <textarea id="imp-preview" readonly style="flex:1;min-height:220px;resize:none;font-family:var(--mono);font-size:12px;padding:8px;border-radius:6px;border:1px solid var(--edge);background:var(--panel);color:var(--text)"></textarea>
+          </div>
+        </div>
+        <div id="imp-warns" aria-live="polite" style="max-height:90px;overflow:auto;font-size:12px;color:var(--warn, #e5a93c);display:none"></div>
+        <div style="display:flex;justify-content:flex-end;gap:8px">
+          <button class="btn" id="imp-cancel" type="button">Cancel</button>
+          <button class="btn" id="imp-replace" type="button" disabled>Replace</button>
+          <button class="btn primary" id="imp-insert" type="button" disabled>Insert</button>
+        </div>
+      </div>`);
+
+    const sel = bg.querySelector('#imp-dialect') as HTMLSelectElement;
+    const fileInput = bg.querySelector('#imp-file') as HTMLInputElement;
+    const pickBtn = bg.querySelector('#imp-pick') as HTMLButtonElement;
+    const sqlEl = bg.querySelector('#imp-sql') as HTMLTextAreaElement;
+    const previewEl = bg.querySelector('#imp-preview') as HTMLTextAreaElement;
+    const warnsEl = bg.querySelector('#imp-warns') as HTMLElement;
+    const cancelBtn = bg.querySelector('#imp-cancel') as HTMLButtonElement;
+    const replaceBtn = bg.querySelector('#imp-replace') as HTMLButtonElement;
+    const insertBtn = bg.querySelector('#imp-insert') as HTMLButtonElement;
+
+    const syncView = () => {
+      previewEl.value = model.dbml;
+      const can = model.canApply();
+      insertBtn.disabled = !can;
+      replaceBtn.disabled = !can;
+      replaceBtn.textContent = model.confirmReplace ? 'Confirm Replace?' : 'Replace';
+      if (model.tooLarge) {
+        warnsEl.style.display = 'block';
+        warnsEl.textContent = 'Input exceeds 5 MB limit; please split the dump into smaller files.';
+      } else if (model.warnings.length > 0) {
+        warnsEl.style.display = 'block';
+        warnsEl.innerHTML = model.warnings
+          .map((w) => `<div>${w.line}:${w.column}: ${esc(w.message)}</div>`)
+          .join('');
+      } else {
+        warnsEl.style.display = 'none';
+        warnsEl.textContent = '';
+      }
+    };
+
+    const applyMode = (mode: 'insert' | 'replace') => {
+      if (!model.canApply()) return;
+      if (mode === 'replace' && this.source.trim().length > 0 && !model.confirmReplace) {
+        model.confirmReplace = true;
+        syncView();
+        return;
+      }
+      const next = model.buildMergedSource(this.source, mode);
+      this.closeModal();
+      this.applyPatch(this.fullReplace(next));
+      if (mode === 'replace') {
+        this.relayout(true, false);
+      } else {
+        // append: quem já estava no canvas não se move; o wasm coloca os cartões novos
+        // em área livre (layout::place_without_overlap)
+        this.computeScene();
+        this.fit();
+        this.queueSaveLayout();
+        this.scheduleRender();
+      }
+    };
+
+    let timer: number | undefined;
+    sqlEl.addEventListener('input', () => {
+      window.clearTimeout(timer);
+      timer = window.setTimeout(() => {
+        model.setSql(sqlEl.value, runImport);
+        syncView();
+      }, 200);
+    });
+    sel.addEventListener('change', () => {
+      this.importDialect = sel.value as ImportDialect;
+      model.setDialect(this.importDialect, runImport);
+      syncView();
+    });
+    pickBtn.addEventListener('click', () => fileInput.click());
+    fileInput.addEventListener('change', async () => {
+      const f = fileInput.files?.[0];
+      if (!f) return;
+      sqlEl.value = await f.text();
+      model.setSql(sqlEl.value, runImport);
+      syncView();
+    });
+    sqlEl.addEventListener('dragover', (e) => {
+      e.preventDefault();
+    });
+    sqlEl.addEventListener('drop', async (e) => {
+      const f = e.dataTransfer?.files?.[0];
+      if (!f) return;
+      e.preventDefault();
+      sqlEl.value = await f.text();
+      model.setSql(sqlEl.value, runImport);
+      syncView();
+    });
+    cancelBtn.addEventListener('click', () => this.closeModal());
+    insertBtn.addEventListener('click', () => applyMode('insert'));
+    replaceBtn.addEventListener('click', () => applyMode('replace'));
+
+    const modalEl = bg.querySelector('.modal') as HTMLElement;
+    modalEl.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        this.closeModal();
+        return;
+      }
+      if (e.key === 'Tab') {
+        const focusables = Array.from(
+          modalEl.querySelectorAll<HTMLElement>('select, textarea, button:not([disabled])')
+        );
+        if (focusables.length === 0) return;
+        const first = focusables[0];
+        const last = focusables[focusables.length - 1];
+        if (e.shiftKey && document.activeElement === first) {
+          e.preventDefault();
+          last.focus();
+        } else if (!e.shiftKey && document.activeElement === last) {
+          e.preventDefault();
+          first.focus();
+        }
+      }
+    });
+    sqlEl.focus();
+  }
+
+  private confirmSwitchFile(path: string): void {
+    const bg = this.modal(`
+      <div style="padding:16px;display:flex;flex-direction:column;gap:14px">
+        <div style="font-weight:600;font-size:14px">Unsaved Changes</div>
+        <div style="font-size:13px;color:var(--muted)">Do you want to save the changes made to "${esc(this.title)}"?</div>
+        <div style="display:flex;justify-content:flex-end;gap:8px">
+          <button class="btn" id="dlg-cancel">Cancel</button>
+          <button class="btn" id="dlg-discard">Discard changes</button>
+          <button class="btn primary" id="dlg-save">Save</button>
+        </div>
+      </div>`);
+    bg.querySelector('#dlg-cancel')?.addEventListener('click', () => this.closeModal());
+    bg.querySelector('#dlg-discard')?.addEventListener('click', () => {
+      const revert = this.savedSource;
+      this.closeModal();
+      if (revert !== this.source) {
+        this.applyPatch(this.fullReplace(revert));
+      }
+      this.transport.openFile?.(path);
+    });
+    bg.querySelector('#dlg-save')?.addEventListener('click', () => {
+      this.savedSource = this.source;
+      this.queueSaveLayout();
+      this.closeModal();
+      this.transport.openFile?.(path);
+    });
   }
 
   private openPalette(): void {
@@ -1143,6 +1877,12 @@ export class Workbench {
     surf.addEventListener('wheel', (e) => this.onWheel(e), { passive: false });
     window.addEventListener('resize', () => this.scheduleRender());
     window.addEventListener('keydown', (e) => this.onKey(e));
+    window.addEventListener('beforeunload', (e) => {
+      if (this.isDirty()) {
+        e.preventDefault();
+        e.returnValue = '';
+      }
+    });
     window.addEventListener('keyup', (e) => {
       if (e.code === 'Space') { this.space = false; this.scheduleRender(); }
     });
@@ -1150,6 +1890,7 @@ export class Workbench {
     const ta = this.els['code'] as HTMLTextAreaElement;
     ta.addEventListener('input', () => {
       if (ta.value === this.source) return;
+      this.pushHistory();
       this.applyPatch(this.fullReplace(ta.value));
       this.scheduleRender();
     });
@@ -1180,11 +1921,46 @@ export class Workbench {
     const d = el.dataset;
     switch (act) {
       case 'menu:appearance': this.appearanceMenu(el); return;
-      case 'menu:export': this.exportMenu(el); return;
+      case 'menu:export-code': this.exportMenu(el, GROUP_EXPORT_CODE); return;
+      case 'menu:export-image': this.exportMenu(el, GROUP_EXPORT_IMAGE); return;
       case 'set-mode': this.prefs.mode = d.mode as Mode; break;
       case 'set-ui': this.prefs.uiScale = parseFloat(d.ui || '1'); break;
-      case 'open-file': this.transport.openFile?.(d.path!); return;
-      case 'focus-table': this.focusTable(d.table!); return;
+      case 'open-file':
+        if (this.isDirty()) {
+          this.confirmSwitchFile(d.path!);
+        } else {
+          this.transport.openFile?.(d.path!);
+        }
+        return;
+      case 'focus-table': this.selectedEnum = null; this.focusTable(d.table!); return;
+      case 'focus-enum': {
+        this.selection = [];
+        this.selectedRef = null;
+        this.selectedEnum = d.enum!;
+        const p = this.positions[`enum:${d.enum!}`];
+        if (p) {
+          const r = this.els['surface'].getBoundingClientRect();
+          this.pan = { x: r.width / 2 - (p.x + CARD_W / 2) * this.zoom, y: r.height / 2 - (p.y + 60) * this.zoom };
+        }
+        this.scheduleRender();
+        return;
+      }
+      case 'enum-addval':
+        this.dispatch({ action: 'add_enum_value', payload: { enum_name: d.enum! } });
+        return;
+      case 'enum-delval':
+        this.dispatch({ action: 'delete_enum_value', payload: { enum_name: d.enum!, value: d.val! } });
+        return;
+      case 'enum-move':
+        this.dispatch({
+          action: 'reorder_enum_value',
+          payload: { enum_name: d.enum!, value: d.val!, up: d.up === '1' },
+        });
+        return;
+      case 'enum-del':
+        this.dispatch({ action: 'delete_enum', payload: { name: d.enum! } });
+        this.selectedEnum = null;
+        return;
       case 'goto-diag': {
         const g = this.diags[parseInt(d.i!, 10)];
         if (!g) return;
@@ -1203,11 +1979,11 @@ export class Workbench {
         return;
       case 'toggle-flag':
         if (d.flag === 'fk' && d.on === '1') {
-          const ref = this.schema.refs.find((r) => r.from.table === d.table! && r.from.column === d.col!);
+          const ref = this.schema.refs.find((r) => qualifiedEndpointTable(r.from) === d.table! && r.from.column === d.col!);
           if (ref) {
             this.dispatch({
               action: 'delete_ref',
-              payload: { from_table: ref.from.table, from_col: ref.from.column, to_table: ref.to.table, to_col: ref.to.column },
+              payload: { from_table: qualifiedEndpointTable(ref.from), from_col: ref.from.column, to_table: qualifiedEndpointTable(ref.to), to_col: ref.to.column },
             });
             return;
           }
@@ -1220,12 +1996,118 @@ export class Workbench {
           payload: { from_table: d.fromTable!, from_col: d.fromCol!, to_table: d.toTable!, to_col: d.toCol! },
         });
         return;
+      case 'del-selected-ref':
+        if (this.selectedRef) {
+          this.dispatch({ action: 'delete_ref', payload: { ...this.selectedRef } });
+          this.selectedRef = null;
+        }
+        return;
+      case 'update-ref-kind':
+      case 'update-ref-del':
+      case 'update-ref-upd': {
+        if (!this.selectedRef) return;
+        const sr = this.selectedRef;
+        const r = this.schema.refs.find(
+          (x) =>
+            (qualifiedEndpointTable(x.from) === sr.from_table &&
+              x.from.column === sr.from_col &&
+              qualifiedEndpointTable(x.to) === sr.to_table &&
+              x.to.column === sr.to_col) ||
+            (qualifiedEndpointTable(x.from) === sr.to_table &&
+              x.from.column === sr.to_col &&
+              qualifiedEndpointTable(x.to) === sr.from_table &&
+              x.to.column === sr.from_col)
+        );
+        if (!r) return;
+        const kind =
+          act === 'update-ref-kind' ? (d.kind as import('./types').RefKind) : r.kind;
+        const on_delete =
+          act === 'update-ref-del'
+            ? ((d.val || null) as import('./types').RefAction | null)
+            : (r.on_delete ?? null);
+        const on_update =
+          act === 'update-ref-upd'
+            ? ((d.val || null) as import('./types').RefAction | null)
+            : (r.on_update ?? null);
+        this.dispatch({
+          action: 'update_ref',
+          payload: {
+            from_table: qualifiedEndpointTable(r.from),
+            from_col: r.from.column,
+            to_table: qualifiedEndpointTable(r.to),
+            to_col: r.to.column,
+            kind,
+            on_delete,
+            on_update,
+          },
+        });
+        return;
+      }
       case 'del-col':
         this.dispatch({ action: 'delete_column', payload: { table: d.table!, column: d.col! } });
         return;
       case 'add-col':
         this.dispatch({ action: 'add_column', payload: { table: d.table! } });
         return;
+      case 'add-index': {
+        const tb = this.schema.tables.find((x) => x.name === d.table!);
+        const firstCol = tb?.columns[0]?.name;
+        if (!firstCol) return;
+        this.dispatch({
+          action: 'add_index',
+          payload: {
+            table: d.table!,
+            index: {
+              columns: [{ kind: 'column', value: firstCol }],
+              unique: false,
+              pk: false,
+              name: null,
+              index_type: null,
+            },
+          },
+        });
+        return;
+      }
+      case 'del-index':
+        this.dispatch({
+          action: 'delete_index',
+          payload: { table: d.table!, index_idx: parseInt(d.idx!, 10) },
+        });
+        return;
+      case 'idx-toggle-col':
+      case 'idx-toggle-flag':
+      case 'idx-set-type': {
+        const tb = this.schema.tables.find((x) => x.name === d.table!);
+        const idxNum = parseInt(d.idx!, 10);
+        const ix = tb?.indexes?.[idxNum];
+        if (!ix) return;
+        const next: import('./types').IndexDef = {
+          columns: [...ix.columns],
+          unique: ix.unique,
+          pk: ix.pk,
+          name: ix.name ?? null,
+          index_type: ix.index_type ?? null,
+        };
+        if (act === 'idx-toggle-col') {
+          const colName = d.col!;
+          const pos = next.columns.findIndex((c) => c.kind === 'column' && c.value === colName);
+          if (pos >= 0) {
+            if (next.columns.length > 1) next.columns.splice(pos, 1);
+          } else {
+            next.columns.push({ kind: 'column', value: colName });
+          }
+        } else if (act === 'idx-toggle-flag') {
+          if (d.flag === 'unique') next.unique = !next.unique;
+          else if (d.flag === 'pk') next.pk = !next.pk;
+        } else if (act === 'idx-set-type') {
+          next.index_type = (d.type || null) as import('./types').IndexType | null;
+        }
+        this.dispatch({
+          action: 'update_index',
+          payload: { table: d.table!, index_idx: idxNum, index: next },
+        });
+        return;
+      }
       default:
         this.closeMenus();
         this.runAction(act as ActionId);
@@ -1242,12 +2124,52 @@ export class Workbench {
     const val = t.value.trim();
     const orig = t.dataset.orig || '';
     if (val === orig) return;
+    if (kind === 'coldefault') {
+      this.dispatch({
+        action: 'set_column_default',
+        payload: { table: t.dataset.table!, column: t.dataset.col!, default_value: val || null },
+      });
+      return;
+    }
+    if (kind === 'colcheck') {
+      this.dispatch({
+        action: 'set_column_check',
+        payload: { table: t.dataset.table!, column: t.dataset.col!, check: val || null },
+      });
+      return;
+    }
+    if (kind === 'idxname') {
+      const tb = this.schema.tables.find((x) => x.name === t.dataset.table!);
+      const idxNum = parseInt(t.dataset.idx!, 10);
+      const ix = tb?.indexes?.[idxNum];
+      if (!ix) return;
+      this.dispatch({
+        action: 'update_index',
+        payload: {
+          table: t.dataset.table!,
+          index_idx: idxNum,
+          index: { ...ix, name: val || null },
+        },
+      });
+      return;
+    }
     if (kind !== 'coltype' && !IDENT.test(val)) {
       this.toast('Invalid name: use only letters, numbers, and _');
       t.value = orig;
       return;
     }
     if (!val) { t.value = orig; return; }
+    if (kind === 'enum') {
+      this.dispatch({ action: 'rename_enum', payload: { old_name: t.dataset.enum!, new_name: val } });
+      return;
+    }
+    if (kind === 'enumval') {
+      this.dispatch({
+        action: 'rename_enum_value',
+        payload: { enum_name: t.dataset.enum!, old_value: orig, new_value: val },
+      });
+      return;
+    }
     const table = t.dataset.table!;
     if (kind === 'table') this.dispatch({ action: 'rename_table', payload: { old_name: table, new_name: val } });
     else if (kind === 'colname') this.dispatch({ action: 'rename_column', payload: { table, old_name: t.dataset.col!, new_name: val } });
@@ -1323,13 +2245,29 @@ export class Workbench {
     const gl = t.closest('[data-group]') as HTMLElement | null;
     if (gl) {
       this.selectedRef = null;
+      this.dragStartPositions = this.clonePositions();
       this.drag = { kind: 'group', name: gl.dataset.group!, last: wp };
       this.scheduleRender();
       return;
     }
     const card = t.closest('.card') as HTMLElement | null;
+    if (card && card.dataset.enum) {
+      this.selectedRef = null;
+      this.selection = [];
+      const enumName = card.dataset.enum;
+      this.selectedEnum = enumName;
+      if (e.detail >= 2) {
+        this.runAction('RenameSelected');
+        return;
+      }
+      this.dragStartPositions = this.clonePositions();
+      this.drag = { kind: 'enum', name: enumName, last: wp };
+      this.scheduleRender();
+      return;
+    }
     if (card) {
       this.selectedRef = null;
+      this.selectedEnum = null;
       const name = card.dataset.table!;
       if (e.shiftKey) {
         this.selection = this.selection.includes(name) ? this.selection.filter((n) => n !== name) : [...this.selection, name];
@@ -1342,11 +2280,13 @@ export class Workbench {
         this.runAction('RenameSelected');
         return;
       }
+      this.dragStartPositions = this.clonePositions();
       this.drag = { kind: 'cards', last: wp };
       this.scheduleRender();
       return;
     }
     this.selectedRef = null;
+    this.selectedEnum = null;
     const base = e.shiftKey ? [...this.selection] : [];
     this.selection = base;
     this.drag = { kind: 'marquee', start: wp, now: wp, base };
@@ -1373,6 +2313,12 @@ export class Workbench {
         if (p) { p.x += dx; p.y += dy; }
       }
       this.recomputeEdges();
+    } else if (d.kind === 'enum') {
+      const dx = wp.x - d.last.x, dy = wp.y - d.last.y;
+      d.last = wp;
+      const key = `enum:${d.name}`;
+      const p = this.positions[key];
+      if (p) { p.x += dx; p.y += dy; }
     } else if (d.kind === 'group') {
       const dx = wp.x - d.last.x, dy = wp.y - d.last.y;
       d.last = wp;
@@ -1417,8 +2363,9 @@ export class Workbench {
       if (x1 - x0 > 2 || y1 - y0 > 2) {
         const sel = [...d.base];
         for (const t of this.schema.tables) {
-          const p = this.positions[t.name];
-          if (p && p.x < x1 && p.x + CARD_W > x0 && p.y < y1 && p.y + cardH(t.columns.length) > y0 && !sel.includes(t.name)) sel.push(t.name);
+          const qname = qualifiedTableName(t);
+          const p = this.positions[qname];
+          if (p && p.x < x1 && p.x + CARD_W > x0 && p.y < y1 && p.y + cardH(t.columns.length) > y0 && !sel.includes(qname)) sel.push(qname);
         }
         this.selection = sel;
       }
@@ -1433,6 +2380,15 @@ export class Workbench {
         });
       }
     } else {
+      if (this.dragStartPositions && !this.positionsEqual(this.dragStartPositions, this.positions)) {
+        this.pushHistory({
+          source: this.source,
+          positions: this.dragStartPositions,
+          selection: [...this.selection],
+          selectedEnum: this.selectedEnum,
+        });
+      }
+      this.dragStartPositions = null;
       this.queueSaveLayout();
     }
     this.scheduleRender();

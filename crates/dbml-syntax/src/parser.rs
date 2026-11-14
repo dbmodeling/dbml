@@ -1,6 +1,9 @@
 use crate::{
     DbmlLang, SyntaxKind,
-    SyntaxKind::{Block, Column, Ident, LBrace, Newline, RBrace, Ref, Root, Table, TableGroup},
+    SyntaxKind::{
+        Block, Column, Enum, Ident, Indexes, LBrace, Newline, Note, Project, RBrace, Ref, Root,
+        Table, TableGroup,
+    },
     SyntaxNode, lex,
 };
 use rowan::GreenNodeBuilder;
@@ -39,8 +42,14 @@ pub fn parse(text: &str) -> Parse {
             p.table(Table);
         } else if p.at_kw("tablegroup") {
             p.table(TableGroup);
+        } else if p.at_kw("enum") {
+            p.table(Enum);
+        } else if p.at_kw("project") {
+            p.table(Project);
         } else if p.at_kw("ref") {
             p.ref_line();
+        } else if p.at_kw("note") {
+            p.note_node();
         } else {
             p.bump();
         }
@@ -114,9 +123,17 @@ impl Parser<'_> {
         self.b.finish_node();
     }
 
+    fn note_node(&mut self) {
+        self.column_or_block_with(Some(Note));
+    }
+
     /// Uma "linha" dentro da tabela. Se contém `{` no nível 0 (ex.: `indexes {`),
-    /// vira `Block` e consome até o `}` correspondente; senão é `Column`.
+    /// vira `Indexes`/`Note`/`Block` e consome até o `}` correspondente; senão é `Column`/`Note`.
     fn column_or_block(&mut self) {
+        self.column_or_block_with(None);
+    }
+
+    fn column_or_block_with(&mut self, forced_kind: Option<SyntaxKind>) {
         let is_block = {
             let mut i = self.pos;
             let mut found = false;
@@ -132,7 +149,18 @@ impl Parser<'_> {
             }
             found
         };
-        self.start(if is_block { Block } else { Column });
+        let node_kind = if let Some(k) = forced_kind {
+            k
+        } else if self.at_kw("note") {
+            Note
+        } else if is_block && self.at_kw("indexes") {
+            Indexes
+        } else if is_block {
+            Block
+        } else {
+            Column
+        };
+        self.start(node_kind);
         let mut depth = 0usize;
         while let Some(k) = self.kind() {
             match k {

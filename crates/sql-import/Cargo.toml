@@ -1,0 +1,16 @@
+[package]
+name = "sql-import"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+description = "Tolerant SQL DDL (PostgreSQL, MySQL, SQLite) to DBML importer. No UI or OS dependencies."
+
+[dev-dependencies]
+dbml-analysis.workspace = true
+schema.workspace = true
+insta.workspace = true
+proptest.workspace = true
+
+[lints]
+workspace = true

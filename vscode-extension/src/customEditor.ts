@@ -1,4 +1,5 @@
 import * as vscode from 'vscode';
+import { runIntrospect, runTestConnection } from './introspect.js';
 
 /** Lista os `.dbml` do workspace no formato esperado pela aba Arquivos do Workbench. */
 async function listDbmlFiles(active?: vscode.Uri): Promise<Array<{ name: string; path: string; active: boolean }>> {
@@ -146,6 +147,34 @@ export class DbmlCustomEditorProvider implements vscode.CustomTextEditorProvider
             const data = isBinary ? Buffer.from(content, 'base64') : new TextEncoder().encode(content);
             await vscode.workspace.fs.writeFile(saveUri, data);
             vscode.window.showInformationMessage(`Exported file: ${saveUri.fsPath}`);
+          }
+          break;
+        }
+        case 'test_connection': {
+          const cliPath = vscode.workspace.getConfiguration('dbmodeling').get<string>('cliPath') || 'dbml';
+          try {
+            const result = await runTestConnection(cliPath, message.request);
+            webview.postMessage({ type: 'test_connection_result', id: message.id, result });
+          } catch (e) {
+            webview.postMessage({
+              type: 'test_connection_result',
+              id: message.id,
+              error: e instanceof Error ? e.message : String(e),
+            });
+          }
+          break;
+        }
+        case 'introspect': {
+          const cliPath = vscode.workspace.getConfiguration('dbmodeling').get<string>('cliPath') || 'dbml';
+          try {
+            const result = await runIntrospect(cliPath, message.request);
+            webview.postMessage({ type: 'introspect_result', id: message.id, result });
+          } catch (e) {
+            webview.postMessage({
+              type: 'introspect_result',
+              id: message.id,
+              error: e instanceof Error ? e.message : String(e),
+            });
           }
           break;
         }

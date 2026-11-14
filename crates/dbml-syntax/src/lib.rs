@@ -58,10 +58,18 @@ pub enum SyntaxKind {
     Ref,
     /// Column declaration line inside a `Table`.
     Column,
-    /// Nested `{ ... }` block such as `indexes { ... }` or `Note { ... }`.
+    /// Nested `{ ... }` block.
     Block,
     /// Unparsed/unexpected token sequence preserved losslessly.
     Error,
+    /// `Enum [schema.]name { ... }` node.
+    Enum,
+    /// `indexes { ... }` block inside a `Table`.
+    Indexes,
+    /// `Note: '...'` or `Note { ... }` node.
+    Note,
+    /// `Project [name] { ... }` node.
+    Project,
 }
 
 impl SyntaxKind {
@@ -102,6 +110,10 @@ impl Language for DbmlLang {
             19 => SyntaxKind::Column,
             20 => SyntaxKind::Block,
             21 => SyntaxKind::Error,
+            22 => SyntaxKind::Enum,
+            23 => SyntaxKind::Indexes,
+            24 => SyntaxKind::Note,
+            25 => SyntaxKind::Project,
             other => panic!("invalid SyntaxKind raw discriminant: {other}"),
         }
     }

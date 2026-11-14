@@ -4,7 +4,7 @@
  * Portado 1:1 de `crates/app/src/shell/panels.rs`.
  */
 
-import { Schema, Diagnostic } from './types';
+import { Schema, Diagnostic, qualifiedEndpointTable, qualifiedTableName } from './types';
 import { Glass, TABLE_COLORS, STANDARD_TYPES, hexWithAlpha } from './glass';
 import { iconSvg } from './icons';
 import { catalog, ActionId } from './actions';
@@ -39,14 +39,15 @@ export function renderSchemaPane(
   g: Glass
 ): string {
   const renderTableRow = (tableName: string, indent = false): string => {
-    const t = schema.tables.find((x) => x.name === tableName);
+    const t = schema.tables.find((x) => qualifiedTableName(x) === tableName);
     if (!t) return '';
-    const on = selection.includes(t.name);
+    const qname = qualifiedTableName(t);
+    const on = selection.includes(qname);
     const iconColor = t.color || (on ? g.accent : g.textFaint);
     return `
-      <button class="dbm-row-btn ${on ? 'selected' : ''}" data-focus-table="${escHtml(t.name)}" style="${indent ? 'padding-left:22px;' : ''}">
+      <button class="dbm-row-btn ${on ? 'selected' : ''}" data-focus-table="${escHtml(qname)}" style="${indent ? 'padding-left:22px;' : ''}">
         ${iconSvg('Table2', 14, iconColor)}
-        <span style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${escHtml(t.name)}</span>
+        <span style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${escHtml(qname)}</span>
         <span style="font-size:11.5px;color:${g.textFaint};">${t.columns.length}</span>
       </button>
     `;
@@ -70,12 +71,12 @@ export function renderSchemaPane(
   });
 
   const groupedSet = new Set(schema.groups.flatMap((gr) => gr.tables));
-  const loose = schema.tables.filter((t) => !groupedSet.has(t.name));
+  const loose = schema.tables.filter((t) => !groupedSet.has(qualifiedTableName(t)));
   if (schema.groups.length > 0 && loose.length > 0) {
     body += `<div style="padding:8px 12px 2px 12px;font-size:12px;font-weight:600;color:${g.textFaint};">No group</div>`;
   }
   for (const t of loose) {
-    body += renderTableRow(t.name, false);
+    body += renderTableRow(qualifiedTableName(t), false);
   }
   body += `</div>`;
 
@@ -85,7 +86,7 @@ export function renderSchemaPane(
     body += `
       <div style="display:flex;align-items:center;gap:6px;height:22px;font-size:12px;color:${g.textMuted};">
         ${iconSvg('Link2', 13, g.textFaint)}
-        <span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${escHtml(r.from.table)} → ${escHtml(r.to.table)}</span>
+        <span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${escHtml(qualifiedEndpointTable(r.from))} → ${escHtml(qualifiedEndpointTable(r.to))}</span>
       </div>
     `;
   }
@@ -177,17 +178,18 @@ export function renderInspectorPane(params: {
   }
 
   // Caso 2: 1 Tabela selecionada
-  const table = selectedTable ? schema.tables.find((t) => t.name === selectedTable) : null;
+  const table = selectedTable ? schema.tables.find((t) => qualifiedTableName(t) === selectedTable) : null;
   if (table) {
-    const group = schema.groups.find((gr) => gr.tables.includes(table.name));
+    const tq = qualifiedTableName(table);
+    const group = schema.groups.find((gr) => gr.tables.includes(tq));
     const refs = schema.refs.filter(
-      (r) => r.from.table === table.name || r.to.table === table.name
+      (r) => qualifiedEndpointTable(r.from) === tq || qualifiedEndpointTable(r.to) === tq
     );
 
-    const isEditingTable = isSameTarget(editing, { kind: 'table', table: table.name });
+    const isEditingTable = isSameTarget(editing, { kind: 'table', table: tq });
     const titleHtml = isEditingTable
       ? `<input class="dbm-insp-input" id="dbm-active-insp-input" value="${escHtml(editingValue)}" />`
-      : `<div class="dbm-insp-field" data-start-edit="table" data-table="${escHtml(table.name)}">${escHtml(table.name)}</div>`;
+      : `<div class="dbm-insp-field" data-start-edit="table" data-table="${escHtml(tq)}">${escHtml(tq)}</div>`;
 
     // Seletor de 8 cores + Sem cor
     const currentHex = (table.color || '').toLowerCase();
@@ -195,11 +197,11 @@ export function renderInspectorPane(params: {
     TABLE_COLORS.forEach(([label, hexv]) => {
       const on = currentHex === hexv.toLowerCase();
       swatches += `
-        <button title="${escHtml(label)}" data-set-color="${hexv}" data-table="${escHtml(table.name)}" style="width:22px;height:22px;border-radius:999px;background:${hexv};border:2px solid ${on ? g.text : 'transparent'};cursor:pointer;padding:0;"></button>
+        <button title="${escHtml(label)}" data-set-color="${hexv}" data-table="${escHtml(tq)}" style="width:22px;height:22px;border-radius:999px;background:${hexv};border:2px solid ${on ? g.text : 'transparent'};cursor:pointer;padding:0;"></button>
       `;
     });
     swatches += `
-      <button title="No color" data-set-color="" data-table="${escHtml(table.name)}" style="width:22px;height:22px;border-radius:999px;background:transparent;border:1px solid ${g.edge};color:${g.textFaint};display:flex;align-items:center;justify-content:center;cursor:pointer;padding:0;">
+      <button title="No color" data-set-color="" data-table="${escHtml(tq)}" style="width:22px;height:22px;border-radius:999px;background:transparent;border:1px solid ${g.edge};color:${g.textFaint};display:flex;align-items:center;justify-content:center;cursor:pointer;padding:0;">
         ${iconSvg('X', 12, g.textFaint)}
       </button>
     </div>`;
@@ -229,18 +231,18 @@ export function renderInspectorPane(params: {
     `;
 
     for (const c of table.columns) {
-      const editNameTarget: EditTarget = { kind: 'colName', table: table.name, col: c.name };
-      const editTypeTarget: EditTarget = { kind: 'colType', table: table.name, col: c.name };
+      const editNameTarget: EditTarget = { kind: 'colName', table: tq, col: c.name };
+      const editTypeTarget: EditTarget = { kind: 'colType', table: tq, col: c.name };
       const isEditingName = isSameTarget(editing, editNameTarget);
       const isEditingType = isSameTarget(editing, editTypeTarget);
 
       const nameField = isEditingName
         ? `<input class="dbm-insp-input" id="dbm-active-insp-input" value="${escHtml(editingValue)}" />`
-        : `<div class="dbm-insp-field" data-start-edit="colName" data-table="${escHtml(table.name)}" data-col="${escHtml(c.name)}">${escHtml(c.name)}</div>`;
+        : `<div class="dbm-insp-field" data-start-edit="colName" data-table="${escHtml(tq)}" data-col="${escHtml(c.name)}">${escHtml(c.name)}</div>`;
 
       const typeField = isEditingType
         ? `<input class="dbm-insp-input" id="dbm-active-insp-input" value="${escHtml(editingValue)}" />`
-        : `<div class="dbm-insp-field" data-start-edit="colType" data-table="${escHtml(table.name)}" data-col="${escHtml(c.name)}" style="color:${g.textFaint};font-size:12px;">${escHtml(c.ty)}</div>`;
+        : `<div class="dbm-insp-field" data-start-edit="colType" data-table="${escHtml(tq)}" data-col="${escHtml(c.name)}" style="color:${g.textFaint};font-size:12px;">${escHtml(c.ty)}</div>`;
 
       colsHtml += `
         <div class="dbm-insp-col-row">
@@ -248,11 +250,11 @@ export function renderInspectorPane(params: {
           <div data-col-splitter="true" style="width:4px;height:14px;cursor:ew-resize;flex:none;"></div>
           <div style="width:${colTypeW}px;flex:none;overflow:hidden;">${typeField}</div>
           <div style="display:flex;gap:3px;flex:none;">
-            <button class="dbm-chip ${c.pk ? 'on' : ''}" title="Primary key" data-toggle-flag="pk" data-table="${escHtml(table.name)}" data-col="${escHtml(c.name)}" data-val="${!c.pk}">PK</button>
-            <button class="dbm-chip ${c.not_null ? 'on' : ''}" title="Required (not null)" data-toggle-flag="not null" data-table="${escHtml(table.name)}" data-col="${escHtml(c.name)}" data-val="${!c.not_null}">NN</button>
-            <button class="dbm-chip ${c.unique ? 'on' : ''}" title="Unique value" data-toggle-flag="unique" data-table="${escHtml(table.name)}" data-col="${escHtml(c.name)}" data-val="${!c.unique}">UQ</button>
+            <button class="dbm-chip ${c.pk ? 'on' : ''}" title="Primary key" data-toggle-flag="pk" data-table="${escHtml(tq)}" data-col="${escHtml(c.name)}" data-val="${!c.pk}">PK</button>
+            <button class="dbm-chip ${c.not_null ? 'on' : ''}" title="Required (not null)" data-toggle-flag="not null" data-table="${escHtml(tq)}" data-col="${escHtml(c.name)}" data-val="${!c.not_null}">NN</button>
+            <button class="dbm-chip ${c.unique ? 'on' : ''}" title="Unique value" data-toggle-flag="unique" data-table="${escHtml(tq)}" data-col="${escHtml(c.name)}" data-val="${!c.unique}">UQ</button>
           </div>
-          <button class="dbm-insp-col-del" title="Delete column" data-del-col="${escHtml(c.name)}" data-table="${escHtml(table.name)}">
+          <button class="dbm-insp-col-del" title="Delete column" data-del-col="${escHtml(c.name)}" data-table="${escHtml(tq)}">
             ${iconSvg('Trash', 13, 'currentColor')}
           </button>
         </div>
@@ -283,7 +285,7 @@ export function renderInspectorPane(params: {
               ${top
                 .map(
                   ([sType, sDesc]) => `
-                <div data-apply-type="${escHtml(sType)}" data-table="${escHtml(table.name)}" data-col="${escHtml(c.name)}" style="display:flex;justify-content:space-between;align-items:center;padding:4px 6px;border-radius:4px;cursor:pointer;font-size:12px;">
+                <div data-apply-type="${escHtml(sType)}" data-table="${escHtml(tq)}" data-col="${escHtml(c.name)}" style="display:flex;justify-content:space-between;align-items:center;padding:4px 6px;border-radius:4px;cursor:pointer;font-size:12px;">
                   <span style="font-weight:500;color:${g.text};">${escHtml(sType)}</span>
                   <span style="font-size:10.5px;color:${g.textFaint};">${escHtml(sDesc)}</span>
                 </div>
@@ -298,7 +300,7 @@ export function renderInspectorPane(params: {
 
     colsHtml += `
       <div style="padding:8px 12px;">
-        <button data-add-col-table="${escHtml(table.name)}" style="height:28px;padding:0 10px;border-radius:6px;border:1px solid ${g.edge};background:transparent;color:${g.text};font-size:12.5px;display:inline-flex;align-items:center;gap:6px;cursor:pointer;">
+        <button data-add-col-table="${escHtml(tq)}" style="height:28px;padding:0 10px;border-radius:6px;border:1px solid ${g.edge};background:transparent;color:${g.text};font-size:12.5px;display:inline-flex;align-items:center;gap:6px;cursor:pointer;">
           ${iconSvg('Plus', 13, g.textMuted)}
           <span>Add column</span>
         </button>
@@ -319,7 +321,7 @@ export function renderInspectorPane(params: {
       relsHtml += `
         <div style="display:flex;align-items:center;gap:6px;font-size:12.5px;color:${g.textMuted};">
           ${iconSvg('Link2', 13, g.textFaint)}
-          <span style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${escHtml(r.from.table)}.${escHtml(r.from.column)} → ${escHtml(r.to.table)}.${escHtml(r.to.column)}</span>
+          <span style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${escHtml(qualifiedEndpointTable(r.from))}.${escHtml(r.from.column)} → ${escHtml(qualifiedEndpointTable(r.to))}.${escHtml(r.to.column)}</span>
           <span style="padding:1px 5px;border-radius:4px;border:1px solid ${g.edge};font-size:10.5px;color:${g.textMuted};">${card}</span>
         </div>
       `;

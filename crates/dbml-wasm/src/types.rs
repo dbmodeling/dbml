@@ -66,6 +66,12 @@ pub struct TextPatch {
     /// `(old_name, new_name)` pair when a table is renamed.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub renamed_table: Option<(String, String)>,
+    /// Newly created enum name, if any.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub created_enum: Option<String>,
+    /// `(old_name, new_name)` pair when an enum is renamed.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub renamed_enum: Option<(String, String)>,
     /// Whether the operation requires an immediate relayout.
     #[serde(default)]
     pub should_relayout: bool,
@@ -105,6 +111,13 @@ pub enum Command {
         name: Option<String>,
         /// Optional column type.
         ty: Option<String>,
+    },
+    /// Add the missing columns of a preset (`uuid_pk`, `bigint_pk`, `timestamps`, `soft_delete`).
+    AddColumnPreset {
+        /// Target table name.
+        table: String,
+        /// Preset identifier.
+        preset: String,
     },
     /// Delete a column from a table.
     DeleteColumn {
@@ -166,6 +179,25 @@ pub enum Command {
         /// Target column name.
         to_col: String,
     },
+    /// Update cardinality and referential actions on an existing relationship.
+    UpdateRef {
+        /// Source table name.
+        from_table: String,
+        /// Source column name.
+        from_col: String,
+        /// Target table name.
+        to_table: String,
+        /// Target column name.
+        to_col: String,
+        /// Target cardinality.
+        kind: schema::RefKind,
+        /// Optional `ON DELETE` referential action.
+        #[serde(default)]
+        on_delete: Option<schema::RefAction>,
+        /// Optional `ON UPDATE` referential action.
+        #[serde(default)]
+        on_update: Option<schema::RefAction>,
+    },
     /// Group tables into a `TableGroup`.
     GroupTables {
         /// Optional group name.
@@ -189,6 +221,98 @@ pub enum Command {
         table: String,
         /// Optional hex color (`None` removes `headercolor`).
         color: Option<String>,
+    },
+    /// Add a new `Enum` block (auto-naming if `name` is `None`).
+    AddEnum {
+        /// Optional explicit enum name.
+        name: Option<String>,
+    },
+    /// Delete an `Enum` block by name.
+    DeleteEnum {
+        /// Enum name to delete.
+        name: String,
+    },
+    /// Rename an `Enum` block and cascade column types.
+    RenameEnum {
+        /// Current enum name.
+        old_name: String,
+        /// New enum name.
+        new_name: String,
+    },
+    /// Add a new value to an `Enum` block.
+    AddEnumValue {
+        /// Target enum name.
+        enum_name: String,
+        /// Optional value name (auto-generated if `None`).
+        value: Option<String>,
+    },
+    /// Delete a value from an `Enum` block.
+    DeleteEnumValue {
+        /// Target enum name.
+        enum_name: String,
+        /// Value to remove.
+        value: String,
+    },
+    /// Rename a value inside an `Enum` block.
+    RenameEnumValue {
+        /// Target enum name.
+        enum_name: String,
+        /// Current value name.
+        old_value: String,
+        /// New value name.
+        new_value: String,
+    },
+    /// Move an enum value up or down inside its `Enum` block.
+    ReorderEnumValue {
+        /// Target enum name.
+        enum_name: String,
+        /// Value to move.
+        value: String,
+        /// `true` to move up, `false` to move down.
+        up: bool,
+    },
+    /// Set or clear the `default: ...` value of a column.
+    SetColumnDefault {
+        /// Target table name.
+        table: String,
+        /// Target column name.
+        column: String,
+        /// Desired default expression (`None` clears `default:`).
+        #[serde(default)]
+        default_value: Option<String>,
+    },
+    /// Set or clear the ``check: `...` `` constraint of a column.
+    SetColumnCheck {
+        /// Target table name.
+        table: String,
+        /// Target column name.
+        column: String,
+        /// Desired check expression (`None` clears `check:`).
+        #[serde(default)]
+        check: Option<String>,
+    },
+    /// Append a new index definition to a table's `indexes { ... }` block.
+    AddIndex {
+        /// Target table name.
+        table: String,
+        /// Index definition to append.
+        index: schema::IndexDef,
+    },
+    /// Update an existing index at `index_idx` in a table's `indexes { ... }` block.
+    UpdateIndex {
+        /// Target table name.
+        table: String,
+        /// 0-based index position inside `indexes { ... }`.
+        index_idx: usize,
+        /// Updated index definition.
+        index: schema::IndexDef,
+    },
+    /// Delete an index at `index_idx` from a table's `indexes { ... }` block.
+    DeleteIndex {
+        /// Target table name.
+        table: String,
+        /// 0-based index position inside `indexes { ... }`.
+        index_idx: usize,
     },
 }
 
@@ -244,6 +368,12 @@ pub struct RoutedEdge {
     pub to_table: String,
     /// Target column name.
     pub to_col: String,
+    /// Relationship cardinality kind.
+    pub kind: schema::RefKind,
+    /// Optional `ON DELETE` referential action.
+    pub on_delete: Option<schema::RefAction>,
+    /// Optional `ON UPDATE` referential action.
+    pub on_update: Option<schema::RefAction>,
     /// Anchor start X coordinate.
     pub ax: f32,
     /// Anchor start Y coordinate.
@@ -296,8 +426,11 @@ pub struct GroupBox {
 /// Computed visual metadata for a table card.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TableVisual {
-    /// Table name.
+    /// Qualified table name (`schema.table` or `table`).
     pub name: String,
+    /// Optional schema / namespace name.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub schema: Option<String>,
     /// Left X coordinate.
     pub x: f32,
     /// Top Y coordinate.
@@ -314,15 +447,57 @@ pub struct TableVisual {
     pub fk_columns: Vec<String>,
 }
 
+/// Computed visual metadata for an `Enum` card.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EnumVisual {
+    /// Enum name.
+    pub name: String,
+    /// Left X coordinate.
+    pub x: f32,
+    /// Top Y coordinate.
+    pub y: f32,
+    /// Card width.
+    pub w: f32,
+    /// Card height.
+    pub h: f32,
+    /// Ordered enum value names.
+    pub values: Vec<String>,
+    /// Table names containing columns that reference this enum.
+    pub referenced_by: Vec<String>,
+}
+
 /// Complete scene geometry calculated to match `crates/app/src/canvas.rs`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SceneGeometry {
-    /// Table positions keyed by table name.
+    /// Table and enum (`enum:<name>`) positions.
     pub positions: HashMap<String, NodeCoordinate>,
     /// Visual metadata for each table.
     pub tables: Vec<TableVisual>,
+    /// Visual metadata for each enum card.
+    #[serde(default)]
+    pub enums: Vec<EnumVisual>,
     /// Bounding boxes for each group.
     pub groups: Vec<GroupBox>,
     /// Orthogonally routed relationship edges.
     pub edges: Vec<RoutedEdge>,
+}
+
+/// Construct skipped or dropped while importing SQL DDL.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ImportWarningDto {
+    /// 1-based line in the SQL source.
+    pub line: u32,
+    /// 1-based column in the SQL source.
+    pub column: u32,
+    /// Human-readable description.
+    pub message: String,
+}
+
+/// Result of `import_sql_ddl`: generated DBML plus warnings.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ImportResult {
+    /// Generated DBML text.
+    pub dbml: String,
+    /// Skipped or dropped constructs ordered by position.
+    pub warnings: Vec<ImportWarningDto>,
 }

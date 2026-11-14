@@ -15,6 +15,8 @@ actions!(
         ShowSchema,
         ShowProblems,
         SaveFile,
+        Undo,
+        Redo,
         Quit,
         OpenPalette,
         ShowShortcuts,
@@ -33,6 +35,7 @@ actions!(
         ToggleCardTransparency,
         GroupSelection,
         NewTable,
+        NewEnum,
         DeleteSelection,
         RenameSelected,
         ResetPanels,
@@ -44,8 +47,28 @@ actions!(
         ZoomOutUi,
         ResetUiZoom,
         ToggleAutoCollapseInspector,
+        ExportSqlPostgres,
+        ExportSqlMysql,
+        ExportSqlSqlite,
+        ExportSqlSqlServer,
+        ExportSqlOracle,
+        ExportMermaid,
+        ExportPng,
+        ExportJpeg,
+        ExportSvg,
+        ImportSqlDdl,
+        ConnectDatabase,
+        AddPresetUuidPk,
+        AddPresetBigIntPk,
+        AddPresetTimestamps,
+        AddPresetSoftDelete,
     ]
 );
+
+/// Grupo do catálogo / dropdown da barra: exportação de código (SQL por banco, Mermaid).
+pub const GROUP_EXPORT_CODE: &str = "Export Code";
+/// Grupo do catálogo / dropdown da barra: exportação de imagem (PNG, JPEG, SVG).
+pub const GROUP_EXPORT_IMAGE: &str = "Export Image";
 
 /// Contexto de teclado do shell (atalhos com modificador valem na janela toda).
 pub const CTX: &str = "Shell";
@@ -94,6 +117,8 @@ pub fn catalog() -> Vec<Entry> {
         e("ctrl-shift-d", ShowSchema, "View", "Show Schema (Tables)"),
         e("ctrl-shift-m", ShowProblems, "View", "Show Problems"),
         e("ctrl-s", SaveFile, "File", "Save"),
+        e("ctrl-z", Undo, "Edit", "Undo"),
+        e("ctrl-shift-z", Redo, "Edit", "Redo"),
         e("ctrl-q", Quit, "File", "Quit"),
         e("ctrl-t", ToggleTheme, "View", "Toggle Light/Dark Theme"),
         e("ctrl-e", ToggleEditor, "View", "Toggle DBML Editor"),
@@ -108,6 +133,7 @@ pub fn catalog() -> Vec<Entry> {
         e("ctrl--", ZoomOut, "Canvas", "Zoom Out"),
         e("escape", Deselect, "Canvas", "Clear Selection"),
         e("t", NewTable, "Canvas", "New Table"),
+        e("e", NewEnum, "Canvas", "New Enum"),
         e(
             "delete",
             DeleteSelection,
@@ -147,5 +173,70 @@ pub fn catalog() -> Vec<Entry> {
         e("alt-down", MoveLineDown, "Editor", "Move Line Down"),
         e("ctrl-k", OpenPalette, "Help", "Command Palette"),
         e("ctrl-/", ShowShortcuts, "Help", "Keyboard Shortcuts"),
+        e(
+            "",
+            ExportSqlPostgres,
+            GROUP_EXPORT_CODE,
+            "Export Code: PostgreSQL (.sql)",
+        ),
+        e(
+            "",
+            ExportSqlMysql,
+            GROUP_EXPORT_CODE,
+            "Export Code: MySQL (.sql)",
+        ),
+        e(
+            "",
+            ExportSqlSqlite,
+            GROUP_EXPORT_CODE,
+            "Export Code: SQLite (.sql)",
+        ),
+        e(
+            "",
+            ExportSqlSqlServer,
+            GROUP_EXPORT_CODE,
+            "Export Code: SQL Server (.sql)",
+        ),
+        e(
+            "",
+            ExportSqlOracle,
+            GROUP_EXPORT_CODE,
+            "Export Code: Oracle (.sql)",
+        ),
+        e(
+            "",
+            ExportMermaid,
+            GROUP_EXPORT_CODE,
+            "Export Code: Mermaid erDiagram (.mmd)",
+        ),
+        e("", ExportPng, GROUP_EXPORT_IMAGE, "Export Image: PNG"),
+        e("", ExportJpeg, GROUP_EXPORT_IMAGE, "Export Image: JPEG"),
+        e(
+            "",
+            ExportSvg,
+            GROUP_EXPORT_IMAGE,
+            "Export Image: Vector SVG",
+        ),
+        e("", ImportSqlDdl, "File", "Import SQL DDL…"),
+        e("", ConnectDatabase, "File", "Connect to Database…"),
+        e("", AddPresetUuidPk, "Edit", "Add Column Preset: UUID PK"),
+        e(
+            "",
+            AddPresetBigIntPk,
+            "Edit",
+            "Add Column Preset: BigInt PK",
+        ),
+        e(
+            "",
+            AddPresetTimestamps,
+            "Edit",
+            "Add Column Preset: Timestamps",
+        ),
+        e(
+            "",
+            AddPresetSoftDelete,
+            "Edit",
+            "Add Column Preset: Soft Delete",
+        ),
     ]
 }

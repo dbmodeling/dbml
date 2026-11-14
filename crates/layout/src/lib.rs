@@ -273,6 +273,58 @@ impl Rect {
     }
 }
 
+impl Rect {
+    /// Returns `true` when the two rectangles share interior area (touching edges do not count).
+    #[must_use]
+    pub fn intersects(&self, other: &Rect) -> bool {
+        self.x < other.x + other.w
+            && other.x < self.x + self.w
+            && self.y < other.y + other.h
+            && other.y < self.y + self.h
+    }
+}
+
+/// Places `incoming` cards so that none overlaps a `fixed` card or another incoming card.
+///
+/// `fixed` cards never move. `incoming` carries each new card at its preferred position (usually
+/// the auto-layout slot). When every preferred position is free the result is unchanged. If any
+/// incoming card collides with a fixed one, the whole incoming block is translated to the right of
+/// the fixed bounding box (keeping its internal arrangement); any remaining collision is resolved
+/// by pushing the card down. Returns the final position of each incoming card, in input order.
+#[must_use]
+pub fn place_without_overlap(fixed: &[Rect], incoming: &[Rect], gap: f32) -> Vec<Pos> {
+    let mut placed: Vec<Rect> = incoming.to_vec();
+    let collides = placed.iter().any(|r| fixed.iter().any(|f| f.intersects(r)));
+    if collides {
+        let fixed_right = fixed.iter().map(|f| f.x + f.w).fold(f32::MIN, f32::max);
+        let fixed_top = fixed.iter().map(|f| f.y).fold(f32::MAX, f32::min);
+        let block_left = placed.iter().map(|r| r.x).fold(f32::MAX, f32::min);
+        let block_top = placed.iter().map(|r| r.y).fold(f32::MAX, f32::min);
+        let (dx, dy) = (fixed_right + gap - block_left, fixed_top - block_top);
+        for r in &mut placed {
+            r.x += dx;
+            r.y += dy;
+        }
+    }
+    // Guarantee pass: each bump moves the card strictly below one obstacle, so it terminates.
+    for i in 0..placed.len() {
+        loop {
+            let cur = placed[i];
+            let Some(bottom) = fixed
+                .iter()
+                .chain(&placed[..i])
+                .filter(|o| o.intersects(&cur))
+                .map(|o| o.y + o.h)
+                .reduce(f32::max)
+            else {
+                break;
+            };
+            placed[i].y = bottom + gap;
+        }
+    }
+    placed.iter().map(|r| Pos { x: r.x, y: r.y }).collect()
+}
+
 fn blocked(path: &[Pos], obstacles: &[Rect]) -> bool {
     path.windows(2).any(|s| {
         let (p, q) = (s[0], s[1]);
@@ -334,6 +386,80 @@ pub fn route(a: Pos, sa: f32, b: Pos, sb: f32, obstacles: &[Rect], gap: f32) -> 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn any_overlap(rects: &[Rect]) -> bool {
+        (0..rects.len()).any(|i| (i + 1..rects.len()).any(|j| rects[i].intersects(&rects[j])))
+    }
+
+    fn rect(x: f32, y: f32, w: f32, h: f32) -> Rect {
+        Rect { x, y, w, h }
+    }
+
+    #[test]
+    fn place_without_overlap_keeps_free_positions() {
+        let fixed = [rect(0., 0., 260., 100.)];
+        let incoming = [rect(400., 0., 260., 100.), rect(400., 200., 260., 100.)];
+        let out = place_without_overlap(&fixed, &incoming, 40.);
+        assert_eq!(out, vec![Pos { x: 400., y: 0. }, Pos { x: 400., y: 200. }]);
+    }
+
+    #[test]
+    fn place_without_overlap_moves_block_beside_fixed_cards() {
+        // tabelas existentes foram movidas para cima dos slots do auto-layout
+        let fixed = [rect(0., 0., 260., 300.), rect(300., 50., 260., 300.)];
+        let incoming = [rect(0., 0., 260., 100.), rect(364., 0., 260., 100.)];
+        let out = place_without_overlap(&fixed, &incoming, 40.);
+        // bloco inteiro vai para a direita, preservando o arranjo interno
+        assert_eq!(out[0], Pos { x: 600., y: 0. });
+        assert_eq!(out[1], Pos { x: 964., y: 0. });
+    }
+
+    #[test]
+    fn place_without_overlap_resolves_incoming_stacked_on_same_spot() {
+        let incoming = [rect(0., 0., 260., 100.); 5];
+        let out = place_without_overlap(&[], &incoming, 40.);
+        let rects: Vec<Rect> = out.iter().map(|p| rect(p.x, p.y, 260., 100.)).collect();
+        assert!(!any_overlap(&rects));
+    }
+
+    #[test]
+    fn place_without_overlap_never_overlaps_on_random_input() {
+        let mut seed: u64 = 0x9E37_79B9_7F4A_7C15;
+        let mut rnd = move |n: u64| {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            (seed % n) as f32
+        };
+        for _ in 0..500 {
+            // fixos em grade (sem sobreposição entre si), novos em posições arbitrárias
+            let fixed: Vec<Rect> = (0..rnd(12) as usize)
+                .map(|i| {
+                    rect(
+                        i as f32 * 300. + rnd(30),
+                        rnd(3) * 400.,
+                        260.,
+                        60. + rnd(300),
+                    )
+                })
+                .collect();
+            let incoming: Vec<Rect> = (0..=(rnd(30) as usize))
+                .map(|_| rect(rnd(2000), rnd(1200), 200. + rnd(61), 60. + rnd(400)))
+                .collect();
+            let out = place_without_overlap(&fixed, &incoming, 40.);
+            let mut all = fixed.clone();
+            all.extend(
+                out.iter()
+                    .zip(&incoming)
+                    .map(|(p, r)| rect(p.x, p.y, r.w, r.h)),
+            );
+            let fixed_ok = (0..fixed.len())
+                .all(|i| (i + 1..fixed.len()).all(|j| !fixed[i].intersects(&fixed[j])));
+            if fixed_ok {
+                assert!(!any_overlap(&all));
+            }
+        }
+    }
 
     const SP: Spacing = Spacing {
         gap_x: 100.,

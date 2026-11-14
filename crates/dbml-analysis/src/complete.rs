@@ -99,12 +99,16 @@ pub fn complete(text: &str, offset: usize) -> Vec<Completion> {
             .tables
             .iter()
             .filter(|t| {
-                !members.contains(&t.name) && t.name.to_ascii_lowercase().starts_with(&needle)
+                let qn = t.qualified_name();
+                !members.contains(&qn)
+                    && !members.contains(&t.name)
+                    && qn.to_ascii_lowercase().starts_with(&needle)
             })
             .map(|t| {
+                let qn = t.qualified_name();
                 let mut c = item(
-                    &t.name,
-                    &t.name,
+                    &qn,
+                    &qn,
                     CompletionKind::Table,
                     &format!("{} columns", t.columns.len()),
                 );
@@ -118,33 +122,39 @@ pub fn complete(text: &str, offset: usize) -> Vec<Completion> {
         ctx.trim_end().ends_with(['>', '<', '-']) && (ctx.contains("ref") || ctx.contains("Ref"));
     let items: Vec<Completion> =
         if refs_target || (word.contains('.') && ctx.to_ascii_lowercase().contains("ref")) {
-            match word.split_once('.') {
-                Some((t, _)) => schema
-                    .table(t)
-                    .map(|t| {
+            match word.rsplit_once('.') {
+                Some((prefix, _)) => {
+                    if let Some(t) = schema.table(prefix) {
+                        let qn = t.qualified_name();
                         t.columns
                             .iter()
                             .map(|c| {
                                 item(
                                     &c.name,
-                                    &format!("{}.{}", t.name, c.name),
+                                    &format!("{qn}.{}", c.name),
                                     CompletionKind::Column,
                                     &c.ty,
                                 )
                             })
                             .collect()
-                    })
-                    .unwrap_or_default(),
+                    } else {
+                        schema
+                            .tables
+                            .iter()
+                            .filter(|t| t.schema.as_deref() == Some(prefix))
+                            .map(|t| {
+                                let qn = t.qualified_name();
+                                item(&qn, &format!("{qn}."), CompletionKind::Table, "table")
+                            })
+                            .collect()
+                    }
+                }
                 None => schema
                     .tables
                     .iter()
                     .map(|t| {
-                        item(
-                            &t.name,
-                            &format!("{}.", t.name),
-                            CompletionKind::Table,
-                            "table",
-                        )
+                        let qn = t.qualified_name();
+                        item(&qn, &format!("{qn}."), CompletionKind::Table, "table")
                     })
                     .collect(),
             }
@@ -272,6 +282,9 @@ mod tests {
         assert_eq!(labels(&c), vec!["email".to_string()]);
         let inline = "Table users {\n  id int [pk]\n}\nTable p {\n  u int [ref: > ";
         assert!(labels(inline).contains(&"users".to_string()));
+
+        let multi = "Table auth.users {\n  id int [pk]\n}\nTable billing.invoices {\n  id int [pk]\n}\nRef: billing.invoices.id > auth.users.";
+        assert_eq!(labels(multi), vec!["id".to_string()]);
     }
 
     proptest::proptest! {

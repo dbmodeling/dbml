@@ -83,6 +83,13 @@ cargo run -p app --release -- path/to/schema.dbml
 
 # Interactive Web CLI (crates/cli)
 cargo run -p dbml-cli -- path/to/schema.dbml
+# Options: --port 3000 --no-open --readonly --theme dark
+
+# Import SQL DDL (postgres, mysql, sqlite) into DBML:
+cargo run -p dbml-cli -- import schema.sql --dialect postgres -o schema.dbml
+
+# Export DBML to SQL DDL (postgres, mysql, sqlite, sqlserver, oracle):
+cargo run -p dbml-cli -- export schema.dbml --format sql --dialect postgres -o schema.sql
 ```
 
 - **Ubuntu / Debian dependencies:** `build-essential pkg-config cmake libxcb1-dev libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev libxkbcommon-dev libxkbcommon-x11-dev libwayland-dev libvulkan-dev libfontconfig1-dev libssl-dev`

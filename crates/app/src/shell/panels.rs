@@ -53,7 +53,7 @@ impl Shell {
                     // clique do meio fecha a aba (como em navegadores e no Zed)
                     .on_mouse_down(
                         MouseButton::Middle,
-                        cx.listener(move |this, _, _, cx| this.close_tab_at(i, cx)),
+                        cx.listener(move |this, _, window, cx| this.close_tab_at(i, window, cx)),
                     )
                     .child(Icon::new(IconName::Database).xsmall().text_color(if on {
                         g.accent
@@ -75,9 +75,9 @@ impl Shell {
                                 let h = g.hover;
                                 move |s| s.bg(h)
                             })
-                            .on_click(cx.listener(move |this, _, _, cx| {
+                            .on_click(cx.listener(move |this, _, window, cx| {
                                 cx.stop_propagation();
-                                this.close_tab_at(i, cx);
+                                this.close_tab_at(i, window, cx);
                             }))
                             // alterado: ponto; senão o X (visível na aba ativa ou no hover)
                             .child(if doc.dirty {
@@ -214,6 +214,30 @@ impl Shell {
                             .child("Ctrl K")
                     }),
             )
+            .child(
+                div().flex_none().child(
+                    Button::new("import-sql-btn")
+                        .ghost()
+                        .small()
+                        .icon(IconName::File)
+                        .tooltip_with_action("Import SQL DDL…", &ImportSqlDdl, Some(actions::CTX))
+                        .on_click(|_, window, cx| {
+                            window.dispatch_action(Box::new(ImportSqlDdl), cx);
+                        }),
+                ),
+            )
+            .child(export_dropdown(
+                "export-code-btn",
+                IconName::Database,
+                "Export code (SQL / Mermaid)…",
+                actions::GROUP_EXPORT_CODE,
+            ))
+            .child(export_dropdown(
+                "export-image-btn",
+                IconName::File,
+                "Export image (PNG / JPEG / SVG)…",
+                actions::GROUP_EXPORT_IMAGE,
+            ))
             .child(
                 div().flex_none().child(
                     Button::new("theme-toggle")
@@ -382,9 +406,9 @@ impl Shell {
                                 window.prevent_default();
                                 cx.stop_propagation();
                             })
-                            .on_click(|_, _, cx| {
+                            .on_click(|_, window, cx| {
                                 cx.stop_propagation();
-                                cx.quit();
+                                window.dispatch_action(Box::new(Quit), cx);
                             })
                             .child(Icon::new(IconName::WindowClose).small()),
                     ),
@@ -496,6 +520,14 @@ impl Shell {
                 "DBML Editor",
                 Box::new(ToggleEditor),
                 self.editor_open,
+                0,
+            ))
+            .child(item(
+                "rail-connect",
+                IconName::Database,
+                "Connect to Database",
+                Box::new(ConnectDatabase),
+                false,
                 0,
             ))
             .child(div().flex_1())
@@ -986,11 +1018,12 @@ impl Shell {
         let sel = d.selection();
         let schema = d.schema().clone();
         let row = |t: &schema::Table, cx: &mut Context<Self>| {
-            let on = sel.contains(&t.name);
-            let name = t.name.clone();
+            let qname = t.qualified_name();
+            let on = sel.contains(&qname);
+            let name = qname.clone();
             let tint = t.color.as_deref().and_then(hex);
-            Self::row(g, SharedString::from(format!("side-{}", t.name)), on)
-                .aria_label(format!("Table {}", t.name))
+            Self::row(g, SharedString::from(format!("side-{qname}")), on)
+                .aria_label(format!("Table {qname}"))
                 .on_click(cx.listener(move |this, _, _, cx| {
                     let n = name.clone();
                     this.with_diagram(cx, |d| d.focus_table(&n));
@@ -1003,7 +1036,7 @@ impl Shell {
                         .xsmall()
                         .text_color(tint.unwrap_or(if on { g.accent } else { g.text_faint })),
                 )
-                .child(div().flex_1().truncate().child(t.name.clone()))
+                .child(div().flex_1().truncate().child(qname))
                 .child(
                     div()
                         .text_size(TEXT_XS)
@@ -1045,7 +1078,7 @@ impl Shell {
         let loose: Vec<_> = schema
             .tables
             .iter()
-            .filter(|t| schema.group_of(&t.name).is_none())
+            .filter(|t| schema.group_of(&t.qualified_name()).is_none())
             .collect();
         if !schema.groups.is_empty() && !loose.is_empty() {
             body = body.child(
@@ -1062,6 +1095,34 @@ impl Shell {
         for t in loose {
             body = body.child(row(t, cx));
         }
+        let mut enums_list = div().flex().flex_col().gap(px(1.));
+        for en in &schema.enums {
+            let name = en.name.clone();
+            enums_list = enums_list.child(
+                Self::row(g, SharedString::from(format!("schema-enum-{name}")), false)
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.with_diagram(cx, |d| d.focus_enum(&name));
+                    }))
+                    .child(
+                        div()
+                            .px(px(4.))
+                            .py(px(1.))
+                            .rounded(px(3.))
+                            .bg(g.accent.opacity(0.16))
+                            .text_size(px(9.))
+                            .font_weight(FontWeight::BOLD)
+                            .text_color(g.accent)
+                            .child("E"),
+                    )
+                    .child(div().flex_1().truncate().child(en.name.clone()))
+                    .child(
+                        div()
+                            .text_size(TEXT_XS)
+                            .text_color(g.text_faint)
+                            .child(format!("{}", en.values.len())),
+                    ),
+            );
+        }
         let mut refs = div().flex().flex_col().gap(px(2.)).px(SP_MD);
         for r in &schema.refs {
             refs = refs.child(
@@ -1073,11 +1134,11 @@ impl Shell {
                     .text_size(TEXT_XS)
                     .text_color(g.text_muted)
                     .child(Icon::new(IconName::Link2).xsmall().text_color(g.text_faint))
-                    .child(
-                        div()
-                            .truncate()
-                            .child(format!("{} → {}", r.from.table, r.to.table)),
-                    ),
+                    .child(div().truncate().child(format!(
+                        "{} → {}",
+                        r.from.qualified_table(),
+                        r.to.qualified_table()
+                    ))),
             );
         }
         div()
@@ -1085,6 +1146,8 @@ impl Shell {
             .flex_col()
             .child(Self::section(g, "TABLES", Some(schema.tables.len())))
             .child(body)
+            .child(Self::section(g, "ENUMS", Some(schema.enums.len())))
+            .child(enums_list)
             .child(Self::section(g, "RELATIONS", Some(schema.refs.len())))
             .child(refs)
     }
@@ -1197,22 +1260,55 @@ impl Shell {
                 .text_color(g.text_muted)
                 .child(text)
         };
-        let (selection, selected, group) = match self.doc() {
+        let (selection, selected, selected_enum, group, selected_ref) = match self.doc() {
             Some(doc) => {
                 let d = doc.diagram.read(cx);
                 let sel = d.selection();
                 let one = d.selected().map(|t| {
+                    let qname = t.qualified_name();
                     (
                         t.clone(),
-                        d.refs_of(&t.name).into_iter().cloned().collect::<Vec<_>>(),
+                        d.refs_of(&qname).into_iter().cloned().collect::<Vec<_>>(),
                     )
+                });
+                let one_enum = d.selected_enum().map(|en| {
+                    let refs_by: Vec<(String, String)> = d
+                        .schema()
+                        .tables
+                        .iter()
+                        .flat_map(|t| {
+                            t.columns
+                                .iter()
+                                .filter(|c| c.ty.rsplit('.').next().is_some_and(|ty| ty == en.name))
+                                .map(move |c| (t.qualified_name(), c.name.clone()))
+                        })
+                        .collect();
+                    (en.clone(), refs_by)
                 });
                 let group = one
                     .as_ref()
-                    .and_then(|(t, _)| d.schema().group_of(&t.name).cloned());
-                (sel, one, group)
+                    .and_then(|(t, _)| d.schema().group_of(&t.qualified_name()).cloned());
+                let sref = d.selected_ref().and_then(|(from, to)| {
+                    d.schema()
+                        .refs
+                        .iter()
+                        .find(|r| {
+                            let fq = r.from.qualified_table();
+                            let tq = r.to.qualified_table();
+                            (fq == from.0
+                                && r.from.column == from.1
+                                && tq == to.0
+                                && r.to.column == to.1)
+                                || (fq == to.0
+                                    && r.from.column == to.1
+                                    && tq == from.0
+                                    && r.to.column == from.1)
+                        })
+                        .cloned()
+                });
+                (sel, one, one_enum, group, sref)
             }
-            None => (Vec::new(), None, None),
+            None => (Vec::new(), None, None, None, None),
         };
         let header = |eyebrow: &'static str, title: String, sub: String| {
             div()
@@ -1323,6 +1419,45 @@ impl Shell {
                     }
                 }
             };
+            let field_opt = |target: EditTarget,
+                             text: Option<String>,
+                             placeholder: &'static str,
+                             cx: &mut Context<Self>|
+             -> AnyElement {
+                match &editing {
+                    Some((t, st)) if *t == target => Input::new(st).small().into_any_element(),
+                    _ => {
+                        let id = SharedString::from(format!("edit-opt-{target:?}"));
+                        let value = text.clone().unwrap_or_default();
+                        let has_val = !value.is_empty();
+                        let display = if has_val {
+                            value.clone()
+                        } else {
+                            placeholder.to_string()
+                        };
+                        div()
+                            .id(id)
+                            .role(Role::Button)
+                            .aria_label(format!("Edit {display}"))
+                            .w_full()
+                            .px(px(4.))
+                            .rounded(px(4.))
+                            .truncate()
+                            .text_size(px(11.))
+                            .text_color(if has_val { g.text_muted } else { g.text_faint })
+                            .cursor_text()
+                            .hover({
+                                let h = g.hover;
+                                move |st| st.bg(h)
+                            })
+                            .on_click(cx.listener(move |this, _, window, cx| {
+                                this.start_edit(target.clone(), value.clone(), window, cx);
+                            }))
+                            .child(display)
+                            .into_any_element()
+                    }
+                }
+            };
             let col_type_w = self.col_type_w;
             let mut cols = div().flex().flex_col();
             let col_header = div()
@@ -1376,7 +1511,7 @@ impl Shell {
                             flag: &'static str,
                             on: bool,
                             cx: &mut Context<Self>| {
-                    let (table, col) = (t.name.clone(), c.name.clone());
+                    let (table, col) = (t.qualified_name(), c.name.clone());
                     div()
                         .id(SharedString::from(id))
                         .role(Role::Switch)
@@ -1411,22 +1546,23 @@ impl Shell {
                         }))
                         .child(label)
                 };
+                let qname = t.qualified_name();
                 let name_el = field(
-                    EditTarget::ColName(t.name.clone(), c.name.clone()),
+                    EditTarget::ColName(qname.clone(), c.name.clone()),
                     c.name.clone(),
                     false,
                     cx,
                 );
                 let type_el = field(
-                    EditTarget::ColType(t.name.clone(), c.name.clone()),
+                    EditTarget::ColType(qname.clone(), c.name.clone()),
                     c.ty.clone(),
                     true,
                     cx,
                 );
-                let (table, col) = (t.name.clone(), c.name.clone());
+                let (table, col) = (qname.clone(), c.name.clone());
                 let is_editing_this_type = matches!(
                     &editing,
-                    Some((EditTarget::ColType(tbl, col), _)) if tbl == &t.name && col == &c.name
+                    Some((EditTarget::ColType(tbl, col), _)) if tbl == &qname && col == &c.name
                 );
                 cols = cols.child(
                     div()
@@ -1505,6 +1641,34 @@ impl Shell {
                                 ),
                         ),
                 );
+                let def_el = field_opt(
+                    EditTarget::ColDefault(qname.clone(), c.name.clone()),
+                    c.default_value.clone(),
+                    "default…",
+                    cx,
+                );
+                let chk_el = field_opt(
+                    EditTarget::ColCheck(qname, c.name.clone()),
+                    c.check.clone(),
+                    "check expr…",
+                    cx,
+                );
+                cols = cols.child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap(px(4.))
+                        .px(SP_MD)
+                        .h(px(22.))
+                        .border_b_1()
+                        .border_color(g.edge_soft)
+                        .text_size(px(10.))
+                        .text_color(g.text_faint)
+                        .child(div().child("DEF"))
+                        .child(div().flex_1().min_w_0().child(def_el))
+                        .child(div().child("CHK"))
+                        .child(div().flex_1().min_w_0().child(chk_el)),
+                );
 
                 if is_editing_this_type {
                     let query = if let Some((_, st)) = &editing {
@@ -1562,7 +1726,7 @@ impl Shell {
 
                         for (s_type, s_desc) in suggestions {
                             let opt_type = s_type.to_string();
-                            let (tbl, cl) = (t.name.clone(), c.name.clone());
+                            let (tbl, cl) = (t.qualified_name(), c.name.clone());
                             sugg_box = sugg_box.child(
                                 div()
                                     .id(SharedString::from(format!(
@@ -1603,7 +1767,7 @@ impl Shell {
                     }
                 }
             }
-            let add_table = t.name.clone();
+            let add_table = t.qualified_name();
             cols = cols
                 .child(
                     div().px(SP_MD).py(SP_SM).child(
@@ -1616,6 +1780,24 @@ impl Shell {
                                 this.add_column_to(add_table.clone(), window, cx);
                             })),
                     ),
+                )
+                .child(Self::section(g, "PRESETS", None))
+                .child(
+                    div()
+                        .px(SP_MD)
+                        .py(SP_SM)
+                        .flex()
+                        .flex_wrap()
+                        .gap(SP_SM)
+                        .children(dbml_edit::ColumnPreset::all().into_iter().map(|preset| {
+                            Button::new(SharedString::from(format!("insp-preset-{}", preset.id())))
+                                .ghost()
+                                .small()
+                                .label(preset.label())
+                                .on_click(cx.listener(move |this, _, window, cx| {
+                                    this.apply_column_preset(preset, window, cx);
+                                }))
+                        })),
                 )
                 .on_mouse_move(cx.listener(|this, e: &MouseMoveEvent, _, cx| {
                     if let Some((start_x, start_w)) = this.col_resize_start {
@@ -1636,7 +1818,231 @@ impl Shell {
                         }
                     }),
                 );
-            let title_el = field(EditTarget::Table(t.name.clone()), t.name.clone(), false, cx);
+            let t_qname = t.qualified_name();
+            let title_el = field(
+                EditTarget::Table(t_qname.clone()),
+                t_qname.clone(),
+                false,
+                cx,
+            );
+            let mut indexes_el = div().flex().flex_col().gap(px(4.)).px(SP_MD);
+            for (idx, ix) in t.indexes.iter().enumerate() {
+                let name_el = field_opt(
+                    EditTarget::IndexName(t_qname.clone(), idx),
+                    ix.name.clone(),
+                    "index name (optional)…",
+                    cx,
+                );
+                let (tbl_uq, ix_uq) = (t_qname.clone(), ix.clone());
+                let uq_chip = div()
+                    .id(SharedString::from(format!("idx-uq-{idx}")))
+                    .role(Role::Switch)
+                    .px(px(4.))
+                    .rounded(px(4.))
+                    .border_1()
+                    .text_size(px(10.))
+                    .when(ix.unique, |d| {
+                        d.bg(g.selected)
+                            .border_color(g.accent.opacity(0.5))
+                            .text_color(g.accent)
+                    })
+                    .when(!ix.unique, |d| {
+                        d.border_color(g.edge_soft).text_color(g.text_faint)
+                    })
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        let mut next = ix_uq.clone();
+                        next.unique = !next.unique;
+                        let tbl = tbl_uq.clone();
+                        this.edit_text(false, window, cx, |text| {
+                            dbml_edit::update_index(text, &tbl, idx, &next)
+                        });
+                    }))
+                    .child("UQ");
+
+                let (tbl_pk, ix_pk) = (t_qname.clone(), ix.clone());
+                let pk_chip = div()
+                    .id(SharedString::from(format!("idx-pk-{idx}")))
+                    .role(Role::Switch)
+                    .px(px(4.))
+                    .rounded(px(4.))
+                    .border_1()
+                    .text_size(px(10.))
+                    .when(ix.pk, |d| {
+                        d.bg(g.selected)
+                            .border_color(g.accent.opacity(0.5))
+                            .text_color(g.accent)
+                    })
+                    .when(!ix.pk, |d| {
+                        d.border_color(g.edge_soft).text_color(g.text_faint)
+                    })
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        let mut next = ix_pk.clone();
+                        next.pk = !next.pk;
+                        let tbl = tbl_pk.clone();
+                        this.edit_text(false, window, cx, |text| {
+                            dbml_edit::update_index(text, &tbl, idx, &next)
+                        });
+                    }))
+                    .child("PK");
+
+                let tbl_del = t_qname.clone();
+                let top_row = div()
+                    .flex()
+                    .items_center()
+                    .gap(px(4.))
+                    .child(div().flex_1().min_w_0().child(name_el))
+                    .child(uq_chip)
+                    .child(pk_chip)
+                    .child(
+                        Button::new(SharedString::from(format!("del-idx-{idx}")))
+                            .ghost()
+                            .xsmall()
+                            .icon(IconName::Trash)
+                            .tooltip("Delete index")
+                            .on_click(cx.listener(move |this, _, window, cx| {
+                                let tbl = tbl_del.clone();
+                                this.edit_text(false, window, cx, |text| {
+                                    dbml_edit::delete_index(text, &tbl, idx)
+                                });
+                            })),
+                    );
+
+                let mut cols_row = div().flex().flex_wrap().items_center().gap(px(4.)).child(
+                    div()
+                        .text_size(px(10.))
+                        .text_color(g.text_faint)
+                        .child("COLS"),
+                );
+                for col_def in &t.columns {
+                    let active = ix.references_column(&col_def.name);
+                    let (tbl_col, col_name, ix_col) =
+                        (t_qname.clone(), col_def.name.clone(), ix.clone());
+                    cols_row = cols_row.child(
+                        div()
+                            .id(SharedString::from(format!(
+                                "idx-col-{idx}-{}",
+                                col_def.name
+                            )))
+                            .role(Role::Switch)
+                            .px(px(5.))
+                            .rounded(px(4.))
+                            .border_1()
+                            .text_size(px(10.))
+                            .when(active, |d| {
+                                d.bg(g.selected)
+                                    .border_color(g.accent.opacity(0.5))
+                                    .text_color(g.accent)
+                            })
+                            .when(!active, |d| {
+                                d.border_color(g.edge_soft).text_color(g.text_faint)
+                            })
+                            .on_click(cx.listener(move |this, _, window, cx| {
+                                let mut next = ix_col.clone();
+                                if let Some(pos) = next
+                                    .columns
+                                    .iter()
+                                    .position(|ic| ic.column_name() == Some(col_name.as_str()))
+                                {
+                                    if next.columns.len() > 1 {
+                                        next.columns.remove(pos);
+                                    }
+                                } else {
+                                    next.columns
+                                        .push(schema::IndexColumn::Column(col_name.clone()));
+                                }
+                                let tbl = tbl_col.clone();
+                                this.edit_text(false, window, cx, |text| {
+                                    dbml_edit::update_index(text, &tbl, idx, &next)
+                                });
+                            }))
+                            .child(col_def.name.clone()),
+                    );
+                }
+
+                let mut type_row = div().flex().flex_wrap().items_center().gap(px(4.)).child(
+                    div()
+                        .text_size(px(10.))
+                        .text_color(g.text_faint)
+                        .child("TYPE"),
+                );
+                let type_choices: [(Option<schema::IndexType>, &'static str); 5] = [
+                    (None, "default"),
+                    (Some(schema::IndexType::BTree), "btree"),
+                    (Some(schema::IndexType::Hash), "hash"),
+                    (Some(schema::IndexType::Gin), "gin"),
+                    (Some(schema::IndexType::Gist), "gist"),
+                ];
+                for (opt_ty, label) in type_choices {
+                    let active = ix.index_type == opt_ty;
+                    let (tbl_ty, ix_ty) = (t_qname.clone(), ix.clone());
+                    type_row = type_row.child(
+                        div()
+                            .id(SharedString::from(format!("idx-ty-{idx}-{label}")))
+                            .role(Role::Button)
+                            .px(px(5.))
+                            .rounded(px(4.))
+                            .border_1()
+                            .text_size(px(10.))
+                            .when(active, |d| {
+                                d.bg(g.selected)
+                                    .border_color(g.accent.opacity(0.5))
+                                    .text_color(g.accent)
+                            })
+                            .when(!active, |d| {
+                                d.border_color(g.edge_soft).text_color(g.text_faint)
+                            })
+                            .on_click(cx.listener(move |this, _, window, cx| {
+                                let mut next = ix_ty.clone();
+                                next.index_type = opt_ty;
+                                let tbl = tbl_ty.clone();
+                                this.edit_text(false, window, cx, |text| {
+                                    dbml_edit::update_index(text, &tbl, idx, &next)
+                                });
+                            }))
+                            .child(label),
+                    );
+                }
+
+                indexes_el = indexes_el.child(
+                    div()
+                        .flex()
+                        .flex_col()
+                        .gap(px(4.))
+                        .py(px(4.))
+                        .border_b_1()
+                        .border_color(g.edge_soft)
+                        .child(top_row)
+                        .child(cols_row)
+                        .child(type_row),
+                );
+            }
+            let add_idx_table = t_qname.clone();
+            let add_idx_col = t.columns.first().map(|c| c.name.clone());
+            indexes_el = indexes_el.child(
+                div().py(px(2.)).child(
+                    Button::new("insp-add-index")
+                        .ghost()
+                        .xsmall()
+                        .icon(IconName::Plus)
+                        .label("Add index")
+                        .on_click(cx.listener(move |this, _, window, cx| {
+                            let Some(first_col) = add_idx_col.clone() else {
+                                return;
+                            };
+                            let tbl = add_idx_table.clone();
+                            let new_ix = schema::IndexDef {
+                                columns: vec![schema::IndexColumn::Column(first_col)],
+                                unique: false,
+                                pk: false,
+                                name: None,
+                                index_type: None,
+                            };
+                            this.edit_text(false, window, cx, |text| {
+                                dbml_edit::add_index(text, &tbl, &new_ix)
+                            });
+                        })),
+                ),
+            );
             let mut rels = div().flex().flex_col().gap(px(4.)).px(SP_MD);
             for (ri, r) in refs.iter().enumerate() {
                 let card = match r.kind {
@@ -1645,8 +2051,8 @@ impl Shell {
                     schema::RefKind::OneToOne => "1:1",
                     schema::RefKind::ManyToMany => "N:N",
                 };
-                let (ft, fc) = (r.from.table.clone(), r.from.column.clone());
-                let (tt, tc) = (r.to.table.clone(), r.to.column.clone());
+                let (ft, fc) = (r.from.qualified_table(), r.from.column.clone());
+                let (tt, tc) = (r.to.qualified_table(), r.to.column.clone());
                 rels = rels.child(
                     div()
                         .group("insp-rel")
@@ -1656,10 +2062,12 @@ impl Shell {
                         .text_size(TEXT_SM)
                         .text_color(g.text_muted)
                         .child(Icon::new(IconName::Link2).xsmall().text_color(g.text_faint))
-                        .child(div().flex_1().truncate().child(format!(
-                            "{}.{} → {}.{}",
-                            r.from.table, r.from.column, r.to.table, r.to.column
-                        )))
+                        .child(
+                            div()
+                                .flex_1()
+                                .truncate()
+                                .child(format!("{ft}.{} → {tt}.{}", r.from.column, r.to.column)),
+                        )
                         .child(tag(card))
                         .child(
                             Button::new(SharedString::from(format!("del-rel-{ri}")))
@@ -1686,7 +2094,7 @@ impl Shell {
             let mut swatches = div().flex().flex_wrap().gap(px(6.)).px(SP_MD);
             for (i, (label, hexv)) in TABLE_COLORS.iter().enumerate() {
                 let on = current == *hexv;
-                let table = t.name.clone();
+                let table = t_qname.clone();
                 let color = hex(hexv).unwrap_or_default();
                 swatches = swatches.child(
                     div()
@@ -1708,7 +2116,7 @@ impl Shell {
                         })),
                 );
             }
-            let table = t.name.clone();
+            let table = t_qname.clone();
             swatches = swatches.child(
                 div()
                     .id("swatch-none")
@@ -1802,6 +2210,8 @@ impl Shell {
                 .child(group_row)
                 .child(Self::section(g, "COLUMNS", None))
                 .child(cols)
+                .child(Self::section(g, "INDEXES", Some(t.indexes.len())))
+                .child(indexes_el)
                 .child(Self::section(g, "RELATIONS", None))
                 .child(rels)
                 .child(
@@ -1818,6 +2228,317 @@ impl Shell {
                                 .label("Delete table")
                                 .tooltip_with_action(
                                     "Delete table",
+                                    &DeleteSelection,
+                                    Some(actions::CANVAS),
+                                )
+                                .on_click(|_, window, cx| {
+                                    window.dispatch_action(Box::new(DeleteSelection), cx);
+                                }),
+                        ),
+                )
+        } else if let Some(r) = selected_ref {
+            let mut card_row = div().flex().flex_wrap().gap(px(6.)).px(SP_MD);
+            for &kind in schema::RefKind::ALL {
+                let active = r.kind == kind;
+                let label = match kind {
+                    schema::RefKind::ManyToOne => "N:1 (>)",
+                    schema::RefKind::OneToMany => "1:N (<)",
+                    schema::RefKind::OneToOne => "1:1 (-)",
+                    schema::RefKind::ManyToMany => "N:N (<>)",
+                };
+                let rf = r.clone();
+                let btn = Button::new(SharedString::from(format!("ref-kind-{label}")))
+                    .xsmall()
+                    .label(label);
+                let btn = if active { btn.primary() } else { btn.ghost() };
+                card_row = card_row.child(btn.on_click(cx.listener(move |this, _, window, cx| {
+                    let ft = rf.from.qualified_table();
+                    let fc = rf.from.column.clone();
+                    let tt = rf.to.qualified_table();
+                    let tc = rf.to.column.clone();
+                    let update = dbml_edit::RefUpdate {
+                        kind,
+                        on_delete: rf.on_delete,
+                        on_update: rf.on_update,
+                    };
+                    this.edit_text(false, window, cx, |t| {
+                        Some(dbml_edit::update_ref(t, (&ft, &fc), (&tt, &tc), update))
+                    });
+                })));
+            }
+
+            let build_action_row =
+                |is_delete: bool, current: Option<schema::RefAction>, cx: &mut Context<Self>| {
+                    let mut row = div().flex().flex_wrap().gap(px(6.)).px(SP_MD);
+                    let choices: [Option<schema::RefAction>; 6] = [
+                        None,
+                        Some(schema::RefAction::NoAction),
+                        Some(schema::RefAction::Restrict),
+                        Some(schema::RefAction::Cascade),
+                        Some(schema::RefAction::SetNull),
+                        Some(schema::RefAction::SetDefault),
+                    ];
+                    for action in choices {
+                        let active = current == action;
+                        let label = action.map_or("None", schema::RefAction::as_dbml_str);
+                        let id = SharedString::from(format!(
+                            "ref-{}-{label}",
+                            if is_delete { "del" } else { "upd" }
+                        ));
+                        let rf = r.clone();
+                        let btn = Button::new(id).xsmall().label(label);
+                        let btn = if active { btn.primary() } else { btn.ghost() };
+                        row = row.child(btn.on_click(cx.listener(move |this, _, window, cx| {
+                            let ft = rf.from.qualified_table();
+                            let fc = rf.from.column.clone();
+                            let tt = rf.to.qualified_table();
+                            let tc = rf.to.column.clone();
+                            let update = dbml_edit::RefUpdate {
+                                kind: rf.kind,
+                                on_delete: if is_delete { action } else { rf.on_delete },
+                                on_update: if is_delete { rf.on_update } else { action },
+                            };
+                            this.edit_text(false, window, cx, |t| {
+                                Some(dbml_edit::update_ref(t, (&ft, &fc), (&tt, &tc), update))
+                            });
+                        })));
+                    }
+                    row
+                };
+
+            let del_row = build_action_row(true, r.on_delete, cx);
+            let upd_row = build_action_row(false, r.on_update, cx);
+
+            div()
+                .flex()
+                .flex_col()
+                .child(header(
+                    "RELATION",
+                    format!("{}.{}", r.from.qualified_table(), r.from.column),
+                    format!("→ {}.{}", r.to.qualified_table(), r.to.column),
+                ))
+                .child(Self::section(g, "CARDINALITY", None))
+                .child(card_row)
+                .child(Self::section(g, "ON DELETE", None))
+                .child(del_row)
+                .child(Self::section(g, "ON UPDATE", None))
+                .child(upd_row)
+                .child(
+                    div()
+                        .p(SP_MD)
+                        .mt(SP_SM)
+                        .border_t_1()
+                        .border_color(g.edge_soft)
+                        .child(
+                            Button::new("insp-del-ref")
+                                .ghost()
+                                .small()
+                                .icon(IconName::Trash)
+                                .label("Delete relation")
+                                .tooltip_with_action(
+                                    "Delete relation and FK column",
+                                    &DeleteSelection,
+                                    Some(actions::CANVAS),
+                                )
+                                .on_click(|_, window, cx| {
+                                    window.dispatch_action(Box::new(DeleteSelection), cx);
+                                }),
+                        ),
+                )
+        } else if let Some((en, refs_by)) = selected_enum {
+            let editing = self
+                .editing
+                .as_ref()
+                .map(|(t, st, _)| (t.clone(), st.clone()));
+            let enum_field =
+                |target: EditTarget, text: String, cx: &mut Context<Self>| -> AnyElement {
+                    match &editing {
+                        Some((t, st)) if *t == target => Input::new(st).small().into_any_element(),
+                        _ => {
+                            let id = SharedString::from(format!("enum-edit-{target:?}"));
+                            let value = text.clone();
+                            div()
+                                .id(id)
+                                .role(Role::Button)
+                                .aria_label(format!("Edit {text}"))
+                                .w_full()
+                                .px(px(4.))
+                                .rounded(px(4.))
+                                .truncate()
+                                .text_color(g.text)
+                                .cursor_text()
+                                .hover({
+                                    let h = g.hover;
+                                    move |st| st.bg(h)
+                                })
+                                .on_click(cx.listener(move |this, _, window, cx| {
+                                    this.start_edit(target.clone(), value.clone(), window, cx);
+                                }))
+                                .child(text)
+                                .into_any_element()
+                        }
+                    }
+                };
+            let title_el = enum_field(EditTarget::Enum(en.name.clone()), en.name.clone(), cx);
+            let mut values_list = div().flex().flex_col().gap(px(2.)).px(SP_MD);
+            for (idx, val) in en.values.iter().enumerate() {
+                let en_up = en.name.clone();
+                let v_up = val.name.clone();
+                let en_dn = en.name.clone();
+                let v_dn = val.name.clone();
+                let en_del = en.name.clone();
+                let v_del = val.name.clone();
+                let val_el = enum_field(
+                    EditTarget::EnumVal(en.name.clone(), val.name.clone()),
+                    val.name.clone(),
+                    cx,
+                );
+                values_list = values_list.child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap(px(4.))
+                        .h(px(26.))
+                        .child(div().flex_1().min_w_0().child(val_el))
+                        .when(idx > 0, |d| {
+                            d.child(
+                                Button::new(SharedString::from(format!("enum-up-{idx}")))
+                                    .ghost()
+                                    .xsmall()
+                                    .icon(IconName::ArrowUp)
+                                    .on_click(cx.listener(move |this, _, window, cx| {
+                                        this.edit_text(false, window, cx, |t| {
+                                            dbml_edit::reorder_enum_value(t, &en_up, &v_up, true)
+                                        });
+                                    })),
+                            )
+                        })
+                        .when(idx + 1 < en.values.len(), |d| {
+                            d.child(
+                                Button::new(SharedString::from(format!("enum-dn-{idx}")))
+                                    .ghost()
+                                    .xsmall()
+                                    .icon(IconName::ArrowDown)
+                                    .on_click(cx.listener(move |this, _, window, cx| {
+                                        this.edit_text(false, window, cx, |t| {
+                                            dbml_edit::reorder_enum_value(t, &en_dn, &v_dn, false)
+                                        });
+                                    })),
+                            )
+                        })
+                        .child(
+                            Button::new(SharedString::from(format!("enum-del-{idx}")))
+                                .ghost()
+                                .xsmall()
+                                .icon(IconName::Trash)
+                                .on_click(cx.listener(move |this, _, window, cx| {
+                                    this.edit_text(false, window, cx, |t| {
+                                        dbml_edit::delete_enum_value(t, &en_del, &v_del)
+                                    });
+                                })),
+                        ),
+                );
+            }
+            if let Some((EditTarget::NewEnumVal(target_en), st)) = &editing
+                && target_en == &en.name
+            {
+                values_list = values_list.child(div().py(px(2.)).child(Input::new(st).small()));
+            }
+            let en_add = en.name.clone();
+            values_list = values_list.child(
+                div().pt(px(4.)).child(
+                    Button::new("insp-add-enum-val")
+                        .ghost()
+                        .xsmall()
+                        .icon(IconName::Plus)
+                        .label("Add value")
+                        .on_click(cx.listener(move |this, _, window, cx| {
+                            this.start_edit(
+                                EditTarget::NewEnumVal(en_add.clone()),
+                                String::new(),
+                                window,
+                                cx,
+                            );
+                        })),
+                ),
+            );
+            let mut refs_list = div().flex().flex_col().gap(px(2.)).px(SP_MD);
+            if refs_by.is_empty() {
+                refs_list = refs_list.child(
+                    div()
+                        .text_size(TEXT_XS)
+                        .text_color(g.text_faint)
+                        .child("No columns reference this enum"),
+                );
+            } else {
+                for (i, (tbl, col)) in refs_by.iter().enumerate() {
+                    let tbl_click = tbl.clone();
+                    refs_list = refs_list.child(
+                        Self::row(g, SharedString::from(format!("enum-ref-{i}")), false)
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                this.with_diagram(cx, |d| d.focus_table(&tbl_click));
+                            }))
+                            .child(
+                                div()
+                                    .truncate()
+                                    .text_size(TEXT_XS)
+                                    .text_color(g.text_muted)
+                                    .child(format!("{tbl}.{col}")),
+                            ),
+                    );
+                }
+            }
+            div()
+                .flex()
+                .flex_col()
+                .child(
+                    div()
+                        .flex()
+                        .flex_col()
+                        .gap(px(2.))
+                        .px(SP_MD)
+                        .py(SP_SM)
+                        .border_b_1()
+                        .border_color(g.edge_soft)
+                        .child(
+                            div()
+                                .text_size(TEXT_XS)
+                                .font_weight(FontWeight::SEMIBOLD)
+                                .text_color(g.text_faint)
+                                .child("ENUM"),
+                        )
+                        .child(
+                            div()
+                                .text_size(px(15.))
+                                .font_weight(FontWeight::SEMIBOLD)
+                                .text_color(g.text)
+                                .child(title_el),
+                        )
+                        .child(
+                            div()
+                                .text_size(TEXT_XS)
+                                .text_color(g.text_muted)
+                                .child(format!("{} values", en.values.len())),
+                        ),
+                )
+                .child(Self::section(g, "VALUES", Some(en.values.len())))
+                .child(values_list)
+                .child(Self::section(g, "REFERENCED BY", Some(refs_by.len())))
+                .child(refs_list)
+                .child(
+                    div()
+                        .p(SP_MD)
+                        .mt(SP_SM)
+                        .border_t_1()
+                        .border_color(g.edge_soft)
+                        .child(
+                            Button::new("insp-del-enum")
+                                .ghost()
+                                .small()
+                                .icon(IconName::Trash)
+                                .label("Delete enum")
+                                .tooltip_with_action(
+                                    "Delete enum",
                                     &DeleteSelection,
                                     Some(actions::CANVAS),
                                 )
@@ -1975,6 +2696,13 @@ impl Shell {
                     keys: "Ctrl+N",
                     action: Box::new(NewFile),
                 },
+                crate::widgets::EmptyAction {
+                    id: "empty-connect",
+                    icon: IconName::Database,
+                    label: "Connect to Database",
+                    keys: "",
+                    action: Box::new(ConnectDatabase),
+                },
             ))
     }
 
@@ -2045,4 +2773,30 @@ impl Shell {
                 "Light"
             })
     }
+}
+
+/// Botão da titlebar com dropdown gerado do catálogo de ações (um grupo por botão), para a barra
+/// e a command palette nunca divergirem.
+fn export_dropdown(
+    id: &'static str,
+    icon: IconName,
+    tip: &'static str,
+    group: &'static str,
+) -> Div {
+    div().flex_none().child(
+        Button::new(id)
+            .ghost()
+            .small()
+            .icon(icon)
+            .tooltip(tip)
+            .dropdown_menu(move |mut menu, _, _| {
+                menu = menu.label(group);
+                for e in actions::catalog() {
+                    if e.group == group {
+                        menu = menu.menu(e.label, e.action);
+                    }
+                }
+                menu
+            }),
+    )
 }

@@ -57,6 +57,7 @@ cp -f crates/app/assets/sample.dbml vscode-extension/media/sample.dbml 2>/dev/nu
 (
   cd vscode-extension
   npm run compile
+  npm run build
 )
 
 echo "==> [5/5] Verifying Rust binaries (dbml-cli & app)..."
