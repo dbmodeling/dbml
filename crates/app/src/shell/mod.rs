@@ -37,6 +37,18 @@ const NEW_TABLE_NAME: &str = "new_table";
 
 /// Um arquivo aberto (aba).
 pub struct Doc {
+    /// identifica a cópia de recuperação (`recovery`) desta aba
+    id: u64,
+    /// sublinhados de diagnóstico lidos pelo highlighter do editor
+    marks: crate::ide::DiagMarks,
+    /// geração do texto analisado; resultados de análise de gerações antigas são descartados
+    parse_gen: u64,
+    /// análise (analyze + lint) com debounce, em segundo plano
+    parse_task: Option<Task<()>>,
+    /// posições já gravadas (ou lidas) no sidecar de layout
+    layout_saved: std::collections::HashMap<String, (f32, f32)>,
+    /// gravação do sidecar com debounce
+    layout_task: Option<Task<()>>,
     path: Option<PathBuf>,
     title: String,
     editor: Entity<EditorState>,
@@ -46,6 +58,10 @@ pub struct Doc {
     history: crate::history::UndoHistory,
     dirty: bool,
     autosave: Option<Task<()>>,
+    /// conteúdo do disco já avisado como conflito (evita repetir o aviso a cada leitura)
+    watch_warned: Option<std::sync::Arc<str>>,
+    /// conteúdo do disco sobre o qual o primeiro Salvar avisou; repetir Salvar sobrescreve
+    save_armed: Option<std::sync::Arc<str>>,
     diags: Vec<dbml_analysis::Diagnostic>,
     /// realce do bloco da tabela selecionada no editor
     table_hl: RangeDecorationCollection,
@@ -175,6 +191,20 @@ pub struct Shell {
     last_canvas: Option<EntityId>,
     canvas_epoch: u64,
     popover_epoch: u64,
+    /// tarefa que confere periodicamente se os arquivos abertos mudaram no disco
+    disk_watcher: Option<Task<()>>,
+    /// consulta a caixa de entrada de `handoff` (segunda instância, "Abrir com" do macOS)
+    handoff_poll: Option<Task<()>>,
+    /// gravação (com debounce) das cópias de recuperação das abas não salvas
+    recovery_task: Option<Task<()>>,
+    /// há cópias de recuperação no disco (ou pendentes de gravação)
+    recovery_active: bool,
+    /// leituras de arquivo/pasta em andamento em segundo plano (mostra "Abrindo…" na barra)
+    loading: usize,
+    /// `.dbml` de uma pasta fora do projeto (arquivo avulso), varridos em segundo plano
+    loose_files: (PathBuf, Vec<PathBuf>),
+    /// tabela a selecionar quando o primeiro documento abrir (harness de screenshot)
+    preselect: Option<String>,
 }
 
 impl Focusable for Shell {
@@ -580,6 +610,19 @@ fn git_branch(start: &Path) -> Option<String> {
     })
 }
 
+/// Dica de recuperação para falha ao gravar o `.dbml`.
+fn save_error_hint(e: &std::io::Error) -> &'static str {
+    if file_in_use(e) {
+        "O arquivo está em uso. Feche-o no outro aplicativo ou use Salvar como."
+    } else if e.kind() == std::io::ErrorKind::StorageFull {
+        "O disco está cheio. Libere espaço ou use Salvar como."
+    } else if e.kind() == std::io::ErrorKind::PermissionDenied {
+        "Sem permissão para gravar nesta pasta. Use Salvar como para escolher outra."
+    } else {
+        "Suas alterações continuam abertas. Tente salvar novamente ou use Salvar como."
+    }
+}
+
 fn file_title(p: &Path) -> String {
     p.file_name()
         .map_or_else(|| "?".to_string(), |n| n.to_string_lossy().into_owned())
@@ -601,11 +644,11 @@ impl Shell {
             active: 0,
             untitled: 0,
             pane: Pane::Schema,
-            sidebar_open: std::env::var("DBM_SIDEBAR").is_ok()
+            sidebar_open: crate::harness::var("DBM_SIDEBAR").is_some()
                 || crate::settings::load().sidebar_open,
-            editor_open: std::env::var("DBM_EDITOR").is_ok(),
+            editor_open: crate::harness::var("DBM_EDITOR").is_some(),
             code_only: false,
-            inspector_open: std::env::var("DBM_INSPECTOR").is_ok()
+            inspector_open: crate::harness::var("DBM_INSPECTOR").is_some()
                 || crate::settings::load().inspector_open,
             mode,
             translucent,
@@ -638,23 +681,28 @@ impl Shell {
             last_canvas: None,
             canvas_epoch: 0,
             popover_epoch: 0,
+            disk_watcher: None,
+            handoff_poll: None,
+            recovery_task: None,
+            recovery_active: false,
+            loading: 0,
+            loose_files: (PathBuf::new(), Vec::new()),
+            preselect: crate::harness::var("DBM_SELECT"),
         };
+        this.disk_watcher = Some(Self::spawn_disk_watcher(window, cx));
+        this.handoff_poll = Some(Self::spawn_handoff_poll(window, cx));
         // DBM_PANE: painel inicial (usado pelo harness de screenshot)
-        this.pane = match std::env::var("DBM_PANE").as_deref() {
-            Ok("files") => Pane::Files,
-            Ok("problems") => Pane::Problems,
+        this.pane = match crate::harness::var("DBM_PANE").as_deref() {
+            Some("files") => Pane::Files,
+            Some("problems") => Pane::Problems,
             _ => Pane::Schema,
         };
-        let preselect = std::env::var("DBM_SELECT").ok();
         match start {
             Some(p) if p.is_dir() => this.set_project(p, window, cx),
             Some(p) => this.open_path(p, window, cx),
             None => this.restore_session(window, cx),
         }
-        // DBM_SELECT: tabela pré-selecionada (harness de screenshot)
-        if let Some(t) = preselect {
-            this.with_diagram(cx, |d| d.select(&t));
-        }
+        this.adopt_recovery(window, cx);
         this
     }
 
@@ -697,19 +745,28 @@ impl Shell {
             .as_deref()
             .map(crate::session::load_edges)
             .unwrap_or_default();
+        let saved_positions = path
+            .as_deref()
+            .map(crate::session::load_positions)
+            .unwrap_or_default();
         let diagram = cx.new(|cx| {
             let mut d = Diagram::new(dbml_analysis::analyze(&text), cx);
             d.set_edges(edges);
+            d.seed_positions(saved_positions);
             d
         });
+        let layout_saved = diagram.read(cx).positions().clone();
+        let mut marks = None;
         let editor = cx.new(|cx| {
             let mut st = EditorState::new(window, cx)
                 .default_value(text)
                 .line_number(true);
-            crate::ide::install(&mut st, cx);
+            marks = Some(crate::ide::install(&mut st, cx));
             st
         });
+        let marks = marks.unwrap_or_default();
         let diags = editor.update(cx, crate::ide::refresh_diagnostics);
+        *marks.borrow_mut() = crate::ide::diag_marks(&diags);
         let table_hl = editor.update(cx, |e, cx| {
             e.create_range_decorations_collection(Vec::new(), cx)
         });
@@ -722,8 +779,6 @@ impl Shell {
                     return;
                 }
                 let val = ed.read(cx).value().to_string();
-                let schema = dbml_analysis::analyze(&val);
-                let diags = ed.update(cx, crate::ide::refresh_diagnostics);
                 let suppress = this.suppress_history;
                 if let Some(doc) = this.docs.iter_mut().find(|d| &d.editor == ed) {
                     if !suppress && val.as_str() != doc.last_text.as_ref() {
@@ -740,23 +795,22 @@ impl Shell {
                     }
                     doc.last_text = std::sync::Arc::from(val.as_str());
                     doc.dirty = doc.last_text.as_ref() != doc.saved_text.as_ref();
-                    doc.diags = diags;
-                    if !suppress {
-                        doc.diagram.update(cx, |d, cx| {
-                            d.set_schema(schema);
-                            cx.notify();
-                        });
-                    }
                 }
+                // analyze + lint fora da thread da UI, 120 ms depois da última tecla
+                this.schedule_analysis(ed, !suppress, cx);
                 if !suppress && let Some(i) = this.doc_index(ed) {
                     this.schedule_autosave(i, window, cx);
                 }
+                this.publish_recovery(cx);
                 cx.notify();
             },
         );
         // repinta o shell só quando muda algo que ele mostra (seleção, zoom, dica...);
         // mover/arrastar no canvas redesenha apenas o canvas
         let obs = cx.observe(&diagram, |this: &mut Shell, d, cx| {
+            if let Some(i) = this.docs.iter().position(|doc| doc.diagram == d) {
+                this.save_layout(i, cx);
+            }
             let sum = d.read(cx).summary();
             if this.last_summary.as_ref() != Some(&sum) {
                 let had_selection = this
@@ -826,6 +880,12 @@ impl Shell {
         );
         self.subs.extend([sub, obs, events]);
         self.docs.push(Doc {
+            id: crate::recovery::next_id(),
+            marks,
+            parse_gen: 0,
+            parse_task: None,
+            layout_saved,
+            layout_task: None,
             path,
             title,
             editor,
@@ -835,29 +895,182 @@ impl Shell {
             history: crate::history::UndoHistory::new(),
             dirty: false,
             autosave: None,
+            watch_warned: None,
+            save_armed: None,
             diags,
             table_hl,
             hl_key: (None, std::sync::Arc::from("")),
         });
         self.active = self.docs.len() - 1;
+        // DBM_SELECT: tabela pré-selecionada (harness de screenshot)
+        if let Some(t) = self.preselect.take() {
+            self.with_diagram(cx, |d| d.select(&t));
+        }
         cx.notify();
     }
 
-    fn open_path(&mut self, path: PathBuf, window: &mut Window, cx: &mut Context<Self>) {
-        if let Some(i) = self
+    /// Abre `path` em uma aba. A leitura roda em segundo plano (pasta de rede lenta não congela
+    /// a janela); `finish_open` conclui na thread da UI.
+    /// Agenda `analyze` + `lint` do texto atual para 120 ms depois, em segundo plano. Cada edição
+    /// invalida a anterior (geração), então digitar rápido analisa só o texto final. O resultado
+    /// atualiza diagnósticos, sublinhados e, se `apply_schema`, o canvas.
+    fn schedule_analysis(&mut self, editor: &Entity<EditorState>, apply_schema: bool, cx: &mut Context<Self>) {
+        let Some(i) = self.doc_index(editor) else { return };
+        let doc = &mut self.docs[i];
+        doc.parse_gen += 1;
+        let generation = doc.parse_gen;
+        let text = doc.last_text.clone();
+        let bg = cx.background_executor().clone();
+        let editor = editor.clone();
+        doc.parse_task = Some(cx.spawn(async move |this, cx| {
+            bg.timer(std::time::Duration::from_millis(120)).await;
+            let (schema, diags) = bg
+                .spawn(async move { (dbml_analysis::analyze(&text), dbml_analysis::lint(&text)) })
+                .await;
+            this.update(cx, |this, cx| {
+                let Some(i) = this.doc_index(&editor) else { return };
+                let doc = &mut this.docs[i];
+                if doc.parse_gen != generation {
+                    return;
+                }
+                *doc.marks.borrow_mut() = crate::ide::diag_marks(&diags);
+                doc.diags = diags;
+                if apply_schema {
+                    doc.diagram.update(cx, |d, cx| {
+                        d.set_schema(schema);
+                        cx.notify();
+                    });
+                }
+                editor.update(cx, |_, cx| cx.notify());
+                cx.notify();
+            })
+            .ok();
+        }));
+    }
+
+    /// Grava as posições dos cartões no sidecar (`<arquivo>.dbml.layout.json`) quando mudam
+    /// (arrastar, desfazer/refazer, reorganizar, tabela nova), com debounce e em segundo plano.
+    fn save_layout(&mut self, i: usize, cx: &mut Context<Self>) {
+        let Some(doc) = self.docs.get_mut(i) else { return };
+        let Some(path) = doc.path.clone() else { return };
+        let pos = doc.diagram.read(cx).positions().clone();
+        if pos == doc.layout_saved {
+            return;
+        }
+        doc.layout_saved.clone_from(&pos);
+        let bg = cx.background_executor().clone();
+        doc.layout_task = Some(cx.spawn(async move |_, _| {
+            bg.timer(std::time::Duration::from_millis(400)).await;
+            bg.spawn(async move {
+                if let Err(e) = crate::session::save_positions(&path, &pos) {
+                    eprintln!("{}", crate::i18n::t("não foi possível gravar o layout de {}: {}").replacen("{}", &path.display().to_string(), 1).replacen("{}", &e.to_string(), 1));
+                }
+            })
+            .await;
+        }));
+    }
+
+    /// Publica as abas com edições não salvas (para o panic hook) e agenda a gravação das cópias
+    /// de recuperação; salvar ou fechar a aba apaga a cópia na próxima gravação.
+    fn publish_recovery(&mut self, cx: &mut Context<Self>) {
+        let live: Vec<crate::recovery::Live> = self
             .docs
             .iter()
-            .position(|d| d.path.as_ref() == Some(&path))
-        {
+            .filter(|d| d.dirty)
+            .map(|d| crate::recovery::Live {
+                id: d.id,
+                title: d.title.clone(),
+                path: d.path.clone(),
+                text: d.last_text.clone(),
+            })
+            .collect();
+        crate::recovery::set_live(live.clone());
+        if live.is_empty() && !self.recovery_active {
+            return;
+        }
+        self.recovery_active = !live.is_empty();
+        let Some(dir) = crate::recovery::dir() else { return };
+        let bg = cx.background_executor().clone();
+        self.recovery_task = Some(cx.spawn(async move |_, _| {
+            bg.timer(std::time::Duration::from_millis(1500)).await;
+            bg.spawn(async move {
+                if let Err(e) = crate::recovery::write_all(&dir, &live) {
+                    eprintln!("recovery: {e}");
+                }
+            })
+            .await;
+        }));
+    }
+
+    /// Devolve como abas não salvas o que uma execução anterior deixou em `recovery/`. A aba
+    /// herda o id da cópia, então ela continua sendo regravada/apagada normalmente. Abas de
+    /// arquivo voltam sem caminho: gravar exige "Salvar como", nada sobrescreve o disco calado.
+    fn adopt_recovery(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(dir) = crate::recovery::dir() else { return };
+        let entries = crate::recovery::read_all(&dir);
+        if entries.is_empty() {
+            return;
+        }
+        let count = entries.len();
+        for entry in entries {
+            let title = match &entry.path {
+                Some(p) => crate::i18n::t("{} (recuperado)").replace("{}", &file_title(p)),
+                None => crate::i18n::t("{} (recuperado)").replace("{}", &entry.title),
+            };
+            self.add_doc(entry.text, None, title, window, cx);
+            if let Some(doc) = self.docs.last_mut() {
+                doc.id = entry.id;
+                doc.saved_text = std::sync::Arc::from("");
+                doc.dirty = true;
+            }
+        }
+        self.recovery_active = true;
+        self.publish_recovery(cx);
+        window.push_notification(
+            crate::i18n::t("{} aba(s) com edições não salvas foram recuperadas de uma sessão que terminou de forma inesperada.")
+                .replace("{}", &count.to_string()),
+            cx,
+        );
+    }
+
+    fn open_path(&mut self, path: PathBuf, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(i) = self.docs.iter().position(|d| d.path.as_ref() == Some(&path)) {
             self.active = i;
             self.save_session(cx);
             cx.notify();
             return;
         }
-        match std::fs::read_to_string(&path) {
+        let bg = cx.background_executor().clone();
+        let read_path = path.clone();
+        self.loading += 1;
+        cx.notify();
+        cx.spawn_in(window, async move |this, cx| {
+            let result = bg.spawn(async move { std::fs::read_to_string(&read_path) }).await;
+            this.update_in(cx, |this, window, cx| {
+                this.loading = this.loading.saturating_sub(1);
+                this.finish_open(path, result, window, cx);
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    fn finish_open(&mut self, path: PathBuf, result: std::io::Result<String>, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(i) = self.docs.iter().position(|d| d.path.as_ref() == Some(&path)) {
+            self.active = i;
+            self.save_session(cx);
+            cx.notify();
+            return;
+        }
+        match result {
             Ok(text) => {
                 let title = file_title(&path);
                 self.add_doc(text, Some(path.clone()), title, window, cx);
+                if self.project.is_none()
+                    && let Some(dir) = path.parent()
+                {
+                    Self::rescan(dir.to_path_buf(), window, cx);
+                }
                 self.touch_recent(path, cx);
                 self.save_session(cx);
             }
@@ -870,8 +1083,28 @@ impl Shell {
                     _ => "Não foi possível abrir o arquivo. Selecione-o novamente.",
                 };
                 window.push_notification(crate::i18n::t(hint), cx);
+                cx.notify();
             }
         }
+    }
+
+    /// Varre `dir` em segundo plano e guarda a lista (projeto ou pasta do arquivo avulso).
+    fn rescan(dir: PathBuf, window: &mut Window, cx: &mut Context<Self>) {
+        let bg = cx.background_executor().clone();
+        let scan_dir = dir.clone();
+        cx.spawn_in(window, async move |this, cx| {
+            let files = bg.spawn(async move { scan(&scan_dir) }).await;
+            this.update_in(cx, |this, _, cx| {
+                if this.project.as_ref() == Some(&dir) {
+                    this.files = files;
+                } else {
+                    this.loose_files = (dir, files);
+                }
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
     }
 
     /// Registra o arquivo no histórico de recentes (não na restauração da sessão).
@@ -894,57 +1127,39 @@ impl Shell {
     }
 
     fn set_project(&mut self, dir: PathBuf, window: &mut Window, cx: &mut Context<Self>) {
-        self.files = scan(&dir);
-        self.project = Some(dir);
-        if std::env::var("DBM_PANE").is_err() {
+        self.files.clear();
+        self.project = Some(dir.clone());
+        if crate::harness::var("DBM_PANE").is_none() {
             self.pane = Pane::Files;
         }
-        if let Some(first) = self.files.first().cloned() {
-            self.open_path(first, window, cx);
-        }
         self.save_session(cx);
+        let bg = cx.background_executor().clone();
+        self.loading += 1;
         cx.notify();
+        cx.spawn_in(window, async move |this, cx| {
+            let scan_dir = dir.clone();
+            let files = bg.spawn(async move { scan(&scan_dir) }).await;
+            this.update_in(cx, |this, window, cx| {
+                this.loading = this.loading.saturating_sub(1);
+                if this.project.as_ref() != Some(&dir) {
+                    return;
+                }
+                this.files = files;
+                if let Some(first) = this.files.first().cloned() {
+                    this.open_path(first, window, cx);
+                }
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
     }
 
+    /// Restaura a sessão anterior. Pasta, abas e arquivos são lidos em segundo plano; a janela
+    /// abre na hora e `finish_restore` monta as abas quando a leitura termina.
     fn restore_session(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let session = crate::session::load();
-        self.restoring_session = true;
-
-        if let Some(dir) = session.project_dir.filter(|d| d.is_dir()) {
-            self.files = scan(&dir);
-            self.project = Some(dir);
-        }
-
-        for path in &session.open_tabs {
-            if path.is_file() {
-                self.open_path(path.clone(), window, cx);
-                if let Some(vp) = session.viewports.get(path)
-                    && let Some(doc) = self.docs.last()
-                {
-                    doc.diagram.update(cx, |d, _| {
-                        d.set_viewport(vp.zoom, (vp.pan_x, vp.pan_y));
-                    });
-                }
-            }
-        }
-
-        if self.docs.is_empty()
-            && self.project.is_some()
-            && let Some(first) = self.files.first().cloned()
-        {
-            self.open_path(first, window, cx);
-        }
-
-        if let Some(active_path) = session.active_file.as_ref()
-            && let Some(idx) = self
-                .docs
-                .iter()
-                .position(|d| d.path.as_ref() == Some(active_path))
-        {
-            self.active = idx;
-        }
-
-        if std::env::var("DBM_PANE").is_err()
+        if crate::harness::var("DBM_PANE").is_none()
             && let Some(pane) = session.pane.as_deref()
         {
             self.pane = match pane {
@@ -953,20 +1168,81 @@ impl Shell {
                 _ => Pane::Schema,
             };
         }
-
-        if std::env::var("DBM_EDITOR").is_err()
+        if crate::harness::var("DBM_EDITOR").is_none()
             && let Some(ed) = session.editor_open
         {
             self.editor_open = ed;
             self.code_only = ed && session.code_view == Some(true);
         }
+        let bg = cx.background_executor().clone();
+        let (project, tabs) = (session.project_dir.clone(), session.open_tabs.clone());
+        self.loading += 1;
+        cx.spawn_in(window, async move |this, cx| {
+            let loaded = bg
+                .spawn(async move {
+                    let project = project.filter(|d| d.is_dir());
+                    let files = project.as_deref().map(scan).unwrap_or_default();
+                    let mut docs = Vec::new();
+                    for path in tabs {
+                        if let Ok(text) = std::fs::read_to_string(&path) {
+                            docs.push((path, text));
+                        }
+                    }
+                    if docs.is_empty()
+                        && let Some(first) = files.first()
+                        && let Ok(text) = std::fs::read_to_string(first)
+                    {
+                        docs.push((first.clone(), text));
+                    }
+                    (project, files, docs)
+                })
+                .await;
+            this.update_in(cx, |this, window, cx| {
+                this.loading = this.loading.saturating_sub(1);
+                this.finish_restore(&session, loaded, window, cx);
+            })
+            .ok();
+        })
+        .detach();
+    }
 
+    fn finish_restore(
+        &mut self,
+        session: &crate::session::SessionState,
+        (project, files, docs): (Option<PathBuf>, Vec<PathBuf>, Vec<(PathBuf, String)>),
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.restoring_session = true;
+        if project.is_some() && self.project.is_none() {
+            self.files = files;
+            self.project = project;
+        }
+        for (path, text) in docs {
+            if self.docs.iter().any(|d| d.path.as_ref() == Some(&path)) {
+                continue;
+            }
+            let title = file_title(&path);
+            self.add_doc(text, Some(path.clone()), title, window, cx);
+            if let Some(vp) = session.viewports.get(&path)
+                && let Some(doc) = self.docs.last()
+            {
+                doc.diagram.update(cx, |d, _| {
+                    d.set_viewport(vp.zoom, (vp.pan_x, vp.pan_y));
+                });
+            }
+        }
+        if let Some(active_path) = session.active_file.as_ref()
+            && let Some(idx) = self.docs.iter().position(|d| d.path.as_ref() == Some(active_path))
+        {
+            self.active = idx;
+        }
         self.restoring_session = false;
-
         if self.docs.is_empty() && self.project.is_none() {
             let text = include_str!("../../assets/sample.dbml").to_string();
             self.add_doc(text, None, "example.dbml".into(), window, cx);
         }
+        cx.notify();
     }
 
     fn save_session(&self, cx: &App) {
@@ -1078,7 +1354,7 @@ impl Shell {
     fn save_file(&mut self, _: &SaveFile, window: &mut Window, cx: &mut Context<Self>) {
         let Some(doc) = self.doc() else { return };
         if let Some(path) = doc.path.clone() {
-            self.write(self.active, path, false, window, cx);
+            self.write(self.active, path, window, cx);
             return;
         }
         let dir = self
@@ -1090,7 +1366,7 @@ impl Shell {
         cx.spawn_in(window, async move |this, cx| {
             let Ok(Ok(Some(path))) = rx.await else { return };
             this.update_in(cx, |this, window, cx| {
-                if let Some(i) = this.doc_index(&editor) { this.write(i, path, false, window, cx); }
+                if let Some(i) = this.doc_index(&editor) { this.write(i, path, window, cx); }
             })
                 .ok();
         })
@@ -1108,25 +1384,207 @@ impl Shell {
             return;
         }
         let editor = doc.editor.clone();
-        let timer = cx.background_executor().timer(std::time::Duration::from_millis(600));
+        let bg = cx.background_executor().clone();
+        let timer = bg.timer(std::time::Duration::from_millis(600));
         doc.autosave = Some(cx.spawn_in(window, async move |this, cx| {
             timer.await;
-            this.update_in(cx, |this, window, cx| {
-                let Some(i) = this.doc_index(&editor) else { return };
-                let doc = &this.docs[i];
-                if let Some(path) = doc.path.clone().filter(|_| doc.dirty) {
-                    this.write(i, path, true, window, cx);
-                }
-            }).ok();
+            let Ok(Some((path, text, saved))) = this.update_in(cx, |this, _, cx| {
+                let doc = &this.docs[this.doc_index(&editor)?];
+                let path = doc.path.clone().filter(|_| doc.dirty)?;
+                Some((path, doc.editor.read(cx).value().to_string(), doc.saved_text.clone()))
+            }) else {
+                return;
+            };
+            // leitura de conferência e gravação fora da thread da UI
+            let (write_path, write_text) = (path.clone(), text.clone());
+            let result = bg
+                .spawn(async move {
+                    let on_disk = std::fs::read_to_string(&write_path).ok();
+                    if on_disk.as_deref() != Some(saved.as_ref()) {
+                        return Err(None);
+                    }
+                    crate::session::atomic_write_sync(&write_path, &write_text).map_err(Some)
+                })
+                .await;
+            this.update_in(cx, |this, window, cx| this.finish_autosave(&editor, &path, &text, result, window, cx)).ok();
         }));
     }
 
-    fn write(&mut self, i: usize, path: PathBuf, autosave: bool, window: &mut Window, cx: &mut Context<Self>) -> bool {
+    /// Conclui o autosave em segundo plano. `Err(None)` = o disco mudou (não sobrescreve).
+    fn finish_autosave(
+        &mut self,
+        editor: &Entity<EditorState>,
+        path: &Path,
+        text: &str,
+        result: Result<(), Option<std::io::Error>>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(i) = self.doc_index(editor) else { return };
+        let doc = &mut self.docs[i];
+        if doc.path.as_deref() != Some(path) {
+            return;
+        }
+        match result {
+            Ok(()) => {
+                doc.saved_text = std::sync::Arc::from(text);
+                // se o usuário digitou durante a gravação, continua sujo (novo autosave já agendado)
+                doc.dirty = doc.last_text.as_ref() != doc.saved_text.as_ref();
+                doc.watch_warned = None;
+                doc.save_armed = None;
+            }
+            Err(None) => {
+                window.push_notification(crate::i18n::t("O arquivo mudou no disco. Salve manualmente para confirmar."), cx);
+            }
+            Err(Some(e)) => {
+                eprintln!("Could not save {}: {e}", path.display());
+                window.push_notification(crate::i18n::t(save_error_hint(&e)), cx);
+            }
+        }
+        self.publish_recovery(cx);
+        cx.notify();
+    }
+
+    /// Abre na janela existente o que outra instância ou o sistema entregou (`handoff`).
+    fn spawn_handoff_poll(window: &mut Window, cx: &mut Context<Self>) -> Task<()> {
+        let bg = cx.background_executor().clone();
+        cx.spawn_in(window, async move |this, cx| {
+            loop {
+                bg.timer(std::time::Duration::from_millis(250)).await;
+                let requests = crate::handoff::take();
+                let notices = crate::session::take_notices();
+                if requests.is_empty() && notices.is_empty() {
+                    continue;
+                }
+                let alive = this.update_in(cx, |this, window, cx| {
+                    for notice in notices {
+                        window.push_notification(notice, cx);
+                    }
+                    if !requests.is_empty() {
+                        window.activate_window();
+                    }
+                    for path in requests.into_iter().flat_map(|r| r.paths) {
+                        if path.is_dir() {
+                            this.set_project(path, window, cx);
+                        } else {
+                            this.open_path(path, window, cx);
+                        }
+                    }
+                });
+                if alive.is_err() {
+                    return;
+                }
+            }
+        })
+    }
+
+    /// Confere em segundo plano, a cada 1,5 s, se os arquivos abertos mudaram no disco
+    /// (`git pull`, outro editor). A leitura roda fora da thread da UI.
+    fn spawn_disk_watcher(window: &mut Window, cx: &mut Context<Self>) -> Task<()> {
+        let bg = cx.background_executor().clone();
+        cx.spawn_in(window, async move |this, cx| {
+            loop {
+                bg.timer(std::time::Duration::from_millis(1500)).await;
+                let Ok(paths) = this.update_in(cx, |this, _, _| {
+                    this.docs.iter().filter_map(|d| d.path.clone()).collect::<Vec<_>>()
+                }) else {
+                    return;
+                };
+                if paths.is_empty() {
+                    continue;
+                }
+                let reads = bg
+                    .spawn(async move {
+                        paths
+                            .into_iter()
+                            .map(|p| {
+                                let text = crate::disk_sync::read_disk(&p);
+                                (p, text)
+                            })
+                            .collect::<Vec<_>>()
+                    })
+                    .await;
+                if this.update_in(cx, |this, window, cx| this.apply_disk_reads(reads, window, cx)).is_err() {
+                    return;
+                }
+            }
+        })
+    }
+
+    fn apply_disk_reads(&mut self, reads: Vec<(PathBuf, Option<String>)>, window: &mut Window, cx: &mut Context<Self>) {
+        use crate::disk_sync::{Watch, watch_decision};
+        for (path, disk) in reads {
+            let Some(i) = self.docs.iter().position(|d| d.path.as_ref() == Some(&path)) else { continue };
+            let doc = &mut self.docs[i];
+            let decision = watch_decision(&doc.saved_text, &doc.last_text, disk.as_deref(), doc.watch_warned.as_deref());
+            match decision {
+                Watch::Idle => {}
+                Watch::Reload(text) => self.reload_doc(i, &text, window, cx),
+                Watch::Conflict(text) => {
+                    doc.watch_warned = Some(std::sync::Arc::from(text.as_str()));
+                    window.push_notification(
+                        crate::i18n::t("{} mudou no disco e há edições não salvas aqui. Salvar sobrescreve a versão do disco.")
+                            .replace("{}", &doc.title),
+                        cx,
+                    );
+                }
+            }
+        }
+    }
+
+    /// Adota `text` (lido do disco) como conteúdo salvo e atual da aba `i`. A versão anterior
+    /// do buffer entra no histórico, então Desfazer a recupera.
+    fn reload_doc(&mut self, i: usize, text: &str, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(doc) = self.docs.get_mut(i) else { return };
+        let new_arc: std::sync::Arc<str> = std::sync::Arc::from(text);
+        let changed = doc.last_text != new_arc;
+        if changed {
+            let snap = Self::snapshot_of(doc, cx);
+            doc.history.push(snap);
+        }
+        doc.saved_text = new_arc.clone();
+        doc.last_text = new_arc;
+        doc.dirty = false;
+        doc.watch_warned = None;
+        doc.save_armed = None;
+        let editor = doc.editor.clone();
+        let diagram = doc.diagram.clone();
+        let edges = doc.path.as_deref().map(crate::session::load_edges).unwrap_or_default();
+        let saved_positions = doc.path.as_deref().map(crate::session::load_positions).unwrap_or_default();
+        let title = doc.title.clone();
+        if editor.read(cx).value().as_ref() != text {
+            self.suppress_history = true;
+            editor.update(cx, |e, cx| e.replace_all(text.to_owned(), window, cx));
+            self.suppress_history = false;
+        }
+        let schema = dbml_analysis::analyze(text);
+        diagram.update(cx, |d, cx| {
+            d.set_schema(schema);
+            d.set_edges(edges);
+            d.seed_positions(saved_positions);
+            cx.notify();
+        });
+        if changed {
+            window.push_notification(crate::i18n::t("{} foi recarregado do disco.").replace("{}", &title), cx);
+        }
+        self.publish_recovery(cx);
+        cx.notify();
+    }
+
+    /// Salvar explícito (Ctrl+S, fechar aba, sair): síncrono porque o chamador precisa do resultado.
+    fn write(&mut self, i: usize, path: PathBuf, window: &mut Window, cx: &mut Context<Self>) -> bool {
         let Some(doc) = self.docs.get_mut(i) else { return false };
         let text = doc.editor.read(cx).value().to_string();
-        if autosave && !std::fs::read_to_string(&path).is_ok_and(|disk| disk == doc.saved_text.as_ref()) {
-            window.push_notification(crate::i18n::t("O arquivo mudou no disco. Salve manualmente para confirmar."), cx);
-            return false;
+        if doc.path.as_deref() == Some(path.as_path()) {
+            let disk = crate::disk_sync::read_disk(&path);
+            if !crate::disk_sync::save_allowed(&doc.saved_text, disk.as_deref(), doc.save_armed.as_deref()) {
+                doc.save_armed = disk.map(|d| std::sync::Arc::from(d.as_str()));
+                window.push_notification(
+                    crate::i18n::t("O arquivo mudou no disco desde que foi aberto. Salve de novo para sobrescrever."),
+                    cx,
+                );
+                return false;
+            }
         }
         let ok = match crate::session::atomic_write_sync(&path, &text) {
             Ok(()) => {
@@ -1134,18 +1592,20 @@ impl Shell {
                 doc.saved_text = saved.clone();
                 doc.last_text = saved;
                 doc.dirty = false;
-                if autosave {
-                    cx.notify();
-                    return true;
-                }
+                doc.watch_warned = None;
+                doc.save_armed = None;
+                self.publish_recovery(cx);
+                let Some(doc) = self.docs.get_mut(i) else { return true };
                 doc.autosave = None;
                 window.push_notification(crate::i18n::t("Salvo em {}").replace("{}", &path.display().to_string()), cx);
                 doc.title = file_title(&path);
                 doc.path = Some(path.clone());
-                // arquivo novo/"salvar como": leva o estilo das relações para o sidecar
+                // arquivo novo/"salvar como": leva estilo das relações e posições para o sidecar
                 Self::save_edges(doc, cx);
+                doc.layout_saved.clear();
+                self.save_layout(i, cx);
                 if let Some(dir) = self.project.clone() {
-                    self.files = scan(&dir);
+                    Self::rescan(dir, window, cx);
                 }
                 self.touch_recent(path, cx);
                 self.save_session(cx);
@@ -1153,16 +1613,7 @@ impl Shell {
             }
             Err(e) => {
                 eprintln!("Could not save {}: {e}", path.display());
-                let hint = if file_in_use(&e) {
-                    "O arquivo está em uso. Feche-o no outro aplicativo ou use Salvar como."
-                } else if e.kind() == std::io::ErrorKind::StorageFull {
-                    "O disco está cheio. Libere espaço ou use Salvar como."
-                } else if e.kind() == std::io::ErrorKind::PermissionDenied {
-                    "Sem permissão para gravar nesta pasta. Use Salvar como para escolher outra."
-                } else {
-                    "Suas alterações continuam abertas. Tente salvar novamente ou use Salvar como."
-                };
-                window.push_notification(crate::i18n::t(hint), cx);
+                window.push_notification(crate::i18n::t(save_error_hint(&e)), cx);
                 false
             }
         };
@@ -1175,6 +1626,7 @@ impl Shell {
             return;
         }
         self.docs.remove(i);
+        self.publish_recovery(cx);
         if self.active >= self.docs.len() {
             self.active = self.docs.len().saturating_sub(1);
         } else if i < self.active {
@@ -1190,7 +1642,7 @@ impl Shell {
         };
         let editor = doc.editor.clone();
         if let Some(path) = doc.path.clone() {
-            if self.write(i, path, false, window, cx) { self.force_close_tab_at(i, cx); }
+            if self.write(i, path, window, cx) { self.force_close_tab_at(i, cx); }
             return;
         }
         let dir = self.project.clone().unwrap_or_else(|| std::env::current_dir().unwrap_or_default());
@@ -1199,7 +1651,7 @@ impl Shell {
             let Ok(Ok(Some(path))) = rx.await else { return };
             this.update_in(cx, |this, window, cx| {
                 if let Some(i) = this.doc_index(&editor)
-                    && this.write(i, path, false, window, cx)
+                    && this.write(i, path, window, cx)
                 {
                     this.force_close_tab_at(i, cx);
                 }
@@ -1506,7 +1958,7 @@ impl Shell {
                 }
             };
             let res = build().and_then(|bytes| {
-                std::fs::write(&path, bytes).map_err(|error| {
+                crate::session::atomic_write_bytes(&path, &bytes).map_err(|error| {
                     eprintln!("Could not write export {}: {error}", path.display());
                     crate::i18n::t(export_write_hint(&error)).to_owned()
                 })
@@ -2591,7 +3043,7 @@ impl Shell {
         };
         let doc = &self.docs[i];
         if let Some(path) = doc.path.clone() {
-            if self.write(i, path, false, window, cx) { self.save_next_and_quit(window, cx); }
+            if self.write(i, path, window, cx) { self.save_next_and_quit(window, cx); }
             return;
         }
         let editor = doc.editor.clone();
@@ -2601,7 +3053,7 @@ impl Shell {
             let Ok(Ok(Some(path))) = rx.await else { return };
             this.update_in(cx, |this, window, cx| {
                 if let Some(i) = this.doc_index(&editor)
-                    && this.write(i, path, false, window, cx)
+                    && this.write(i, path, window, cx)
                 {
                     this.save_next_and_quit(window, cx);
                 }
@@ -3025,6 +3477,7 @@ impl Shell {
             Self::save_edges(doc, cx);
         }
         self.schedule_autosave(self.active, window, cx);
+        self.publish_recovery(cx);
         cx.notify();
     }
 

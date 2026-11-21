@@ -14,6 +14,7 @@
 | R8 | Paridade visual entre canvas (GPUI) e export (SVG/resvg): medidas de texto, antialiasing, fontes | Export "não parece o app" | Geometria única no crate `scene`; mesmas fontes embarcadas; medição de texto compartilhada; testes de snapshot de imagem |
 | R9 | Mermaid `erDiagram` tem sintaxe restrita (nomes, tipos com parênteses, cardinalidades) | Export Mermaid inválido | Sanitização determinística; validar com `mmdc` nos testes; listar perdas no painel de export |
 | R10 | Diferenças Windows × Ubuntu (DPI/escala fracionária, fontes, IME, Wayland vs X11, clipboard de imagem) | Bugs específicos de plataforma | Testes manuais nos dois alvos a cada fase; CI nos dois |
+| R11 | GPUI não expõe árvore de acessibilidade ao SO: o app desktop é opaco para leitores de tela (NVDA, Orca, VoiceOver) | Usuários de tecnologia assistiva no desktop | Documentado em [05-ux.md](05-ux.md#acessibilidade-e-limitação-conhecida-app-desktop); manter teclado completo e `role`/`aria_label`; indicar CLI Web e extensão VS Code como alternativas; acompanhar o suporte upstream a cada upgrade do GPUI |
 
 ## Decidido
 - Nome: **DB Modeling**.

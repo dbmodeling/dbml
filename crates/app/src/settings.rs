@@ -55,10 +55,15 @@ fn width(v: &str, default: f32) -> f32 {
 }
 
 pub fn load() -> Settings {
-    let Some(text) = path().and_then(|p| std::fs::read_to_string(p).ok()) else {
-        return Settings::default();
-    };
-    parse(&text)
+    let Some(p) = path() else { return Settings::default() };
+    match std::fs::read_to_string(&p) {
+        Ok(text) => parse(&text),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Settings::default(),
+        Err(e) => {
+            crate::session::quarantine(&p, &e.to_string());
+            Settings::default()
+        }
+    }
 }
 
 fn parse(text: &str) -> Settings {
@@ -127,11 +132,11 @@ fn serialize(s: &Settings) -> String {
     )
 }
 
-/// Falha ao salvar só perde a preferência; não interrompe o app.
+/// Falha ao salvar não interrompe o app, mas é registrada e avisada na janela.
 pub fn save(s: &Settings) {
     let Some(p) = path() else { return };
     let body = serialize(s);
-    let _ = crate::session::atomic_write_sync(&p, &body);
+    crate::session::note_write_result(&p, crate::session::atomic_write_sync(&p, &body));
 }
 
 #[cfg(test)]

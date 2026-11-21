@@ -25,6 +25,10 @@ anyhow.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 
+[features]
+# Habilita as variáveis DBM_SIZE/DBM_MODE/DBM_SELECT/DBM_PANE... em release (harness de screenshot).
+harness = []
+
 [build-dependencies]
 embed-resource.workspace = true
 

@@ -15,7 +15,9 @@ use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 use diagram_export::{EdgeStyle, EdgeStyles};
 use schema::Schema;
+use std::cell::RefCell;
 use std::collections::HashMap;
+use std::rc::Rc;
 use std::time::Instant;
 
 use layout::{CARD_W, GROUP_PAD, HEADER_H, ROW_H, card_h};
@@ -95,6 +97,18 @@ pub type RefPair = ((String, String), (String, String));
 /// Cúbica `[p0, c1, c2, p3]` em coordenadas de mundo.
 type Curve = [layout::Pos; 4];
 
+/// Geometria de uma relação: (tabela origem, tabela destino, chave do sidecar, curva já com o
+/// estilo, curva automática, trechos desenhados).
+type RefGeom = (String, String, String, Curve, Curve, Vec<Curve>);
+
+/// Rotas das relações já calculadas. Vale enquanto `fingerprint` (posições, tamanhos dos cartões,
+/// relações e estilos) não muda; pan e zoom não a invalidam (as rotas são em coordenadas de mundo).
+#[derive(Default)]
+struct RouteCache {
+    fingerprint: Option<u64>,
+    geoms: HashMap<usize, Option<Rc<RefGeom>>>,
+}
+
 struct LayoutMotion {
     from: HashMap<String, (f32, f32)>,
     to: HashMap<String, (f32, f32)>,
@@ -137,6 +151,9 @@ pub struct Diagram {
     pressed_tool: Option<&'static str>,
     /// estilo por relação (`edges` do sidecar), por `diagram_export::edge_key`
     edges: EdgeStyles,
+    /// incrementa a cada troca de `schema`; entra na impressão digital do cache de rotas
+    schema_rev: u64,
+    route_cache: RefCell<RouteCache>,
 }
 
 impl Diagram {
@@ -170,6 +187,8 @@ impl Diagram {
             hovered_tool: None,
             pressed_tool: None,
             edges: EdgeStyles::new(),
+            schema_rev: 0,
+            route_cache: RefCell::default(),
         };
         d.set_schema(schema);
         d
@@ -215,6 +234,20 @@ impl Diagram {
         }
         self.appearing.retain(|key, _| self.pos.contains_key(key));
         self.schema = schema;
+        self.schema_rev += 1;
+    }
+
+    /// Aplica posições salvas (sidecar de layout): cartões presentes mantêm o lugar salvo, os que
+    /// não estão no sidecar partem do auto-layout sem cair em cima dos demais; chaves de
+    /// tabelas que não existem mais são descartadas.
+    pub fn seed_positions(&mut self, saved: HashMap<String, (f32, f32)>) {
+        if saved.is_empty() {
+            return;
+        }
+        self.layout_motion = None;
+        self.pos = saved;
+        let schema = std::mem::take(&mut self.schema);
+        self.set_schema(schema);
     }
 
     pub fn relayout(&mut self) {
@@ -292,6 +325,7 @@ impl Diagram {
         }
         self.appearing.retain(|key, _| pos.contains_key(key));
         self.schema = schema;
+        self.schema_rev += 1;
         self.pos = pos;
         self.selected = selected;
         self.selected_enum = selected_enum;
@@ -558,7 +592,7 @@ impl Diagram {
     /// Geometria de uma relação: (tabela origem, tabela destino, chave do sidecar, curva já com o
     /// estilo, curva automática, trechos desenhados), em mundo. Sem estilo, os trechos desviam dos
     /// outros cartões. `None` se faltar tabela ou coluna.
-    fn ref_curve(&self, r: &schema::Ref) -> Option<(String, String, String, Curve, Curve, Vec<Curve>)> {
+    fn compute_ref_geom(&self, r: &schema::Ref) -> Option<RefGeom> {
         let ft = self.schema.table(&r.from.qualified_table())?;
         let tt = self.schema.table(&r.to.qualified_table())?;
         let fc = ft.columns.iter().position(|c| c.name == r.from.column)?;
@@ -593,6 +627,52 @@ impl Diagram {
         Some((source_key, target_key, key, curve, auto, segs))
     }
 
+    /// Impressão digital do que as rotas dependem: relações (`schema_rev`), posição e altura de
+    /// cada cartão, e estilos de relação. Custa O(tabelas + estilos), sem rotear nada.
+    fn route_fingerprint(&self) -> u64 {
+        use std::hash::{Hash, Hasher};
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        self.schema_rev.hash(&mut h);
+        for t in &self.schema.tables {
+            t.columns.len().hash(&mut h);
+            if let Some(&(x, y)) = self.pos.get(&t.qualified_name()) {
+                x.to_bits().hash(&mut h);
+                y.to_bits().hash(&mut h);
+            }
+        }
+        // soma de hashes por entrada: independe da ordem de iteração do mapa
+        let styles = self.edges.iter().fold(0_u64, |acc, (key, st)| {
+            let mut e = std::collections::hash_map::DefaultHasher::new();
+            key.hash(&mut e);
+            (st.straight, st.dx.to_bits(), st.dy.to_bits()).hash(&mut e);
+            acc.wrapping_add(e.finish())
+        });
+        styles.hash(&mut h);
+        h.finish()
+    }
+
+    /// Descarta as rotas em cache se algo de que dependem mudou. Chamar uma vez por quadro
+    /// (e por evento de mouse) antes de ler `ref_geom`.
+    fn validate_routes(&self) {
+        let fp = self.route_fingerprint();
+        let mut cache = self.route_cache.borrow_mut();
+        if cache.fingerprint != Some(fp) {
+            cache.fingerprint = Some(fp);
+            cache.geoms.clear();
+        }
+    }
+
+    /// Geometria da relação `idx` (índice em `schema.refs`), do cache de rotas. `None` se faltar
+    /// tabela ou coluna.
+    fn ref_geom(&self, idx: usize) -> Option<Rc<RefGeom>> {
+        if let Some(hit) = self.route_cache.borrow().geoms.get(&idx) {
+            return hit.clone();
+        }
+        let geom = self.schema.refs.get(idx).and_then(|r| self.compute_ref_geom(r)).map(Rc::new);
+        self.route_cache.borrow_mut().geoms.insert(idx, geom.clone());
+        geom
+    }
+
     fn is_selected_ref(&self, source_key: &str, r: &schema::Ref, target_key: &str) -> bool {
         self.selected_ref.as_ref().is_some_and(|(f, t)| {
             f.0 == source_key && f.1 == r.from.column && t.0 == target_key && t.1 == r.to.column
@@ -601,21 +681,25 @@ impl Diagram {
 
     /// Relação (`Ref`) sob o ponto (mundo), amostrando a Bézier (~6 px na tela).
     fn ref_at(&self, p: (f32, f32)) -> Option<RefPair> {
-        self.schema.refs.iter().find_map(|r| {
-            let (source_key, target_key, _, _, _, segs) = self.ref_curve(r)?;
+        self.validate_routes();
+        self.schema.refs.iter().enumerate().find_map(|(i, r)| {
+            let geom = self.ref_geom(i)?;
+            let (source_key, target_key, _, _, _, segs) = &*geom;
             segs.iter()
                 .any(|c| crate::canvas_geom::point_hits_curve(p, c, 6. / self.zoom))
-                .then(|| ((source_key, r.from.column.clone()), (target_key, r.to.column.clone())))
+                .then(|| ((source_key.clone(), r.from.column.clone()), (target_key.clone(), r.to.column.clone())))
         })
     }
 
     /// Chave, curva com estilo e curva automática da relação selecionada.
     fn selected_edge(&self) -> Option<(String, Curve, Curve, layout::Pos)> {
-        self.schema.refs.iter().find_map(|r| {
-            let (s, t, key, curve, auto, segs) = self.ref_curve(r)?;
+        self.validate_routes();
+        self.schema.refs.iter().enumerate().find_map(|(i, r)| {
+            let geom = self.ref_geom(i)?;
+            let (s, t, key, curve, auto, segs) = &*geom;
             // alça no meio do trecho desenhado (a rota que desvia pode não ser a curva)
             let mid = diagram_export::curve_mid(&segs[segs.len() / 2]);
-            self.is_selected_ref(&s, r, &t).then_some((key, curve, auto, mid))
+            self.is_selected_ref(s, r, t).then(|| (key.clone(), *curve, *auto, mid))
         })
     }
 
@@ -1021,13 +1105,16 @@ impl Diagram {
         let schema = &self.schema;
 
         // arestas coluna→coluna: âncoras locais ao canvas + cardinalidade + destaque
+        self.validate_routes();
         let edges: Vec<Edge> = schema
             .refs
             .iter()
-            .filter_map(|r| {
-                let (source_key, target_key, key, _, auto, segs) = self.ref_curve(r)?;
+            .enumerate()
+            .filter_map(|(i, r)| {
+                let geom = self.ref_geom(i)?;
+                let (source_key, target_key, key, _, auto, segs) = &*geom;
                 // lado dos rótulos pela curva automática: o estilo não move rótulos/portas
-                let [a, c1, c2, b] = auto;
+                let [a, c1, c2, b] = *auto;
                 let sa = (c1.x - a.x).signum();
                 let sb = (c2.x - b.x).signum();
                 let pts: Vec<_> = segs
@@ -1040,9 +1127,9 @@ impl Diagram {
                     schema::RefKind::OneToOne => ("1", "1"),
                     schema::RefKind::ManyToMany => ("N", "N"),
                 };
-                let is_sel_ref = self.is_selected_ref(&source_key, r, &target_key);
+                let is_sel_ref = self.is_selected_ref(source_key, r, target_key);
                 let lit =
-                    is_sel_ref || self.is_selected(&source_key) || self.is_selected(&target_key);
+                    is_sel_ref || self.is_selected(source_key) || self.is_selected(target_key);
                 let lit = motion::value(
                     SharedString::from(format!("edge-light:{key}")),
                     f32::from(lit),
@@ -2768,6 +2855,25 @@ mod tests {
                     d.set_schema(added.clone());
                     d.apply_snapshot(added, d.pos.clone(), Some("c".into()), None, Vec::new());
                     assert_eq!(d.appearing.contains_key("c"), !motion::disabled());
+                    // posições do sidecar: respeita as salvas, completa as ausentes, ignora as órfãs
+                    d.seed_positions(HashMap::from([("a".to_string(), (500., 600.)), ("ghost".to_string(), (1., 1.))]));
+                    assert_eq!(d.pos["a"], (500., 600.));
+                    assert!(!d.pos.contains_key("ghost"));
+                    assert!(d.pos.contains_key("b") && d.pos.contains_key("c"));
+                    // cache de rotas: reaproveita sem mudança (pan/zoom não contam), recalcula ao mover
+                    d.set_schema(dbml_analysis::analyze(
+                        "Table a {\n id int\n}\nTable b {\n id int\n}\nTable c {\n id int\n}\nRef: a.id > b.id",
+                    ));
+                    d.validate_routes();
+                    let first = d.ref_geom(0).unwrap();
+                    d.pan.0 += 50.;
+                    d.zoom *= 1.1;
+                    d.validate_routes();
+                    assert!(Rc::ptr_eq(&first, &d.ref_geom(0).unwrap()));
+                    assert_eq!(d.ref_at((-1e6, -1e6)), None);
+                    d.pos.get_mut("c").unwrap().0 += 10.;
+                    d.validate_routes();
+                    assert!(!Rc::ptr_eq(&first, &d.ref_geom(0).unwrap()));
                     cx.notify();
                 });
                 draw(cx);

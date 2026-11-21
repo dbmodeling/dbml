@@ -6,13 +6,18 @@ mod actions;
 mod canvas;
 mod canvas_geom;
 mod connect_db;
+mod disk_sync;
+mod fatal;
 mod glass;
+mod handoff;
+mod harness;
 mod history;
 mod ide;
 mod i18n;
 mod import_sql;
 mod motion;
 mod platform;
+mod recovery;
 mod session;
 mod settings;
 mod shell;
@@ -56,6 +61,7 @@ impl AssetSource for AppAssets {
 }
 
 fn main() {
+    fatal::install_panic_hook();
     i18n::set(std::env::var("DBM_LANG").ok().and_then(|v| i18n::Lang::parse(&v)).or_else(|| settings::load().lang).unwrap_or_else(i18n::system));
     if std::env::args().any(|a| a == "--version" || a == "-V" || a == "-v") {
         println!("db-modeling {}", env!("CARGO_PKG_VERSION"));
@@ -70,27 +76,46 @@ fn main() {
         println!("{}", i18n::t("  -h, --help          Mostra esta mensagem de ajuda"));
         return;
     }
-    gpui_kit::application().with_assets(AppAssets).run(|cx| {
+    // `app arquivo.dbml` abre o arquivo; `app pasta/` abre o projeto; sem argumento, o exemplo
+    let start = std::env::args().nth(1).map(PathBuf::from).map(|p| std::path::absolute(&p).unwrap_or(p));
+    // Instância única por usuário: a segunda instância entrega o argumento à primeira e sai.
+    // Desligada em build de debug/harness para `cargo run` não colidir com o app instalado.
+    if !harness::ENABLED
+        && let Some(dir) = session::config_dir()
+    {
+        if handoff::try_forward(&dir, start.as_slice()) {
+            return;
+        }
+        if let Err(e) = handoff::serve(&dir, handoff::push) {
+            eprintln!("{}: {e}", i18n::t("Instância única indisponível"));
+        }
+    }
+    let app = gpui_kit::application().with_assets(AppAssets);
+    // macOS: o Finder entrega "Abrir com" e documentos soltos no ícone como evento, não em argv
+    app.on_open_urls(|urls| {
+        handoff::push(handoff::Request { paths: handoff::paths_from_urls(&urls) });
+    });
+    app.run(|cx| {
         gpui_kit::init(cx);
         if motion::disabled() {
             cx.set_reduce_motion(true);
         }
         cx.text_system()
             .add_fonts(FONTS.iter().map(|f| Cow::Borrowed(*f)).collect())
-            .expect("valid embedded fonts");
+            .unwrap_or_else(|e| fatal::report(&format!("{}: {e}", i18n::t("Não foi possível carregar as fontes embutidas"))));
         cx.bind_keys(actions::catalog().into_iter().filter_map(|e| e.binding));
         let prefs = settings::load();
         i18n::set(std::env::var("DBM_LANG").ok().and_then(|v| i18n::Lang::parse(&v)).or(prefs.lang).unwrap_or_else(i18n::system));
-        let env_mode = match std::env::var("DBM_MODE").as_deref() {
-            Ok("light" | "light-translucent") => Some(Mode::Light),
-            Ok("dark" | "dark-translucent") => Some(Mode::Dark),
+        let env_mode = match crate::harness::var("DBM_MODE").as_deref() {
+            Some("light" | "light-translucent") => Some(Mode::Light),
+            Some("dark" | "dark-translucent") => Some(Mode::Dark),
             _ => None,
         };
         // transparência da janela desativada (decisão de produto, 2026-11-16): sempre opaca
         let translucent = false;
         let background = platform::window_background(translucent);
         // DBM_SIZE=LxA abre a janela nesse tamanho (harness de screenshot do responsivo)
-        let bounds = std::env::var("DBM_SIZE").ok().and_then(|v| {
+        let bounds = crate::harness::var("DBM_SIZE").and_then(|v| {
             let (w, h) = v.split_once('x')?;
             let sz = size(px(w.parse().ok()?), px(h.parse().ok()?));
             Some(WindowBounds::Windowed(Bounds::centered(None, sz, cx)))
@@ -117,8 +142,6 @@ fn main() {
                 _ => Mode::Dark,
             });
             shell::apply_theme_scaled(mode, translucent, prefs.ui_scale, cx);
-            // `app arquivo.dbml` abre o arquivo; `app pasta/` abre o projeto; sem argumento, o exemplo
-            let start = std::env::args().nth(1).map(PathBuf::from);
             let shell = cx.new(|cx| shell::Shell::new(start, mode, translucent, window, cx));
             let focus = shell.focus_handle(cx);
             window.focus(&focus, cx);
@@ -126,7 +149,7 @@ fn main() {
             window.set_app_id(APP_ID);
             shell
         })
-        .expect("failed to open window");
+        .unwrap_or_else(|e| fatal::report(&format!("{}: {e}", i18n::t("Não foi possível abrir a janela (sem backend de GPU utilizável?)"))));
         shell::register_global_actions(win, &shell, cx);
     });
 }
