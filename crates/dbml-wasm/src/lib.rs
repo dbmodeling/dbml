@@ -204,6 +204,17 @@ pub fn auto_layout_schema(schema: &Schema) -> HashMap<String, NodeCoordinate> {
         .collect()
 }
 
+/// Garante uma posição para cada tabela do schema (origem se faltar).
+///
+/// Invariante central do cálculo da cena: nenhum acesso posterior precisa indexar o mapa, que
+/// com `panic = "abort"` derrubaria o módulo Wasm inteiro.
+fn ensure_positions(pos: &mut HashMap<String, NodeCoordinate>, schema: &Schema) {
+    for t in &schema.tables {
+        pos.entry(t.qualified_name())
+            .or_insert(NodeCoordinate { x: 0.0, y: 0.0 });
+    }
+}
+
 /// Folga mínima entre cartões reposicionados para evitar sobreposição.
 const PLACE_GAP: f32 = 40.0;
 
@@ -313,6 +324,8 @@ pub fn compute_scene_internal(
             }
         }
     }
+
+    ensure_positions(&mut pos, schema);
 
     let max_table_bottom = schema
         .tables
@@ -488,8 +501,9 @@ pub fn compute_scene_internal(
         };
         let source_key = ft.qualified_name();
         let target_key = tt.qualified_name();
-        let p_a = pos[&source_key];
-        let p_b = pos[&target_key];
+        let origin = NodeCoordinate { x: 0.0, y: 0.0 };
+        let p_a = pos.get(&source_key).copied().unwrap_or(origin);
+        let p_b = pos.get(&target_key).copied().unwrap_or(origin);
         let ay = p_a.y + HEADER_H + 4.0 + ROW_H * (fc as f32 + 0.5);
         let by = p_b.y + HEADER_H + 4.0 + ROW_H * (tc as f32 + 0.5);
 
@@ -512,7 +526,7 @@ pub fn compute_scene_internal(
                 tq != source_key && tq != target_key
             })
             .map(|t| {
-                let p = pos[&t.qualified_name()];
+                let p = pos.get(&t.qualified_name()).copied().unwrap_or(origin);
                 layout::Rect {
                     x: p.x,
                     y: p.y,
@@ -984,6 +998,26 @@ mod tests {
     }
 
     #[test]
+    fn ensure_positions_fills_missing_tables_with_origin() {
+        let schema = dbml_analysis::analyze("Table a {\n  id int\n}\nTable b {\n  id int\n}\n");
+        let mut pos = HashMap::from([("a".to_string(), NodeCoordinate { x: 5.0, y: 6.0 })]);
+        ensure_positions(&mut pos, &schema);
+        assert_eq!(pos["a"], NodeCoordinate { x: 5.0, y: 6.0 });
+        assert_eq!(pos["b"], NodeCoordinate { x: 0.0, y: 0.0 });
+    }
+
+    #[test]
+    fn scene_survives_a_ref_whose_table_has_no_position() {
+        let src = "Table a {\n  id int\n}\nTable b {\n  a_id int [ref: > a.id]\n}\n";
+        let schema = dbml_analysis::analyze(src);
+        // Posições informadas só para `a`: `b` parte do slot do auto-layout.
+        let provided = HashMap::from([("a".to_string(), NodeCoordinate { x: 1.0, y: 2.0 })]);
+        let scene = compute_scene_internal(&schema, Some(&provided));
+        assert_eq!(scene.edges.len(), 1);
+        assert_eq!(scene.tables.len(), 2);
+    }
+
+    #[test]
     fn test_auto_layout_and_scene_with_groups_and_routes() {
         let sample = include_str!("../../app/assets/sample.dbml");
         let schema = dbml_analysis::analyze(sample);
@@ -1307,7 +1341,7 @@ TableGroup ident {
     fn scene_rects(schema: &Schema, scene: &SceneGeometry) -> Vec<(String, layout::Rect)> {
         let mut rects = Vec::new();
         for t in &schema.tables {
-            let p = scene.positions[&t.qualified_name()];
+            let p = scene.positions.get(&t.qualified_name()).copied().unwrap();
             rects.push((
                 t.qualified_name(),
                 layout::Rect {
