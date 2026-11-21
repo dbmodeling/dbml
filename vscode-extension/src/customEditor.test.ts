@@ -104,6 +104,19 @@ describe('validação das mensagens da Webview', () => {
   });
 });
 
+describe('lista de arquivos do workspace', () => {
+  it('não substitui files.exclude do usuário (exclude indefinido) e limita o resultado', async () => {
+    const h = await openEditor(DbmlCustomEditorProvider);
+    await h.send({ command: 'ready' });
+    expect(mockState.findFilesCalls.length).toBeGreaterThan(0);
+    for (const call of mockState.findFilesCalls) {
+      expect(call.include).toBe('**/*.dbml');
+      expect(call.exclude).toBeUndefined();
+      expect(call.max).toBeGreaterThan(0);
+    }
+  });
+});
+
 describe('conexão com o banco', () => {
   const request = {
     dialect: 'sqlite',

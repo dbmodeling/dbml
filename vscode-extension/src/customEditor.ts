@@ -3,10 +3,11 @@ import { getTrustedCliPath } from './cliPath.js';
 import { checkCli, runIntrospect, runTestConnection } from './introspect.js';
 import { parseWebviewMessage, type WebviewMessage } from './messages.js';
 import { isAllowedDbmlUri } from './uriPolicy.js';
+import { findDbmlFiles } from './workspaceFiles.js';
 
 /** Lista os `.dbml` do workspace no formato esperado pela aba Arquivos do Workbench. */
 async function listDbmlFiles(active?: vscode.Uri): Promise<Array<{ name: string; path: string; active: boolean }>> {
-  const uris = await vscode.workspace.findFiles('**/*.dbml', '**/node_modules/**');
+  const uris = await findDbmlFiles();
   return uris
     .sort((a, b) => a.fsPath.localeCompare(b.fsPath))
     .map((u) => ({

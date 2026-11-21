@@ -1,6 +1,7 @@
 import * as vscode from 'vscode';
 import { DbmlCustomEditorProvider } from './customEditor.js';
 import { syncDefaultEditor } from './editorAssociation.js';
+import { findDbmlFiles } from './workspaceFiles.js';
 
 /** Árvore de arquivos `.dbml` do workspace exibida na Activity Bar. */
 class DbmlWorkspaceTreeProvider implements vscode.TreeDataProvider<vscode.Uri> {
@@ -25,7 +26,7 @@ class DbmlWorkspaceTreeProvider implements vscode.TreeDataProvider<vscode.Uri> {
   }
 
   async getChildren(): Promise<vscode.Uri[]> {
-    const uris = await vscode.workspace.findFiles('**/*.dbml', '**/node_modules/**');
+    const uris = await findDbmlFiles();
     return uris.sort((a, b) => a.fsPath.localeCompare(b.fsPath));
   }
 }
@@ -40,7 +41,7 @@ async function openWorkbench(context: vscode.ExtensionContext): Promise<void> {
   if (active && active.path.toLowerCase().endsWith('.dbml')) {
     return openInCanvas(active);
   }
-  const files = await vscode.workspace.findFiles('**/*.dbml', '**/node_modules/**', 1);
+  const files = await findDbmlFiles(1);
   if (files.length > 0) {
     return openInCanvas(files[0]);
   }
