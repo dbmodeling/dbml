@@ -2,12 +2,11 @@ use anyhow::Context as _;
 use clap::Parser;
 use colored::Colorize;
 use dbml_cli::args::{Cli, Commands, ExportFormat, ImportDialect};
+use dbml_cli::net;
 use dbml_cli::server;
 use dbml_cli::state::AppState;
 use dbml_cli::watcher;
-use std::net::SocketAddr;
 use std::path::Path;
-use tokio::net::TcpListener;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -65,20 +64,10 @@ async fn main() -> anyhow::Result<()> {
         watcher::start_file_watcher(state.clone())?;
     }
 
-    // Tenta alocar a porta desejada ou incrementa se ocupada
-    let mut port = config.port;
-    let (listener, bound_ip) = loop {
-        let addr: SocketAddr = format!("{}:{}", config.host, port).parse()?;
-        match TcpListener::bind(addr).await {
-            Ok(l) => break (l, addr.ip()),
-            Err(_) if port < config.port + 50 => {
-                port += 1;
-            }
-            Err(e) => return Err(e.into()),
-        }
-    };
-
-    let url = format!("http://{}:{}/?token={}", config.host, port, state.token());
+    // Resolve o host (nome ou IP) e tenta a porta pedida, subindo se estiver ocupada
+    let listener = net::bind_with_retry(&config.host, config.port).await?;
+    let local_addr = listener.local_addr()?;
+    let url = net::browser_url(local_addr, state.token());
 
     println!(
         "\n{}",
@@ -112,7 +101,7 @@ async fn main() -> anyhow::Result<()> {
         "Server:  ".bold(),
         url.green().bold().underline()
     );
-    if let Some(warning) = server::non_loopback_warning(bound_ip) {
+    if let Some(warning) = server::non_loopback_warning(local_addr.ip()) {
         println!("\n  {} {}", "AVISO:".red().bold(), warning.red());
     }
     println!(
