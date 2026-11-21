@@ -67,10 +67,10 @@ async fn main() -> anyhow::Result<()> {
 
     // Tenta alocar a porta desejada ou incrementa se ocupada
     let mut port = config.port;
-    let listener = loop {
+    let (listener, bound_ip) = loop {
         let addr: SocketAddr = format!("{}:{}", config.host, port).parse()?;
         match TcpListener::bind(addr).await {
-            Ok(l) => break l,
+            Ok(l) => break (l, addr.ip()),
             Err(_) if port < config.port + 50 => {
                 port += 1;
             }
@@ -78,7 +78,7 @@ async fn main() -> anyhow::Result<()> {
         }
     };
 
-    let url = format!("http://{}:{}/", config.host, port);
+    let url = format!("http://{}:{}/?token={}", config.host, port, state.token());
 
     println!(
         "\n{}",
@@ -107,6 +107,9 @@ async fn main() -> anyhow::Result<()> {
         "Server:  ".bold(),
         url.green().bold().underline()
     );
+    if let Some(warning) = server::non_loopback_warning(bound_ip) {
+        println!("\n  {} {}", "AVISO:".red().bold(), warning.red());
+    }
     println!(
         "\n  {} Press {} to stop the server.\n",
         "Tip:".yellow(),

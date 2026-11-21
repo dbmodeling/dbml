@@ -72,6 +72,7 @@ mod tests {
             let dir = std::env::temp_dir();
             let (tx, _) = broadcast::channel(1);
             let state = AppState {
+                token: "t".into(),
                 target_path: dir.clone(),
                 project_dir: Some(dir.clone()),
                 file_path: Arc::new(RwLock::new(dir.clone())),

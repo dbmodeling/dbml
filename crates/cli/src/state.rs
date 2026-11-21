@@ -38,8 +38,27 @@ pub async fn atomic_write(path: &Path, content: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Gera o token de sessão desta execução: 128 bits do gerador do sistema operacional em hex.
+///
+/// # Panics
+///
+/// Entra em pânico se o sistema operacional não fornecer entropia (o servidor não deve subir
+/// sem um token imprevisível).
+#[must_use]
+pub fn generate_token() -> String {
+    use std::fmt::Write as _;
+    let mut bytes = [0u8; 16];
+    getrandom::fill(&mut bytes).expect("o sistema operacional não forneceu entropia");
+    bytes.iter().fold(String::with_capacity(32), |mut out, b| {
+        let _ = write!(out, "{b:02x}");
+        out
+    })
+}
+
 #[derive(Clone)]
 pub struct AppState {
+    /// Token de sessão exigido em `/ws` e `/api/*`.
+    pub token: Arc<str>,
     pub target_path: PathBuf,
     pub project_dir: Option<PathBuf>,
     pub file_path: Arc<RwLock<PathBuf>>,
@@ -116,6 +135,7 @@ impl AppState {
         });
 
         Ok(Self {
+            token: generate_token().into(),
             target_path: target_abs,
             project_dir,
             file_path: Arc::new(RwLock::new(file_path)),
@@ -126,6 +146,12 @@ impl AppState {
             tx,
             write_lock: Arc::new(Mutex::new(())),
         })
+    }
+
+    /// Token de sessão desta execução (exigido em `/ws` e `/api/*`).
+    #[must_use]
+    pub fn token(&self) -> &str {
+        &self.token
     }
 
     pub async fn active_title(&self) -> String {
