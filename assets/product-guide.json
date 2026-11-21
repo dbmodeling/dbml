@@ -81,6 +81,24 @@
   ],
   "releases": [
     {
+      "version": "0.3.2",
+      "date": "2026-11-21",
+      "highlights": [
+        {
+          "kind": "added",
+          "title": {
+            "pt": "Tour guiado e Novidades",
+            "en": "Guided tour & What's New"
+          },
+          "detail": {
+            "pt": "Um tour interativo apresenta o app em poucos passos e a janela Novidades resume cada versão. Ambos ficam no menu Ajuda e na paleta de comandos.",
+            "en": "An interactive tour walks you through the app in a few steps and the What's New dialog summarizes each release. Both live in the Help menu and the command palette."
+          },
+          "action": "ShowTour"
+        }
+      ]
+    },
+    {
       "version": "0.2.0",
       "date": "2026-11-21",
       "highlights": [
