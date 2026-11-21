@@ -1,19 +1,23 @@
 name: CI
 
-# CI policy (details in CONTRIBUTING.md):
+# How CI works (same 5 lines in CONTRIBUTING.md):
+#  1. PR into develop: a cheap preflight (branch name, changed paths, fmt, scripts), then the full
+#     Linux/Windows/macOS + web suite for the areas the PR touches. This is the gate.
+#  2. Merge into develop: the PR already ran the suite, so nothing is repeated, EXCEPT when the
+#     dependency set changed (Cargo.lock, toolchain, .cargo, npm lockfiles, ci.yml). Only then does
+#     the suite run on develop, because that run is the only one that can save the build cache.
+#  3. PR develop -> main: nothing is rebuilt; `gate` requires the develop run of that SHA to be green.
+#  4. PR release/* | hotfix/* | dependabot/* -> main, and "Run workflow" on any branch: full suite.
+#  5. The only required check is `CI ok`; a job skipped on purpose counts as ok. Fedora: fedora.yml.
 #
-# - Each commit runs the full suite once before other work builds on it; the gate is the PR.
-#   * PR -> develop .................. full suite, filtered by changed paths.
-#   * push to develop (merge) ........ full suite, unfiltered, and SAVES the cache.
-#   * PR develop -> main ............. no re-run: the `gate` job requires the push run of the
-#                                      same SHA on develop to have passed.
-#   * PR release/* | hotfix/* | dependabot/* -> main ... full suite.
-# - Cache: only pushes to develop save it. A cache created by a PR is scoped to the PR merge ref
-#   and cannot be restored by any other run (GitHub docs); it only fills the 10 GB repository
-#   quota and evicts the useful caches, making Windows/macOS build from scratch (~19 min instead
-#   of ~3 min).
-# - The only required check is `CI ok`: it aggregates every job, and a job skipped on purpose
-#   (path filter, draft, gate) counts as ok.
+# Why the cache is saved only on develop: GitHub scopes a cache to the ref that created it. A PR's
+# cache lives on refs/pull/N/merge and no other run can restore it; it only fills the 10 GB quota
+# and evicts the develop cache. Every PR into develop restores the develop cache (~3.5 min on
+# Windows/macOS); a run with no cache builds ~400 crates from scratch (~16-20 min measured).
+#
+# Why no merge queue: merge_group runs live on gh-readonly-queue/develop/* refs, which can restore
+# caches only from their own ref and the default branch (main), not from develop. Every queued
+# merge would wait for a cold build, instead of merging at once and testing afterwards, warm.
 
 on:
   push:
@@ -21,6 +25,8 @@ on:
   pull_request:
     branches: [ develop, main ]
     types: [ opened, synchronize, reopened, ready_for_review ]
+  # Escape hatch: Actions -> CI -> "Run workflow" runs the full, unfiltered suite on any branch.
+  workflow_dispatch:
 
 # Read-only by default; no CI job needs to write to the repository.
 permissions:
@@ -29,7 +35,7 @@ permissions:
 # New commits on a PR cancel that PR's previous run. Pushes to develop are never cancelled:
 # they save the cache and are what the `gate` job checks.
 concurrency:
-  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
@@ -41,11 +47,12 @@ env:
 # scripts/check-workflow-pins.sh rejects mutable tags/branches.
 jobs:
   # ------------------------------------------------------------------ preflight
-  # One cheap job (~30–60 s) that gates the expensive matrix: branch name, changed paths,
+  # One cheap job (~15-30 s) that gates the expensive matrix: branch name, changed paths,
   # formatting and the script/workflow checks. If any of these fail, no heavy runner starts.
   preflight:
     name: Preflight (branch, paths, fmt, scripts)
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     outputs:
       rust: ${{ steps.diff.outputs.rust }}
       web: ${{ steps.diff.outputs.web }}
@@ -73,10 +80,13 @@ jobs:
             exit 1
           fi
 
-      - name: Checkout (full history on PRs, for the diff)
+      # On a PR, HEAD is the merge commit GitHub tests; its first parent is the base it merges
+      # onto, so depth 2 is enough to list exactly what the PR changes.
+      - name: Checkout
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
-          fetch-depth: ${{ github.event_name == 'pull_request' && '0' || '1' }}
+          # Push: full history so the pushed range (before..after) can be diffed.
+          fetch-depth: ${{ github.event_name == 'push' && '0' || '2' }}
 
       - name: Decide which groups run
         id: diff
@@ -85,19 +95,39 @@ jobs:
           DRAFT: ${{ github.event.pull_request.draft }}
           HEAD_REF: ${{ github.head_ref }}
           BASE_REF: ${{ github.base_ref }}
-          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          BEFORE: ${{ github.event.before }}
         run: |
           set_all() { for g in rust web scripts; do echo "$g=$1" >> "$GITHUB_OUTPUT"; done; }
           if [ "$EVENT" = "push" ]; then
-            echo "push to develop: run everything, unfiltered"; set_all true; exit 0
+            # The PR that produced this commit already ran the suite. Re-run the heavy jobs only
+            # when the dependency set changed: the cache holds dependencies only (rust-cache never
+            # stores workspace crates) and cache keys are immutable, so any other push could not
+            # save anything new. A new branch or an unreachable BEFORE runs everything.
+            echo "scripts=true" >> "$GITHUB_OUTPUT"
+            if [ -z "$BEFORE" ] || [ "${BEFORE//0/}" = "" ] || ! git cat-file -e "$BEFORE^{commit}" 2>/dev/null; then
+              echo "push without a usable BEFORE: run everything"; set_all true; exit 0
+            fi
+            files="$(git diff --name-only "$BEFORE" HEAD)"
+            echo "$files"
+            if grep -Eq '^(Cargo\.(toml|lock)$|rust-toolchain\.toml$|\.cargo/|\.github/workflows/ci\.yml$|packages/[^/]+/package-lock\.json$|vscode-extension/package-lock\.json$)' <<< "$files"; then
+              echo "dependency set changed: run the suite and refresh the develop cache"
+              set_all true
+            else
+              echo "dependencies unchanged: PR already tested this code, no cache to refresh"
+              echo "rust=false" >> "$GITHUB_OUTPUT"; echo "web=false" >> "$GITHUB_OUTPUT"
+            fi
+            exit 0
+          fi
+          if [ "$EVENT" != "pull_request" ]; then
+            echo "$EVENT: run everything, unfiltered"; set_all true; exit 0
           fi
           if [ "$DRAFT" = "true" ]; then
-            echo "draft PR: light jobs only"; set_all false; exit 0
+            echo "draft PR: light checks only"; set_all false; exit 0
           fi
           if [ "$BASE_REF" = "main" ] && [ "$HEAD_REF" = "develop" ]; then
             echo "develop -> main: covered by the gate job"; set_all false; exit 0
           fi
-          files="$(git diff --name-only "$BASE_SHA"...HEAD)"
+          files="$(git diff --name-only HEAD^1 HEAD)"
           echo "$files"
           has() { grep -Eq "$1" <<< "$files" && echo true || echo false; }
           rust="$(has '^(crates/|\.cargo/|Cargo\.(toml|lock)$|rust-toolchain\.toml$|\.github/workflows/ci\.yml$)')"
@@ -135,12 +165,13 @@ jobs:
 
   # ------------------------------------------------------------------ heavy jobs
   # Full suite on all 3 OSes: "pure" crates also break per OS (CRLF on the Windows checkout,
-  # path separators, case-insensitive macOS filesystem). With a warm cache Windows/macOS take ~3 min.
+  # path separators, case-insensitive macOS filesystem).
   quality:
     name: Rust (${{ matrix.os }})
     needs: preflight
     if: needs.preflight.outputs.rust == 'true'
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
     strategy:
       fail-fast: false
       matrix:
@@ -186,54 +217,6 @@ jobs:
       - name: Test suite (cargo test)
         run: cargo test --locked --workspace
 
-  # Same rustc and target as Ubuntu, so clippy would be identical. Tests stay because Fedora's
-  # glibc, fontconfig and freetype differ (they affect raster export).
-  fedora:
-    name: Rust (Fedora)
-    needs: preflight
-    if: needs.preflight.outputs.rust == 'true'
-    runs-on: ubuntu-latest
-    container:
-      image: fedora:latest
-
-    steps:
-      - name: Install native dependencies (Fedora / GPUI / Wayland / Vulkan / X11 / Fontconfig)
-        run: |
-          dnf install -y \
-            git \
-            curl \
-            tar \
-            gcc \
-            gcc-c++ \
-            pkg-config \
-            fontconfig-devel \
-            freetype-devel \
-            alsa-lib-devel \
-            libxkbcommon-devel \
-            libxkbcommon-x11-devel \
-            vulkan-loader-devel \
-            wayland-devel \
-            libX11-devel \
-            libxcb-devel \
-            openssl-devel
-
-      - name: Checkout
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@39008827e6b4319a349e9a42dfc90579dd25f1ca # stable
-        with:
-          toolchain: ${{ env.RUST_TOOLCHAIN }}
-
-      - name: Rust build cache
-        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
-        with:
-          shared-key: "workspace-ci-fedora"
-          save-if: ${{ github.ref == 'refs/heads/develop' }}
-
-      - name: Test suite (cargo test)
-        run: cargo test --locked --workspace
-
   # Also covers dbml-wasm: build-web-assets.sh builds the Wasm (release) and the wasm32 clippy
   # runs here.
   web:
@@ -241,6 +224,7 @@ jobs:
     needs: preflight
     if: needs.preflight.outputs.web == 'true'
     runs-on: ubuntu-latest
+    timeout-minutes: 30
 
     steps:
       - name: Checkout
@@ -326,8 +310,9 @@ jobs:
         run: ./scripts/check-web-assets.sh
 
   # ------------------------------------------------------------------ gate and aggregator
-  # PR develop -> main: the PR head is the same SHA already tested by the push to develop.
-  # Instead of re-testing (cold cache, ~19 min), confirm that run passed. Never passes by omission.
+  # PR develop -> main: the PR head is the same SHA already tested on develop. A PR into main
+  # cannot restore the develop cache, so re-testing would be a cold ~19 min build. Instead,
+  # confirm that run passed. Never passes by omission.
   gate:
     name: Gate (develop → main)
     if: github.event_name == 'pull_request' && github.base_ref == 'main' && github.head_ref == 'develop'
@@ -336,38 +321,43 @@ jobs:
     permissions:
       actions: read
     steps:
-      - name: Require a green push run for the same develop SHA
+      - name: Require a green develop run (push or manual) for the same SHA
         env:
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
           SHA: ${{ github.event.pull_request.head.sha }}
         run: |
-          api="repos/${REPO}/actions/workflows/ci.yml/runs?head_sha=${SHA}&event=push&branch=develop&per_page=1"
+          api="repos/${REPO}/actions/workflows/ci.yml/runs?head_sha=${SHA}&branch=develop&per_page=20"
+          # The PR's own run has the same head SHA and branch, so keep only push / manual runs.
+          jq_run='[.workflow_runs[] | select(.event == "push" or .event == "workflow_dispatch")][0] // {}
+            | "\(.status // "none") \(.conclusion // "none") \(.html_url // "-")"'
           for attempt in $(seq 1 60); do
-            read -r status conclusion url < <(gh api "$api" \
-              --jq '.workflow_runs[0] // {} | "\(.status // "none") \(.conclusion // "none") \(.html_url // "-")"')
+            read -r status conclusion url < <(gh api "$api" --jq "$jq_run")
             echo "attempt ${attempt}: status=${status} conclusion=${conclusion} ${url}"
             if [ "$status" = "completed" ]; then
               if [ "$conclusion" = "success" ]; then
-                echo "ok: ${SHA} passed on the develop push run"; exit 0
+                echo "ok: ${SHA} passed on develop"; exit 0
               fi
-              echo "::error::The develop push run for ${SHA} finished with '${conclusion}': ${url}"
+              echo "::error::The develop run for ${SHA} finished with '${conclusion}': ${url}"
               exit 1
             fi
             if [ "$status" = "none" ] && [ "$attempt" -ge 4 ]; then
-              echo "::error::No CI push run on develop for ${SHA}. Re-run CI on develop, then update the PR."
+              echo "::error::No CI run on develop for ${SHA}. Use Actions -> CI -> Run workflow on develop, then re-run this check."
               exit 1
             fi
             sleep 30
           done
-          echo "::error::Timed out waiting for the develop push run for ${SHA}."
+          echo "::error::Timed out waiting for the develop run for ${SHA}."
           exit 1
 
+  # The single required check. `always()` so it reports even when a job fails or is cancelled
+  # (a required check that is skipped would count as passing).
   ci-ok:
     name: CI ok
     if: always()
-    needs: [preflight, quality, fedora, web, gate]
+    needs: [preflight, quality, web, gate]
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     steps:
       - name: Aggregate results
         env:
