@@ -1085,7 +1085,7 @@ impl Shell {
                                                     window.dispatch_action(
                                                         Box::new(LangPortuguese),
                                                         cx,
-                                                    )
+                                                    );
                                                 },
                                             ),
                                         ))
@@ -1101,7 +1101,7 @@ impl Shell {
                                             .on_click(
                                                 |_, window, cx| {
                                                     window
-                                                        .dispatch_action(Box::new(LangEnglish), cx)
+                                                        .dispatch_action(Box::new(LangEnglish), cx);
                                                 },
                                             ),
                                         )),

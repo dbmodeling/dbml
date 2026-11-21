@@ -1465,7 +1465,7 @@ impl Shell {
                 })
                 .await;
             this.update_in(cx, |this, window, cx| {
-                this.finish_autosave(&editor, &path, &text, result, window, cx)
+                this.finish_autosave(&editor, &path, &text, result, window, cx);
             })
             .ok();
         }));
@@ -1575,7 +1575,7 @@ impl Shell {
                     .await;
                 if this
                     .update_in(cx, |this, window, cx| {
-                        this.apply_disk_reads(reads, window, cx)
+                        this.apply_disk_reads(reads, window, cx);
                     })
                     .is_err()
                 {
