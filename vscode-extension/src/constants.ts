@@ -21,6 +21,16 @@ export const DELTA_OVERHEAD_BYTES = 24;
 export const DELTA_SIZE_RATIO = 0.5;
 export const TEXT_CHANGE_DEBOUNCE_MS = 80;
 export const MAX_SESSION_SELECTION = 500;
+export const MAX_GUIDE_VERSION_LEN = 32;
+
+export const GLOBAL_STATE_KEY = {
+  ONBOARDING_DONE: 'dbmodeling.onboardingDone',
+  LAST_SEEN_VERSION: 'dbmodeling.lastSeenVersion',
+} as const;
+
+export const WEBVIEW_COMMAND = {
+  SAVE_GUIDE_STATE: 'save_guide_state',
+} as const;
 
 export const WEBVIEW_OUTBOUND_TYPE = {
   UPDATE: 'update',

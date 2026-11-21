@@ -118,6 +118,7 @@ export class VsCodeTransport implements HostTransport {
               title: message.title,
               files: message.files,
               session: message.session,
+              guideState: message.guideState,
               saved: message.saved,
               savedSource: message.savedSource,
               autosave: message.autosave,
@@ -259,6 +260,10 @@ export class VsCodeTransport implements HostTransport {
     this.vscode.postMessage({
       command: 'new_file',
     });
+  }
+
+  public saveGuideState(state: { onboardingDone: boolean; lastSeenVersion: string | null }): void {
+    this.vscode.postMessage({ command: TRANSPORT_COMMAND.SAVE_GUIDE_STATE, state });
   }
 
   public getSession(): SessionSnapshot | null {

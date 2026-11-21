@@ -2,7 +2,7 @@
  * Validação das mensagens vindas da Webview. A Webview é código que roda em um contexto
  * menos confiável que o host da extensão: nada é usado antes de checar tipo e formato.
  */
-import { TLS_MODES } from './constants.js';
+import { MAX_GUIDE_VERSION_LEN, TLS_MODES, WEBVIEW_COMMAND } from './constants.js';
 import type { IntrospectRequest } from './introspect.js';
 
 export interface Position {
@@ -33,7 +33,8 @@ export type WebviewMessage =
   | { command: 'export_file'; id?: number; filename: string; content: string; isBinary: boolean }
   | { command: 'test_connection' | 'introspect'; id?: number; request: IntrospectRequest }
   | { command: 'open_file'; id?: number; path: string }
-  | { command: 'save_session'; id?: number; session: Record<string, unknown> };
+  | { command: 'save_session'; id?: number; session: Record<string, unknown> }
+  | { command: 'save_guide_state'; id?: number; state: { onboardingDone: boolean; lastSeenVersion: string | null } };
 
 export type ParseResult =
   | { ok: true; message: WebviewMessage }
@@ -124,6 +125,16 @@ export function parseWebviewMessage(raw: unknown): ParseResult {
       return isString(raw.path) && raw.path !== '' ? { ok: true, message: { command, id, path: raw.path } } : invalid('invalid path');
     case 'save_session':
       return isRecord(raw.session) ? { ok: true, message: { command, id, session: raw.session } } : invalid('invalid session');
+    case WEBVIEW_COMMAND.SAVE_GUIDE_STATE: {
+      if (!isRecord(raw.state)) return invalid('invalid state');
+      if (typeof raw.state.onboardingDone !== 'boolean') return invalid('invalid onboardingDone');
+      const v = raw.state.lastSeenVersion;
+      if (v !== null && !(isString(v) && v.length <= MAX_GUIDE_VERSION_LEN)) return invalid('invalid lastSeenVersion');
+      return {
+        ok: true,
+        message: { command, id, state: { onboardingDone: raw.state.onboardingDone, lastSeenVersion: v } },
+      };
+    }
     default:
       return { ok: false, reason: `unknown command: ${command}`, command, id };
   }

@@ -31,3 +31,33 @@ pub const LOG_ROTATED_FILE_NAME: &str = "db-modeling.log.1";
 pub const MAX_LOG_FILE_BYTES: u64 = 1024 * 1024;
 pub const MAX_LOG_LINE_BYTES: usize = 8 * 1024;
 pub const LOG_TRUNCATED_SUFFIX: &str = "...[truncated]";
+
+/// Chaves de persistência e limites do tour guiado / modal de novidades em `settings.txt`.
+pub const SETTING_ONBOARDING_DONE: &str = "onboarding_done";
+pub const SETTING_LAST_SEEN_VERSION: &str = "last_seen_version";
+pub const MAX_VERSION_LEN: usize = 32;
+
+/// Variáveis de harness que suprimem o disparo automático do tour/novidades.
+pub const ENV_NO_GUIDE: &str = "DBM_NO_GUIDE";
+pub const ENV_PRESELECT: &str = "DBM_SELECT";
+
+/// Nomes canônicos das ações rápidas referenciadas em `assets/product-guide.json`.
+pub const GUIDE_ACTION_TOGGLE_MINIMAP: &str = "ToggleMinimap";
+pub const GUIDE_ACTION_QUICK_SEARCH: &str = "QuickSearch";
+
+/// Dimensões da geometria do Spotlight Tour e do Modal de Novidades (em pixels).
+pub const TOUR_HOLE_PAD_PX: f32 = 6.0;
+pub const TOUR_CARD_GAP_PX: f32 = 14.0;
+pub const TOUR_CARD_W_PX: f32 = 340.0;
+pub const TOUR_CARD_H_PX: f32 = 190.0;
+pub const TOUR_VIEWPORT_MARGIN_PX: f32 = 12.0;
+pub const TOUR_ARROW_MIN_OFFSET_PX: f32 = 24.0;
+pub const TOUR_ARROW_BADGE_SIZE_PX: f32 = 18.0;
+pub const TOUR_ARROW_HALF_PX: f32 = 8.0;
+pub const TOUR_ARROW_OVERHANG_PX: f32 = 12.0;
+pub const TOUR_ARROW_INSET_PX: f32 = 4.0;
+pub const TOUR_MIN_VIEWPORT_W_PX: f32 = 320.0;
+pub const TOUR_MIN_VIEWPORT_H_PX: f32 = 240.0;
+pub const TOUR_BOUNDS_EPSILON_PX: f32 = 0.5;
+pub const WHATS_NEW_DIALOG_W_PX: f32 = 560.0;
+pub const WHATS_NEW_DIALOG_MAX_H_PX: f32 = 560.0;

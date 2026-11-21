@@ -21,6 +21,8 @@ actions!(
         OpenPalette,
         QuickSearch,
         ShowShortcuts,
+        ShowTour,
+        ShowWhatsNew,
         ToggleTheme,
         ThemeLight,
         ThemeDark,
@@ -285,6 +287,8 @@ pub fn catalog() -> Vec<Entry> {
             "Modo Foco: alternar 1-hop / 2-hop",
         ),
         e("ctrl-/", ShowShortcuts, "Ajuda", "Atalhos de teclado"),
+        e("", ShowTour, "Ajuda", "Tour guiado"),
+        e("", ShowWhatsNew, "Ajuda", "O que há de novo"),
         e(
             "",
             ExportSqlPostgres,

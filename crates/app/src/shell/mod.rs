@@ -4,6 +4,7 @@
 //! (Arquivos / Esquema / Problemas) · editor · canvas · inspector · barra de status.
 //! Todas as ações passam por `actions::catalog`.
 
+pub(crate) mod guide_ui;
 mod panels;
 
 use crate::actions::{self, *};
@@ -207,6 +208,14 @@ pub struct Shell {
     loose_files: (PathBuf, Vec<PathBuf>),
     /// tabela a selecionar quando o primeiro documento abrir (harness de screenshot)
     preselect: Option<String>,
+    /// tour guiado já concluído ou pulado pelo usuário
+    onboarding_done: bool,
+    /// última versão vista no modal de novidades
+    last_seen_version: Option<String>,
+    /// passo ativo do tour guiado (`Some(idx)` quando aberto)
+    tour_step: Option<usize>,
+    /// bounds reais medidos pelo layout do GPUI para cada alvo do tour
+    tour_bounds: guide_ui::TourBoundsMap,
 }
 
 impl Focusable for Shell {
@@ -502,6 +511,10 @@ fn action_icon(action: &dyn Action, group: &str) -> IconName {
         IconName::Archive
     } else if action.partial_eq(&ShowShortcuts) {
         IconName::Keyboard
+    } else if action.partial_eq(&ShowTour) {
+        IconName::Info
+    } else if action.partial_eq(&ShowWhatsNew) {
+        IconName::WandSparkles
     } else {
         group_icon(group)
     }
@@ -691,6 +704,10 @@ impl Shell {
             loading: 0,
             loose_files: (PathBuf::new(), Vec::new()),
             preselect: crate::harness::var("DBM_SELECT"),
+            onboarding_done: crate::settings::load().onboarding_done,
+            last_seen_version: crate::settings::load().last_seen_version,
+            tour_step: None,
+            tour_bounds: guide_ui::TourBoundsMap::default(),
         };
         this.disk_watcher = Some(Self::spawn_disk_watcher(window, cx));
         this.handoff_poll = Some(Self::spawn_handoff_poll(window, cx));
@@ -706,6 +723,10 @@ impl Shell {
             None => this.restore_session(window, cx),
         }
         this.adopt_recovery(window, cx);
+        let entity = cx.entity().downgrade();
+        window.defer(cx, move |window, cx| {
+            let _ = entity.update(cx, |this, cx| this.maybe_start_guide(window, cx));
+        });
         this
     }
 
@@ -757,10 +778,12 @@ impl Shell {
             .as_deref()
             .map(crate::session::load_positions)
             .unwrap_or_default();
+        let tour_bounds = self.tour_bounds.clone();
         let diagram = cx.new(|cx| {
             let mut d = Diagram::new(dbml_analysis::analyze(&text), cx);
             d.set_edges(edges);
             d.seed_positions(saved_positions);
+            d.tour_bounds = Some(tour_bounds);
             d
         });
         let layout_saved = diagram.read(cx).positions().clone();
@@ -4361,6 +4384,8 @@ impl Shell {
             inspector_auto_hide: self.inspector_auto_hide,
             sidebar_open: self.sidebar_open,
             inspector_open: self.inspector_open,
+            onboarding_done: self.onboarding_done,
+            last_seen_version: self.last_seen_version.clone(),
         });
     }
 
@@ -4677,6 +4702,8 @@ pub fn register_global_actions(win: AnyWindowHandle, shell: &Entity<Shell>, cx: 
         ToggleFocusMode => toggle_focus_mode,
         CycleFocusDepth => cycle_focus_depth,
         ShowShortcuts => show_shortcuts,
+        ShowTour => show_tour,
+        ShowWhatsNew => show_whats_new,
         ToggleTheme => toggle_theme,
         ThemeLight => theme_light,
         ThemeDark => theme_dark,
@@ -4883,6 +4910,10 @@ impl Render for Shell {
                         .overflow_hidden()
                         .opacity(sidebar_progress)
                         .child(div().w(px(self.widths.0)).h_full().child(sidebar))
+                        .child(guide_ui::track_tour_anchor(
+                            crate::guide::TourTarget::Sidebar,
+                            self.tour_bounds.clone(),
+                        ))
                         .child(handle(
                             "resize-sidebar",
                             HandleEdge::Trailing,
@@ -4942,6 +4973,10 @@ impl Render for Shell {
                         .overflow_hidden()
                         .opacity(inspector_progress)
                         .child(div().w(px(self.widths.2)).h_full().child(inspector))
+                        .child(guide_ui::track_tour_anchor(
+                            crate::guide::TourTarget::Inspector,
+                            self.tour_bounds.clone(),
+                        ))
                         .child(handle(
                             "resize-inspector",
                             HandleEdge::Leading,
@@ -4992,6 +5027,8 @@ impl Render for Shell {
             .on_action(cx.listener(Self::add_preset_timestamps))
             .on_action(cx.listener(Self::add_preset_soft_delete))
             .on_action(cx.listener(Self::show_shortcuts))
+            .on_action(cx.listener(Self::show_tour))
+            .on_action(cx.listener(Self::show_whats_new))
             .on_action(cx.listener(Self::toggle_theme))
             .on_action(cx.listener(Self::theme_light))
             .on_action(cx.listener(Self::theme_dark))
@@ -5046,6 +5083,7 @@ impl Render for Shell {
                     .child(div().flex_1().min_w_0().h_full().child(work)),
             )
             .child(statusbar)
+            .children(self.render_tour_overlay(&g, window, cx))
     }
 }
 

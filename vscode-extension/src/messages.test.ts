@@ -152,4 +152,18 @@ describe('parseWebviewMessage', () => {
       bad({ command: 'save_session' });
     });
   });
+
+  describe('save_guide_state', () => {
+    it('aceita estado válido com versão string ou null', () => {
+      ok({ command: 'save_guide_state', state: { onboardingDone: true, lastSeenVersion: '0.2.0' } });
+      ok({ command: 'save_guide_state', state: { onboardingDone: false, lastSeenVersion: null } });
+    });
+    it('rejeita payloads malformados', () => {
+      bad({ command: 'save_guide_state' });
+      bad({ command: 'save_guide_state', state: null });
+      bad({ command: 'save_guide_state', state: { onboardingDone: 'true', lastSeenVersion: '0.2.0' } });
+      bad({ command: 'save_guide_state', state: { onboardingDone: true, lastSeenVersion: 123 } });
+      bad({ command: 'save_guide_state', state: { onboardingDone: true, lastSeenVersion: 'x'.repeat(40) } });
+    });
+  });
 });

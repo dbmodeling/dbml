@@ -4,7 +4,7 @@
 use crate::glass::{EDITOR_W, INSPECTOR_W, Mode, SIDEBAR_W};
 use std::path::PathBuf;
 
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 pub struct Settings {
     pub mode: Option<Mode>,
     pub lang: Option<crate::i18n::Lang>,
@@ -17,6 +17,8 @@ pub struct Settings {
     pub inspector_auto_hide: bool,
     pub sidebar_open: bool,
     pub inspector_open: bool,
+    pub onboarding_done: bool,
+    pub last_seen_version: Option<String>,
 }
 
 impl Default for Settings {
@@ -33,6 +35,8 @@ impl Default for Settings {
             inspector_auto_hide: true,
             sidebar_open: false,
             inspector_open: true,
+            onboarding_done: false,
+            last_seen_version: None,
         }
     }
 }
@@ -106,6 +110,15 @@ fn parse(text: &str) -> Settings {
             Some(("inspector_open", v)) => {
                 s.inspector_open = v.trim() == "true";
             }
+            Some((crate::constants::SETTING_ONBOARDING_DONE, v)) => {
+                s.onboarding_done = v.trim() == "true";
+            }
+            Some((crate::constants::SETTING_LAST_SEEN_VERSION, v)) => {
+                let v = v.trim();
+                if !v.is_empty() && v.len() <= crate::constants::MAX_VERSION_LEN {
+                    s.last_seen_version = Some(v.to_string());
+                }
+            }
             _ => {}
         }
     }
@@ -121,8 +134,15 @@ fn serialize(s: &Settings) -> String {
     let lang = s
         .lang
         .map_or_else(String::new, |lang| format!("lang={}\n", lang.as_str()));
+    let last_seen = s
+        .last_seen_version
+        .as_deref()
+        .filter(|v| !v.is_empty())
+        .map_or_else(String::new, |v| {
+            format!("{}={v}\n", crate::constants::SETTING_LAST_SEEN_VERSION)
+        });
     format!(
-        "{lang}mode={mode}\ntranslucent={translucent}\nsidebar_w={}\neditor_w={}\ninspector_w={}\ncol_type_w={}\nui_scale={:.2}\ninspector_auto_hide={}\nsidebar_open={}\ninspector_open={}\n",
+        "{lang}mode={mode}\ntranslucent={translucent}\nsidebar_w={}\neditor_w={}\ninspector_w={}\ncol_type_w={}\nui_scale={:.2}\ninspector_auto_hide={}\nsidebar_open={}\ninspector_open={}\n{}={}\n{last_seen}",
         s.sidebar_w.round(),
         s.editor_w.round(),
         s.inspector_w.round(),
@@ -131,6 +151,8 @@ fn serialize(s: &Settings) -> String {
         s.inspector_auto_hide,
         s.sidebar_open,
         s.inspector_open,
+        crate::constants::SETTING_ONBOARDING_DONE,
+        s.onboarding_done,
     )
 }
 
@@ -178,5 +200,21 @@ mod tests {
         assert!(again.mode == Some(Mode::Dark));
         assert_eq!(again.translucent, Some(true));
         assert!(!saved.contains("translucent_cards"));
+    }
+
+    #[test]
+    fn onboarding_and_last_seen_version_roundtrip() {
+        let def = parse("");
+        assert!(!def.onboarding_done);
+        assert_eq!(def.last_seen_version, None);
+
+        let saved = serialize(&Settings {
+            onboarding_done: true,
+            last_seen_version: Some("0.2.0".to_string()),
+            ..Settings::default()
+        });
+        let again = parse(&saved);
+        assert!(again.onboarding_done);
+        assert_eq!(again.last_seen_version.as_deref(), Some("0.2.0"));
     }
 }

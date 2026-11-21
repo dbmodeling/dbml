@@ -66,6 +66,9 @@ What this script does in order:
    - `schema`, `dbml-syntax`, `dbml-analysis`, `dbml-edit`, `layout`, and `dbml-wasm` must never depend on `gpui`, `tokio`, or OS APIs.
 3. **Lossless Error Recovery (ADR-0003):**
    - The parser (`dbml-syntax`) must never panic on incomplete input while the user is typing in the editor.
+4. **Zero Magic Strings & Zero Magic Numbers (Backend, Frontend & Extension):**
+   - Never scatter literal magic strings (storage keys, IPC/WebSocket commands, event types, env var names, CSS/DOM IDs, action names) or magic numbers (pixel dimensions, limits, timeouts, padding/margins, debounce intervals, ratios) across logic files.
+   - Always extract them into named, documented constants in the target's dedicated constants module (`crates/app/src/constants.rs`, `packages/canvas-web/src/constants.ts`, `vscode-extension/src/constants.ts`, or a module-level `const` block when strictly local to a single algorithm).
 
 ---
 
