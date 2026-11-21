@@ -119,11 +119,16 @@ pub fn create_router(state: AppState) -> Router {
 async fn ws_handler(ws: WebSocketUpgrade, State(state): State<AppState>) -> impl IntoResponse {
     ws.max_message_size(MAX_WS_PAYLOAD_BYTES)
         .max_frame_size(MAX_WS_PAYLOAD_BYTES)
-        .on_upgrade(move |socket| handle_socket(socket, state))
+        .on_upgrade(move |socket| async move {
+            // A conexão roda numa task rastreada: o encerramento do servidor a espera terminar.
+            let lifecycle = std::sync::Arc::clone(&state.lifecycle);
+            lifecycle.spawn(handle_socket(socket, state));
+        })
 }
 
 async fn handle_socket(socket: WebSocket, state: AppState) {
     let (mut sender, mut receiver) = socket.split();
+    let mut shutdown = state.lifecycle.subscribe();
 
     // Subscribe before reading the initial snapshot so file changes are not missed.
     let mut rx = state.tx.subscribe();
@@ -133,7 +138,7 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
     }
 
     let (reply_tx, mut reply_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
-    let mut send_task = tokio::spawn(async move {
+    let send_loop = async {
         loop {
             let msg = tokio::select! {
                 Ok(msg) = rx.recv() => msg,
@@ -144,11 +149,11 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
                 break;
             }
         }
-    });
+    };
 
-    // 3. Recebe mensagens enviadas pelo navegador (patches e layout)
-    let state_clone = state.clone();
-    let mut recv_task = tokio::spawn(async move {
+    // Recebe mensagens enviadas pelo navegador (patches e layout). As gravações rodam em tasks
+    // próprias (ver `AppState::apply_patch`), então abandonar este loop não as interrompe.
+    let recv_loop = async {
         while let Some(Ok(frame)) = receiver.next().await {
             let text = match frame {
                 Message::Text(text) => text,
@@ -177,45 +182,7 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
                     continue;
                 }
             };
-            let result: anyhow::Result<()> = match client_msg {
-                ClientMessage::ApplyPatch {
-                    byte_start,
-                    byte_end,
-                    new_text,
-                    expected_file,
-                    expected_source,
-                } => {
-                    state_clone
-                        .apply_patch(
-                            &expected_file,
-                            &expected_source,
-                            byte_start,
-                            byte_end,
-                            &new_text,
-                        )
-                        .await
-                }
-                ClientMessage::SaveLayout {
-                    layout,
-                    expected_file,
-                } => match serde_json::to_string_pretty(&layout) {
-                    Ok(layout) => state_clone.save_layout_for(&expected_file, layout).await,
-                    Err(err) => Err(err.into()),
-                },
-                ClientMessage::SaveDocument {
-                    expected_source,
-                    expected_file,
-                } => {
-                    state_clone
-                        .verify_document(&expected_file, &expected_source)
-                        .await
-                }
-                ClientMessage::OpenFile(path) => {
-                    state_clone
-                        .switch_file(std::path::PathBuf::from(path))
-                        .await
-                }
-            };
+            let result = handle_client_message(&state, client_msg).await;
             let _ = reply_tx.send(
                 serde_json::json!({
                     "type": "result", "id": id, "error": result.err().map(|e| format!("{e:#}"))
@@ -223,13 +190,55 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
                 .to_string(),
             );
         }
-    });
-
-    // Se qualquer uma das tarefas encerrar, aborta a outra
-    tokio::select! {
-        _ = (&mut send_task) => recv_task.abort(),
-        _ = (&mut recv_task) => send_task.abort(),
     };
+
+    // O que terminar primeiro (cliente saiu, envio falhou ou servidor encerrando) derruba o resto.
+    let closing_gracefully = tokio::select! {
+        () = send_loop => false,
+        () = recv_loop => false,
+        _ = shutdown.changed() => true,
+    };
+    if closing_gracefully {
+        let _ = sender.send(Message::Close(None)).await;
+    }
+}
+
+async fn handle_client_message(state: &AppState, msg: ClientMessage) -> anyhow::Result<()> {
+    match msg {
+        ClientMessage::ApplyPatch {
+            byte_start,
+            byte_end,
+            new_text,
+            expected_file,
+            expected_source,
+        } => {
+            state
+                .apply_patch(
+                    &expected_file,
+                    &expected_source,
+                    byte_start,
+                    byte_end,
+                    &new_text,
+                )
+                .await
+        }
+        ClientMessage::SaveLayout {
+            layout,
+            expected_file,
+        } => {
+            let layout = serde_json::to_string_pretty(&layout)?;
+            state.save_layout_for(&expected_file, layout).await
+        }
+        ClientMessage::SaveDocument {
+            expected_source,
+            expected_file,
+        } => {
+            state
+                .verify_document(&expected_file, &expected_source)
+                .await
+        }
+        ClientMessage::OpenFile(path) => state.switch_file(std::path::PathBuf::from(path)).await,
+    }
 }
 
 #[cfg(test)]

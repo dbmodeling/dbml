@@ -119,18 +119,23 @@ async fn main() -> anyhow::Result<()> {
         });
     }
 
-    let app = server::create_router(state);
+    let app = server::create_router(state.clone());
+    let shutdown_state = state.clone();
 
     // Encerramento gracioso com Ctrl+C
     axum::serve(listener, app)
-        .with_graceful_shutdown(async {
+        .with_graceful_shutdown(async move {
             let _ = tokio::signal::ctrl_c().await;
+            shutdown_state.lifecycle.begin_shutdown();
             println!(
                 "\n{}",
                 "Shutting down DB Modeling server gracefully...".yellow()
             );
         })
         .await?;
+
+    // Espera sockets e watcher e as gravações pendentes antes de sair.
+    state.shutdown(std::time::Duration::from_secs(5)).await;
 
     Ok(())
 }

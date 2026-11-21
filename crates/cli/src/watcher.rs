@@ -22,9 +22,16 @@ pub fn start_file_watcher(state: AppState) -> anyhow::Result<()> {
     )?;
     watcher.watch(&watch_dir, RecursiveMode::NonRecursive)?;
 
-    tokio::spawn(async move {
+    let lifecycle = std::sync::Arc::clone(&state.lifecycle);
+    let mut shutdown = lifecycle.subscribe();
+    lifecycle.spawn(async move {
         let _watcher = watcher;
-        while let Some(event) = rx.recv().await {
+        loop {
+            let event = tokio::select! {
+                event = rx.recv() => event,
+                _ = shutdown.changed() => break,
+            };
+            let Some(event) = event else { break };
             if let Err(error) = event {
                 eprintln!("Watcher error: {error}");
                 continue;
@@ -82,6 +89,7 @@ mod tests {
                     last_saved_hash: 0,
                 })),
                 tx,
+                lifecycle: Arc::default(),
             };
             runtime.block_on(async { start_file_watcher(state).unwrap() });
             drop(runtime);

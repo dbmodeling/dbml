@@ -148,6 +148,49 @@ async fn oversized_websocket_message_closes_the_connection() {
 }
 
 #[tokio::test]
+async fn shutdown_closes_sockets_and_waits_for_their_tasks() {
+    let h = spawn("shutdown").await;
+    let url = format!("ws://{}/ws?token={}", h.addr, h.state.token());
+    let (mut ws, _) = tokio_tungstenite::connect_async(&url).await.unwrap();
+    ws.next().await.unwrap().unwrap(); // init
+    // O upgrade já passou, mas a task da conexão pode ainda estar subindo.
+    while h.state.lifecycle.running() == 0 {
+        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+    }
+
+    h.state.shutdown(std::time::Duration::from_secs(3)).await;
+    assert_eq!(h.state.lifecycle.running(), 0);
+    let end = tokio::time::timeout(std::time::Duration::from_secs(3), async {
+        loop {
+            match ws.next().await {
+                None | Some(Err(_) | Ok(Message::Close(_))) => break,
+                Some(Ok(_)) => {}
+            }
+        }
+    })
+    .await;
+    assert!(end.is_ok(), "o cliente devia ver o fechamento");
+}
+
+#[tokio::test]
+async fn shutdown_waits_for_pending_writes() {
+    let h = spawn("shutdown_write").await;
+    let writer = {
+        let state = h.state.clone();
+        tokio::spawn(async move {
+            // Segura o lock do documento como uma gravação em andamento faria.
+            let mut doc = state.doc.write().await;
+            tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+            doc.content = "// gravado\n".into();
+        })
+    };
+    tokio::time::sleep(std::time::Duration::from_millis(30)).await;
+    h.state.shutdown(std::time::Duration::from_secs(1)).await;
+    assert_eq!(h.state.doc.read().await.content, "// gravado\n");
+    writer.await.unwrap();
+}
+
+#[tokio::test]
 async fn oversized_api_body_is_rejected_with_413() {
     let h = spawn("api_big").await;
     let body = "x".repeat(dbml_cli::server::MAX_API_BODY_BYTES + 1024);

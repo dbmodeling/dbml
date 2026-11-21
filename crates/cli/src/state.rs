@@ -141,6 +141,8 @@ pub struct AppState {
     /// Documento ativo (arquivo, sidecar, conteúdo, layout e hash) sob um único lock.
     pub doc: Arc<RwLock<DocState>>,
     pub tx: broadcast::Sender<String>,
+    /// Tasks em segundo plano (sockets, watcher) e sinal de encerramento.
+    pub lifecycle: Arc<crate::lifecycle::Lifecycle>,
 }
 
 async fn scan_dbml_dir(dir: &Path) -> Vec<PathBuf> {
@@ -225,7 +227,15 @@ impl AppState {
                 last_saved_hash: hash,
             })),
             tx,
+            lifecycle: Arc::default(),
         })
+    }
+
+    /// Encerra o servidor: sinaliza sockets e watcher, espera as tasks rastreadas (até `grace`) e
+    /// então aguarda o lock do documento, o que garante que gravações pendentes terminaram.
+    pub async fn shutdown(&self, grace: std::time::Duration) {
+        self.lifecycle.shutdown(grace).await;
+        let _ = self.doc.write().await;
     }
 
     /// Token de sessão desta execução (exigido em `/ws` e `/api/*`).
