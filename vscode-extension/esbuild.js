@@ -55,25 +55,29 @@ async function main() {
   })();`;
   fs.writeFileSync('dist/dbml-wasm.bundle.js', wasmBundle);
   console.log('✓ Bundle Wasm embutido gerado em dist/dbml-wasm.bundle.js');
-  const context = await esbuild.context({
-    entryPoints: ['src/extension.ts'],
+  const common = {
     bundle: true,
     format: 'cjs',
     minify: isProduction,
     sourcemap: !isProduction,
     sourcesContent: false,
-    platform: 'node',
-    outfile: 'dist/extension.cjs',
     external: ['vscode'],
     logLevel: 'info',
-  });
+  };
+  // Extension host Node (desktop/remoto) e extension host web (vscode.dev); o web não inclui child_process.
+  const contexts = await Promise.all([
+    esbuild.context({ ...common, entryPoints: ['src/extension.ts'], platform: 'node', outfile: 'dist/extension.cjs' }),
+    esbuild.context({ ...common, entryPoints: ['src/extension.web.ts'], platform: 'browser', outfile: 'dist/extension.web.js' }),
+  ]);
 
   if (isWatch) {
-    await context.watch();
+    await Promise.all(contexts.map((c) => c.watch()));
     console.log('Assistindo alterações em modo watch...');
   } else {
-    await context.rebuild();
-    await context.dispose();
+    for (const c of contexts) {
+      await c.rebuild();
+      await c.dispose();
+    }
   }
 }
 

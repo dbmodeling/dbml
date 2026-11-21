@@ -1,5 +1,15 @@
 import * as vscode from 'vscode';
 
+/** Caminho legível para tooltip/lista; evita `fsPath` em esquemas virtuais (vscode-vfs etc.). */
+export function displayPath(uri: vscode.Uri): string {
+  return uri.scheme === 'file' ? uri.fsPath : uri.toString(true);
+}
+
+/** Ordenação estável por caminho, sem depender de `fsPath`. */
+export function byPath(a: vscode.Uri, b: vscode.Uri): number {
+  return a.path.localeCompare(b.path);
+}
+
 /** Teto de resultados para não varrer monorepos gigantes inteiros. */
 export const MAX_DBML_FILES = 1000;
 

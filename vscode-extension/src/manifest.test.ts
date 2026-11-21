@@ -35,6 +35,12 @@ describe('manifesto da extensão', () => {
     expect(manifest.scripts.package).not.toContain('--allow-missing-repository');
   });
 
+  it('declara suporte limitado a workspaces virtuais e entrada para o extension host web', () => {
+    expect(manifest.capabilities.virtualWorkspaces.supported).toBe('limited');
+    expect(manifest.browser).toBe('./dist/extension.web.js');
+    expect(manifest.main).toBe('./dist/extension.cjs');
+  });
+
   it('a versão mínima do VS Code suporta eventos de ativação implícitos (>= 1.74)', () => {
     const [major, minor] = String(manifest.engines.vscode).replace(/^[^\d]*/, '').split('.').map(Number);
     expect(major > 1 || minor >= 74).toBe(true);

@@ -25,8 +25,13 @@
     "Other"
   ],
   "main": "./dist/extension.cjs",
+  "browser": "./dist/extension.web.js",
   "activationEvents": [],
   "capabilities": {
+    "virtualWorkspaces": {
+      "supported": "limited",
+      "description": "Em workspaces virtuais (vscode.dev, repositórios remotos) o canvas e a edição DBML funcionam; a conexão com banco (CLI dbml) não está disponível."
+    },
     "untrustedWorkspaces": {
       "supported": "limited",
       "description": "Em workspaces não confiáveis a conexão com o banco (execução da CLI dbml) fica desativada; o canvas e o editor DBML continuam disponíveis.",

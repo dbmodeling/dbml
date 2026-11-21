@@ -1,4 +1,6 @@
 import type * as vscode from 'vscode';
+import type { CliHost } from '../cliHost.js';
+import { nodeCliHost } from '../cliHost.node.js';
 import { Uri } from './vscode-mock.js';
 
 export interface Harness {
@@ -65,7 +67,7 @@ export function fakeContext(): {
 /** Monta provider + documento + painel falsos e já resolve o editor (equivale a abrir o `.dbml`). */
 export async function openEditor(
   Provider: typeof import('../customEditor.js').DbmlCustomEditorProvider,
-  opts: { text?: string; uri?: Uri; extra?: unknown[] } = {}
+  opts: { text?: string; uri?: Uri; cli?: CliHost } = {}
 ): Promise<Harness> {
   const { context, workspaceState, globalState } = fakeContext();
   const document = fakeDocument(opts.uri ?? Uri.file('/ws/schema.dbml'), opts.text ?? 'Table a {\n  id int\n}\n');
@@ -92,7 +94,7 @@ export async function openEditor(
       return { dispose() {} };
     },
   };
-  const provider = new (Provider as any)(context, ...(opts.extra ?? []));
+  const provider = new (Provider as any)(context, opts.cli ?? nodeCliHost);
   const diagnosticSets: Array<{ uri: Uri; list: unknown[] }> = [];
   provider.diagnostics = { set: (uri: Uri, list: unknown[]) => diagnosticSets.push({ uri, list }), delete() {} };
   await provider.resolveCustomTextEditor(document, panel, {} as vscode.CancellationToken);

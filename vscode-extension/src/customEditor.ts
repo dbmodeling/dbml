@@ -1,15 +1,16 @@
 import * as vscode from 'vscode';
+import { base64ToBytes } from './base64.js';
+import type { CliHost } from './cliHost.js';
 import { getTrustedCliPath } from './cliPath.js';
-import { checkCli, runIntrospect, runTestConnection } from './introspect.js';
 import { parseWebviewMessage, type WebviewMessage } from './messages.js';
 import { isAllowedDbmlUri } from './uriPolicy.js';
-import { findDbmlFiles } from './workspaceFiles.js';
+import { byPath, displayPath, findDbmlFiles } from './workspaceFiles.js';
 
 /** Lista os `.dbml` do workspace no formato esperado pela aba Arquivos do Workbench. */
 async function listDbmlFiles(active?: vscode.Uri): Promise<Array<{ name: string; path: string; active: boolean }>> {
   const uris = await findDbmlFiles();
   return uris
-    .sort((a, b) => a.fsPath.localeCompare(b.fsPath))
+    .sort(byPath)
     .map((u) => ({
       name: vscode.workspace.asRelativePath(u, (vscode.workspace.workspaceFolders?.length ?? 0) > 1),
       path: u.toString(),
@@ -17,28 +18,33 @@ async function listDbmlFiles(active?: vscode.Uri): Promise<Array<{ name: string;
     }));
 }
 
-const verifiedClis = new Set<string>();
-
-/** Caminho confiável da CLI, já verificado (presença + versão mínima) — a checagem é feita uma vez por caminho. */
-async function ensureCli(context: vscode.ExtensionContext): Promise<string> {
-  const path = await getTrustedCliPath(context);
-  if (!verifiedClis.has(path)) {
-    await checkCli(path);
-    verifiedClis.add(path);
-  }
-  return path;
-}
-
 export class DbmlCustomEditorProvider implements vscode.CustomTextEditorProvider {
   public static readonly viewType = 'dbmodeling.editor';
 
-  constructor(private readonly context: vscode.ExtensionContext) {}
+  private readonly verifiedClis = new Set<string>();
+
+  constructor(
+    private readonly context: vscode.ExtensionContext,
+    private readonly cli: CliHost
+  ) {}
+
+  /** Caminho confiável da CLI, já verificado (presença + versão mínima) — a checagem é feita uma vez por caminho. */
+  private async ensureCli(): Promise<string> {
+    if (this.cli.unavailableReason) throw new Error(this.cli.unavailableReason);
+    const path = await getTrustedCliPath(this.context);
+    if (!this.verifiedClis.has(path)) {
+      await this.cli.checkCli(path);
+      this.verifiedClis.add(path);
+    }
+    return path;
+  }
 
   public static register(
     context: vscode.ExtensionContext,
-    diagnostics: vscode.DiagnosticCollection
+    diagnostics: vscode.DiagnosticCollection,
+    cli: CliHost
   ): vscode.Disposable {
-    const provider = new DbmlCustomEditorProvider(context);
+    const provider = new DbmlCustomEditorProvider(context, cli);
     provider.diagnostics = diagnostics;
     context.subscriptions.push(vscode.workspace.onDidCloseTextDocument((document) => diagnostics.delete(document.uri)));
     return vscode.window.registerCustomEditorProvider(DbmlCustomEditorProvider.viewType, provider, {
@@ -63,7 +69,10 @@ export class DbmlCustomEditorProvider implements vscode.CustomTextEditorProvider
     webview.html = this.getHtmlForWebview(webview);
 
     const sidecarUri = this.getSidecarUri(document.uri);
-    const canSidecar = document.uri.scheme === 'file';
+    // Sidecar em `file:` e em workspaces virtuais (mesmo esquema de uma pasta aberta, via workspace.fs); `untitled:`, `git:` etc. ficam sem.
+    const canSidecar =
+      document.uri.scheme === 'file' ||
+      (vscode.workspace.workspaceFolders ?? []).some((f) => f.uri.scheme === document.uri.scheme);
     let layoutData: unknown = null;
     if (canSidecar) {
       try {
@@ -103,7 +112,7 @@ export class DbmlCustomEditorProvider implements vscode.CustomTextEditorProvider
 
     // Alterações textuais (digitação no editor nativo, Ctrl+Z, outros editores): reenviadas com debounce.
     // O Workbench ignora o eco quando o texto já é idêntico ao que ele aplicou.
-    let changeTimer: NodeJS.Timeout | null = null;
+    let changeTimer: ReturnType<typeof setTimeout> | null = null;
     const changeSub = vscode.workspace.onDidChangeTextDocument((e) => {
       if (e.document.uri.toString() !== document.uri.toString()) return;
       if (changeTimer) clearTimeout(changeTimer);
@@ -207,19 +216,19 @@ export class DbmlCustomEditorProvider implements vscode.CustomTextEditorProvider
               saveLabel: 'Save export',
             });
             if (saveUri) {
-              const data = isBinary ? Buffer.from(content, 'base64') : new TextEncoder().encode(content);
+              const data = isBinary ? base64ToBytes(content) : new TextEncoder().encode(content);
               await vscode.workspace.fs.writeFile(saveUri, data);
-              vscode.window.showInformationMessage(`Arquivo exportado: ${saveUri.fsPath}`);
+              vscode.window.showInformationMessage(`Arquivo exportado: ${displayPath(saveUri)}`);
             }
             break;
           }
           case 'check_cli': {
-            await ensureCli(this.context);
+            await this.ensureCli();
             break;
           }
           case 'test_connection': {
             try {
-              const result = await runTestConnection(await ensureCli(this.context), message.request);
+              const result = await this.cli.testConnection(await this.ensureCli(), message.request);
               webview.postMessage({ type: 'test_connection_result', id: message.id, result });
             } catch (e) {
               webview.postMessage({
@@ -232,7 +241,7 @@ export class DbmlCustomEditorProvider implements vscode.CustomTextEditorProvider
           }
           case 'introspect': {
             try {
-              const result = await runIntrospect(await ensureCli(this.context), message.request);
+              const result = await this.cli.introspect(await this.ensureCli(), message.request);
               webview.postMessage({ type: 'introspect_result', id: message.id, result });
             } catch (e) {
               webview.postMessage({
