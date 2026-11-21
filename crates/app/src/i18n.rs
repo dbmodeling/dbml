@@ -412,6 +412,7 @@ const TRANSLATIONS: &[(&str, &str)] = &[
     ("problema", "problem"),
     ("problemas", "problems"),
     ("Salvo em {}", "Saved to {}"),
+    ("Instância única indisponível", "Single instance unavailable"),
     ("Abrindo…", "Opening…"),
     ("DB Modeling não conseguiu iniciar", "DB Modeling could not start"),
     ("DB Modeling encerrou com um erro", "DB Modeling stopped on an error"),

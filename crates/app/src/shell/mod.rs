@@ -181,6 +181,8 @@ pub struct Shell {
     popover_epoch: u64,
     /// tarefa que confere periodicamente se os arquivos abertos mudaram no disco
     disk_watcher: Option<Task<()>>,
+    /// consulta a caixa de entrada de `handoff` (segunda instância, "Abrir com" do macOS)
+    handoff_poll: Option<Task<()>>,
     /// leituras de arquivo/pasta em andamento em segundo plano (mostra "Abrindo…" na barra)
     loading: usize,
     /// `.dbml` de uma pasta fora do projeto (arquivo avulso), varridos em segundo plano
@@ -664,11 +666,13 @@ impl Shell {
             canvas_epoch: 0,
             popover_epoch: 0,
             disk_watcher: None,
+            handoff_poll: None,
             loading: 0,
             loose_files: (PathBuf::new(), Vec::new()),
             preselect: crate::harness::var("DBM_SELECT"),
         };
         this.disk_watcher = Some(Self::spawn_disk_watcher(window, cx));
+        this.handoff_poll = Some(Self::spawn_handoff_poll(window, cx));
         // DBM_PANE: painel inicial (usado pelo harness de screenshot)
         this.pane = match crate::harness::var("DBM_PANE").as_deref() {
             Some("files") => Pane::Files,
@@ -1285,6 +1289,33 @@ impl Shell {
             }
         }
         cx.notify();
+    }
+
+    /// Abre na janela existente o que outra instância ou o sistema entregou (`handoff`).
+    fn spawn_handoff_poll(window: &mut Window, cx: &mut Context<Self>) -> Task<()> {
+        let bg = cx.background_executor().clone();
+        cx.spawn_in(window, async move |this, cx| {
+            loop {
+                bg.timer(std::time::Duration::from_millis(250)).await;
+                let requests = crate::handoff::take();
+                if requests.is_empty() {
+                    continue;
+                }
+                let alive = this.update_in(cx, |this, window, cx| {
+                    window.activate_window();
+                    for path in requests.into_iter().flat_map(|r| r.paths) {
+                        if path.is_dir() {
+                            this.set_project(path, window, cx);
+                        } else {
+                            this.open_path(path, window, cx);
+                        }
+                    }
+                });
+                if alive.is_err() {
+                    return;
+                }
+            }
+        })
     }
 
     /// Confere em segundo plano, a cada 1,5 s, se os arquivos abertos mudaram no disco

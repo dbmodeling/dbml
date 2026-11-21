@@ -9,6 +9,7 @@ mod connect_db;
 mod disk_sync;
 mod fatal;
 mod glass;
+mod handoff;
 mod harness;
 mod history;
 mod ide;
@@ -74,7 +75,26 @@ fn main() {
         println!("{}", i18n::t("  -h, --help          Mostra esta mensagem de ajuda"));
         return;
     }
-    gpui_kit::application().with_assets(AppAssets).run(|cx| {
+    // `app arquivo.dbml` abre o arquivo; `app pasta/` abre o projeto; sem argumento, o exemplo
+    let start = std::env::args().nth(1).map(PathBuf::from).map(|p| std::path::absolute(&p).unwrap_or(p));
+    // Instância única por usuário: a segunda instância entrega o argumento à primeira e sai.
+    // Desligada em build de debug/harness para `cargo run` não colidir com o app instalado.
+    if !harness::ENABLED
+        && let Some(dir) = session::config_dir()
+    {
+        if handoff::try_forward(&dir, start.as_slice()) {
+            return;
+        }
+        if let Err(e) = handoff::serve(&dir, handoff::push) {
+            eprintln!("{}: {e}", i18n::t("Instância única indisponível"));
+        }
+    }
+    let app = gpui_kit::application().with_assets(AppAssets);
+    // macOS: o Finder entrega "Abrir com" e documentos soltos no ícone como evento, não em argv
+    app.on_open_urls(|urls| {
+        handoff::push(handoff::Request { paths: handoff::paths_from_urls(&urls) });
+    });
+    app.run(|cx| {
         gpui_kit::init(cx);
         if motion::disabled() {
             cx.set_reduce_motion(true);
@@ -121,8 +141,6 @@ fn main() {
                 _ => Mode::Dark,
             });
             shell::apply_theme_scaled(mode, translucent, prefs.ui_scale, cx);
-            // `app arquivo.dbml` abre o arquivo; `app pasta/` abre o projeto; sem argumento, o exemplo
-            let start = std::env::args().nth(1).map(PathBuf::from);
             let shell = cx.new(|cx| shell::Shell::new(start, mode, translucent, window, cx));
             let focus = shell.focus_handle(cx);
             window.focus(&focus, cx);
