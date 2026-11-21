@@ -1,45 +1,73 @@
 version: 2
 
-# Atualizações semanais; as ações de workflow são fixadas por SHA e o Dependabot mantém o
-# comentário de versão ao propor novos SHAs.
+# Once a week (Monday 06:00, America/Manaus), one grouped PR per ecosystem, always against
+# develop (flow in CONTRIBUTING.md). No auto-rebase: every rebase re-triggers the whole CI;
+# comment `@dependabot rebase` to refresh a PR.
+# Workflow actions are pinned by SHA and Dependabot keeps the version comment when proposing
+# new SHAs.
+# Security updates do not follow this file: they always target the default branch (main) and are
+# never grouped with version updates (GitHub docs); ci.yml accepts `dependabot/*` -> main.
 updates:
   - package-ecosystem: github-actions
     directory: /
+    target-branch: develop
     schedule:
       interval: weekly
+      day: monday
+      time: "06:00"
+      timezone: America/Manaus
+    rebase-strategy: disabled
     commit-message:
       prefix: "chore(ci)"
     groups:
       actions:
+        applies-to: version-updates
         patterns: ["*"]
 
   - package-ecosystem: cargo
     directory: /
+    target-branch: develop
     schedule:
       interval: weekly
+      day: monday
+      time: "06:00"
+      timezone: America/Manaus
+    rebase-strategy: disabled
     commit-message:
       prefix: "chore(deps)"
-    open-pull-requests-limit: 5
     groups:
-      rust-minor-patch:
-        update-types: [minor, patch]
+      rust:
+        applies-to: version-updates
+        patterns: ["*"]
 
   - package-ecosystem: npm
     directory: /packages/canvas-web
+    target-branch: develop
     schedule:
       interval: weekly
+      day: monday
+      time: "06:00"
+      timezone: America/Manaus
+    rebase-strategy: disabled
     commit-message:
       prefix: "chore(deps)"
     groups:
       canvas-web:
-        update-types: [minor, patch]
+        applies-to: version-updates
+        patterns: ["*"]
 
   - package-ecosystem: npm
     directory: /vscode-extension
+    target-branch: develop
     schedule:
       interval: weekly
+      day: monday
+      time: "06:00"
+      timezone: America/Manaus
+    rebase-strategy: disabled
     commit-message:
       prefix: "chore(deps)"
     groups:
       vscode-extension:
-        update-types: [minor, patch]
+        applies-to: version-updates
+        patterns: ["*"]

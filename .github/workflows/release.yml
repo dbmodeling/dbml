@@ -49,6 +49,8 @@ jobs:
         uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
         with:
           shared-key: "release-web"
+          # A cache saved on a tag ref only serves that tag: restore only (see ci.yml).
+          save-if: false
 
       - name: Descobrir a versão do wasm-bindgen travada no Cargo.lock
         id: bindgen
@@ -142,6 +144,7 @@ jobs:
         uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
         with:
           shared-key: "release-linux"
+          save-if: false
 
       - name: Gerar pacote Debian / Ubuntu (.deb)
         run: ./scripts/build-deb.sh
@@ -203,6 +206,7 @@ jobs:
         uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
         with:
           shared-key: "release-windows"
+          save-if: false
 
       - name: Compilar executáveis release (App Desktop + CLI Web Server)
         run: cargo build --locked --release -p app -p dbml-cli
@@ -313,6 +317,7 @@ jobs:
         uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
         with:
           shared-key: "release-macos"
+          save-if: false
 
       # Importa os certificados Developer ID num keychain temporário (nunca no log).
       # Sem segredos: segue sem assinar, a menos que SIGNING_REQUIRED=true.
