@@ -73,10 +73,12 @@ pub fn start_file_watcher(state: AppState) -> anyhow::Result<()> {
             doc.dirty = false;
             doc.last_saved_hash = hash;
             doc.content.clone_from(&source);
+            doc.version += 1;
             let message = serde_json::json!({
                 "type": "external_change",
                 "source": source,
                 "documentId": path.to_string_lossy(),
+                "version": doc.version,
             });
             let _ = state.tx.send(message.to_string().into());
         }
@@ -136,6 +138,7 @@ mod tests {
                     last_saved_hash: 0,
                     dirty: false,
                     flush_scheduled: false,
+                    version: crate::state::INITIAL_VERSION,
                 })),
                 tx,
                 lifecycle: Arc::default(),

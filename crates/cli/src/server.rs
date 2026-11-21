@@ -1,5 +1,5 @@
 use crate::assets::static_handler;
-use crate::state::AppState;
+use crate::state::{AppState, StaleVersion};
 use axum::{
     Router,
     extract::{
@@ -21,6 +21,8 @@ use tokio::sync::broadcast::error::RecvError;
 enum ClientMessage {
     #[serde(rename = "apply_patch")]
     ApplyPatch {
+        /// Versão do documento em que o patch foi calculado (obrigatória).
+        base_version: u64,
         byte_start: usize,
         byte_end: usize,
         new_text: String,
@@ -34,6 +36,7 @@ enum ClientMessage {
     },
     #[serde(rename = "save_document")]
     SaveDocument {
+        base_version: u64,
         expected_source: String,
         expected_file: String,
     },
@@ -274,11 +277,21 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
                 }
             };
             let result = handle_client_message(&state, client_msg).await;
+            // Versão velha: primeiro o estado atual (só para quem errou), depois o erro do pedido.
+            if let Some(stale) = result
+                .as_ref()
+                .err()
+                .and_then(|e| e.downcast_ref::<StaleVersion>())
+            {
+                let _ = reply_tx.send(stale.rejection.clone());
+            }
+            let (version, error) = match result {
+                Ok(version) => (version, None),
+                Err(err) => (None, Some(format!("{err:#}"))),
+            };
             let _ = reply_tx.send(
-                serde_json::json!({
-                    "type": "result", "id": id, "error": result.err().map(|e| format!("{e:#}"))
-                })
-                .to_string(),
+                serde_json::json!({"type": "result", "id": id, "error": error, "version": version})
+                    .to_string(),
             );
         }
     };
@@ -294,41 +307,50 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
     }
 }
 
-async fn handle_client_message(state: &AppState, msg: ClientMessage) -> anyhow::Result<()> {
+/// Trata um pedido do cliente; devolve a versão do documento quando o pedido a muda ou confirma.
+async fn handle_client_message(
+    state: &AppState,
+    msg: ClientMessage,
+) -> anyhow::Result<Option<u64>> {
     match msg {
         ClientMessage::ApplyPatch {
+            base_version,
             byte_start,
             byte_end,
             new_text,
             expected_file,
             expected_source,
-        } => {
-            state
-                .apply_patch(
-                    &expected_file,
-                    &expected_source,
-                    byte_start,
-                    byte_end,
-                    &new_text,
-                )
-                .await
-        }
+        } => state
+            .apply_patch(
+                &expected_file,
+                base_version,
+                &expected_source,
+                byte_start,
+                byte_end,
+                &new_text,
+            )
+            .await
+            .map(Some),
         ClientMessage::SaveLayout {
             layout,
             expected_file,
         } => {
             let layout = serde_json::to_string_pretty(&layout)?;
-            state.save_layout_for(&expected_file, layout).await
+            state.save_layout_for(&expected_file, layout).await?;
+            Ok(None)
         }
         ClientMessage::SaveDocument {
+            base_version,
             expected_source,
             expected_file,
-        } => {
-            state
-                .verify_document(&expected_file, &expected_source)
-                .await
+        } => state
+            .verify_document(&expected_file, base_version, &expected_source)
+            .await
+            .map(Some),
+        ClientMessage::OpenFile(path) => {
+            state.switch_file(std::path::PathBuf::from(path)).await?;
+            Ok(None)
         }
-        ClientMessage::OpenFile(path) => state.switch_file(std::path::PathBuf::from(path)).await,
     }
 }
 

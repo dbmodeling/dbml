@@ -263,11 +263,15 @@ impl Doc {
         tokio::fs::read_to_string(&self.file).await.unwrap()
     }
 
-    /// Insere `text` no início, partindo do conteúdo atual em memória.
+    async fn version(&self) -> u64 {
+        self.state.doc.read().await.version
+    }
+
+    /// Insere `text` no início, partindo do conteúdo e da versão atuais em memória.
     async fn prepend(&self, text: &str) {
         let source = self.content().await;
         self.state
-            .apply_patch(&self.name, &source, 0, 0, text)
+            .apply_patch(&self.name, self.version().await, &source, 0, 0, text)
             .await
             .unwrap();
     }
@@ -308,7 +312,7 @@ async fn pending_patches_edit_the_buffer_in_place() {
     let before = d.state.doc.read().await.content.as_ptr();
     let source = d.content().await;
     d.state
-        .apply_patch(&d.name, &source, 3, 5, "XX") // mesmo tamanho: não realoca
+        .apply_patch(&d.name, d.version().await, &source, 3, 5, "XX") // mesmo tamanho: não realoca
         .await
         .unwrap();
     let after = d.state.doc.read().await.content.as_ptr();
@@ -320,19 +324,25 @@ async fn pending_patches_edit_the_buffer_in_place() {
 
     // Patch inválido não corrompe nem descarta o documento.
     let source = d.content().await;
+    let version = d.version().await;
     assert!(
         d.state
-            .apply_patch(&d.name, &source, 5, 3, "x")
+            .apply_patch(&d.name, version, &source, 5, 3, "x")
             .await
             .is_err()
     );
     assert!(
         d.state
-            .apply_patch(&d.name, "outra versão", 0, 0, "x")
+            .apply_patch(&d.name, version, "outra versão", 0, 0, "x")
             .await
             .is_err()
     );
     assert_eq!(d.content().await, source);
+    assert_eq!(
+        d.version().await,
+        version,
+        "patch recusado não muda a versão"
+    );
 }
 
 #[tokio::test]
@@ -412,7 +422,7 @@ async fn watcher_reports_only_external_changes_to_the_active_file() {
     // A própria gravação (flush de um patch) não vira external_change.
     let source = d.content().await;
     d.state
-        .apply_patch(&d.name, &source, 0, 0, "// nosso\n")
+        .apply_patch(&d.name, d.version().await, &source, 0, 0, "// nosso\n")
         .await
         .unwrap();
     d.state.flush().await.unwrap();
@@ -428,7 +438,10 @@ async fn save_document_flushes_pending_edits() {
     d.prepend("// editado\n").await;
     let expected = d.content().await;
     assert_ne!(d.disk().await, expected);
-    d.state.verify_document(&d.name, &expected).await.unwrap();
+    d.state
+        .verify_document(&d.name, d.version().await, &expected)
+        .await
+        .unwrap();
     assert_eq!(d.disk().await, expected);
 }
 
@@ -443,8 +456,16 @@ async fn switching_files_flushes_pending_edits() {
     let state = dbml_cli::state::AppState::new(d.dir.clone()).await.unwrap();
     let active = state.doc.read().await.file_path.clone();
     let source = state.doc.read().await.content.clone();
+    let version = state.doc.read().await.version;
     state
-        .apply_patch(&active.to_string_lossy(), &source, 0, 0, "// pendente\n")
+        .apply_patch(
+            &active.to_string_lossy(),
+            version,
+            &source,
+            0,
+            0,
+            "// pendente\n",
+        )
         .await
         .unwrap();
     let target = if active == other {
@@ -471,10 +492,23 @@ async fn shutdown_flushes_pending_edits() {
 async fn stale_patch_is_still_rejected_while_edits_are_pending() {
     let d = Doc::new("stale_pending").await;
     let original = d.content().await;
+    let old_version = d.version().await;
     d.prepend("// um\n").await;
+    // Versão velha: recusada pela versão, com o estado atual junto.
     let err = d
         .state
-        .apply_patch(&d.name, &original, 0, 0, "// velho\n")
+        .apply_patch(&d.name, old_version, &original, 0, 0, "// velho\n")
+        .await
+        .unwrap_err();
+    let stale = err
+        .downcast_ref::<dbml_cli::state::StaleVersion>()
+        .expect("erro de versão velha");
+    assert_eq!(stale.current_version, old_version + 1);
+    assert!(stale.rejection.contains("patch_rejected"));
+    // Versão atual com texto esperado velho: ainda recusado pela segunda defesa.
+    let err = d
+        .state
+        .apply_patch(&d.name, d.version().await, &original, 0, 0, "// velho\n")
         .await
         .unwrap_err();
     assert!(err.to_string().contains("changed"), "{err}");
@@ -500,10 +534,12 @@ async fn concurrent_patches_never_lose_an_edit() {
         .to_string_lossy()
         .into_owned();
 
+    let version = state.doc.read().await.version;
+
     // Dois clientes partem da mesma versão: só um pode vencer, o outro recebe erro de conflito.
     let (r1, r2) = tokio::join!(
-        state.apply_patch(&expected_file, &source, 0, 0, "// um\n"),
-        state.apply_patch(&expected_file, &source, 0, 0, "// dois\n"),
+        state.apply_patch(&expected_file, version, &source, 0, 0, "// um\n"),
+        state.apply_patch(&expected_file, version, &source, 0, 0, "// dois\n"),
     );
     assert_eq!(
         u8::from(r1.is_ok()) + u8::from(r2.is_ok()),
@@ -517,14 +553,16 @@ async fn concurrent_patches_never_lose_an_edit() {
 
     // Com a versão atual o próximo patch passa.
     let current = on_disk.clone();
+    let version = state.doc.read().await.version;
+    assert_eq!(version, 2, "só o patch vencedor subiu a versão");
     state
-        .apply_patch(&expected_file, &current, 0, 0, "// tres\n")
+        .apply_patch(&expected_file, version, &current, 0, 0, "// tres\n")
         .await
         .unwrap();
     // Arquivo ativo diferente é recusado.
     assert!(
         state
-            .apply_patch("/outro.dbml", &current, 0, 0, "x")
+            .apply_patch("/outro.dbml", version + 1, &current, 0, 0, "x")
             .await
             .is_err()
     );
