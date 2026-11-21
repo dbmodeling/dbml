@@ -1,5 +1,6 @@
 import * as vscode from 'vscode';
 import { checkCli, runIntrospect, runTestConnection } from './introspect.js';
+import { parseWebviewMessage, type WebviewMessage } from './messages.js';
 
 /** Lista os `.dbml` do workspace no formato esperado pela aba Arquivos do Workbench. */
 async function listDbmlFiles(active?: vscode.Uri): Promise<Array<{ name: string; path: string; active: boolean }>> {
@@ -112,12 +113,11 @@ export class DbmlCustomEditorProvider implements vscode.CustomTextEditorProvider
       });
     };
 
-    const handleMessage = async (message: any) => {
+    const handleMessage = async (message: WebviewMessage) => {
       try {
         switch (message.command) {
           case 'apply_patch': {
             const patch = message.patch;
-            if (!patch || !patch.range) throw new Error('Invalid patch');
             if (patch.expected_source !== document.getText()) throw new Error('Document changed outside this editor; reload or reconcile changes');
             const range = new vscode.Range(
               new vscode.Position(patch.range.start.line, patch.range.start.character),
@@ -155,7 +155,7 @@ export class DbmlCustomEditorProvider implements vscode.CustomTextEditorProvider
             break;
           }
           case 'diagnostics': {
-            const list = (message.diagnostics || []).map((d: any) => {
+            const list = message.diagnostics.map((d) => {
               const sev =
                 d.severity === 'error'
                   ? vscode.DiagnosticSeverity.Error
@@ -247,7 +247,17 @@ export class DbmlCustomEditorProvider implements vscode.CustomTextEditorProvider
         else console.error(err);
       }
     };
-    webview.onDidReceiveMessage((message) => {
+    webview.onDidReceiveMessage((raw: unknown) => {
+      const parsed = parseWebviewMessage(raw);
+      if (!parsed.ok) {
+        console.warn(`[dbmodeling] mensagem da Webview descartada: ${parsed.reason}`);
+        if (parsed.id != null) {
+          const type = parsed.command === 'introspect' || parsed.command === 'test_connection' ? `${parsed.command}_result` : 'result';
+          void webview.postMessage({ type, id: parsed.id, error: `Invalid message (${parsed.reason})` });
+        }
+        return;
+      }
+      const message = parsed.message;
       if (['apply_patch', 'save_document', 'save_layout'].includes(message.command)) {
         const previous = this.edits.get(document) ?? Promise.resolve();
         const next = previous.then(() => handleMessage(message));

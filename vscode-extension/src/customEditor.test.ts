@@ -59,6 +59,51 @@ describe('DbmlCustomEditorProvider', () => {
   });
 });
 
+describe('validação das mensagens da Webview', () => {
+  it('apply_patch malformado responde erro e não toca no documento', async () => {
+    const h = await openEditor(DbmlCustomEditorProvider, { text: 'abc' });
+    await h.send({ command: 'apply_patch', id: 1, patch: { range: null, new_text: 1 } });
+    expect(h.posted.find((m) => m.type === 'result' && m.id === 1).error).toMatch(/invalid patch/);
+  });
+
+  it('diagnostics malformado é descartado', async () => {
+    const h = await openEditor(DbmlCustomEditorProvider);
+    await h.send({ command: 'diagnostics', diagnostics: [{ severity: 'error', message: 'x' }] });
+    await h.send({ command: 'diagnostics', diagnostics: 'x' });
+    expect(h.diagnosticSets).toHaveLength(0);
+  });
+
+  it('diagnostics válido vira Diagnostic', async () => {
+    const h = await openEditor(DbmlCustomEditorProvider);
+    const range = { start: { line: 0, character: 0 }, end: { line: 0, character: 1 } };
+    await h.send({ command: 'diagnostics', diagnostics: [{ severity: 'warning', message: 'm', range }] });
+    expect(h.diagnosticSets).toHaveLength(1);
+    expect(h.diagnosticSets[0].list).toHaveLength(1);
+  });
+
+  it('export_file com nome fora do padrão não abre diálogo nem grava', async () => {
+    const h = await openEditor(DbmlCustomEditorProvider);
+    mockState.saveDialogResult = Uri.file('/tmp/out.svg');
+    await h.send({ command: 'export_file', id: 2, filename: '../../etc/passwd', content: 'x', isBinary: false });
+    expect(mockState.files.has('file:///tmp/out.svg')).toBe(false);
+    expect(h.posted.find((m) => m.type === 'result' && m.id === 2).error).toMatch(/filename/);
+  });
+
+  it('introspect malformado responde em introspect_result', async () => {
+    const h = await openEditor(DbmlCustomEditorProvider);
+    await h.send({ command: 'introspect', id: 4, request: { dialect: 'oracle' } });
+    expect(h.posted.find((m) => m.type === 'introspect_result' && m.id === 4).error).toMatch(/invalid request/);
+  });
+
+  it('comando desconhecido ou mensagem não-objeto é ignorado', async () => {
+    const h = await openEditor(DbmlCustomEditorProvider);
+    await h.send({ command: 'rm_rf' });
+    await h.send(null);
+    await h.send('x');
+    expect(h.posted).toHaveLength(0);
+  });
+});
+
 describe('mock de Uri', () => {
   it('faz roundtrip de parse/toString', () => {
     expect(Uri.parse('file:///a/b.dbml').toString()).toBe('file:///a/b.dbml');

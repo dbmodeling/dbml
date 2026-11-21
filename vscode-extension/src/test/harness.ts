@@ -12,6 +12,8 @@ export interface Harness {
   send(message: unknown): Promise<void>;
   disposePanel(): void;
   panel: { visible: boolean };
+  /** Chamadas a `DiagnosticCollection.set` feitas pela extensão. */
+  diagnosticSets: Array<{ uri: Uri; list: unknown[] }>;
 }
 
 export interface FakeDocument {
@@ -91,6 +93,8 @@ export async function openEditor(
     },
   };
   const provider = new (Provider as any)(context, ...(opts.extra ?? []));
+  const diagnosticSets: Array<{ uri: Uri; list: unknown[] }> = [];
+  provider.diagnostics = { set: (uri: Uri, list: unknown[]) => diagnosticSets.push({ uri, list }), delete() {} };
   await provider.resolveCustomTextEditor(document, panel, {} as vscode.CancellationToken);
   return {
     provider,
@@ -99,6 +103,7 @@ export async function openEditor(
     workspaceState,
     globalState,
     panel,
+    diagnosticSets,
     async send(message: unknown) {
       receive(message);
       // deixa a cadeia de promises do handler (inclui a fila de edições) esvaziar
