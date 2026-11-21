@@ -11,8 +11,6 @@ yanked = "deny"
 [licenses]
 # Crates do workspace (publish = false, PolyForm Noncommercial, não-OSI) não entram na checagem.
 private = { ignore = true }
-# Crates do workspace (publish = false, PolyForm Noncommercial, não-OSI) não entram na checagem.
-private = { ignore = true }
 # Só licenças permissivas (ou copyleft de arquivo, como MPL-2.0). Expressões `OR` são
 # satisfeitas por qualquer alternativa permitida; `AND` exige todas.
 allow = [
