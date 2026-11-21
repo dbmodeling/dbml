@@ -54,13 +54,15 @@ pub(super) fn write_single_ident(out: &mut String, ident: &str, dialect: SqlDial
     }
 }
 
-pub(super) fn write_sql_string(out: &mut String, val: &str) {
+/// Escreve um literal de string SQL: `'` é duplicado em todos os dialetos; no MySQL a barra
+/// invertida também é escapada, senão uma nota terminada em `\` engoliria a aspa de fechamento.
+pub(super) fn write_sql_string(out: &mut String, val: &str, dialect: SqlDialect) {
     out.push('\'');
     for ch in val.chars() {
-        if ch == '\'' {
-            out.push_str("''");
-        } else {
-            out.push(ch);
+        match ch {
+            '\'' => out.push_str("''"),
+            '\\' if dialect == SqlDialect::Mysql => out.push_str("\\\\"),
+            _ => out.push(ch),
         }
     }
     out.push('\'');
@@ -85,7 +87,7 @@ pub(super) fn write_column_type(
                     if i > 0 {
                         out.push_str(", ");
                     }
-                    write_sql_string(out, &v.name);
+                    write_sql_string(out, &v.name, dialect);
                 }
                 out.push(')');
                 return;
@@ -105,7 +107,7 @@ pub(super) fn write_column_type(
                         if i > 0 {
                             out.push_str(", ");
                         }
-                        write_sql_string(out, &v.name);
+                        write_sql_string(out, &v.name, dialect);
                     }
                     out.push_str("))");
                 }

@@ -390,6 +390,19 @@ struct ColumnFlags {
     has_default: bool,
 }
 
+/// Whether a raw SQL expression has a `;` outside single-quoted string literals.
+fn has_statement_terminator(expr: &str) -> bool {
+    let mut in_string = false;
+    for ch in expr.chars() {
+        match ch {
+            '\'' => in_string = !in_string,
+            ';' if !in_string => return true,
+            _ => {}
+        }
+    }
+    false
+}
+
 fn check_column_settings(
     cname: &str,
     ct: &[SyntaxToken],
@@ -524,6 +537,23 @@ fn check_column_settings(
                                 "Invalid referential action `{val}` for `{kw}:` (expected: no action, restrict, cascade, set null, set default)"
                             ),
                         ));
+                    }
+                } else if matches!(kw.as_str(), "default" | "check") {
+                    for tok in &part[2..] {
+                        let raw = tok.text();
+                        let expr = raw
+                            .strip_prefix('`')
+                            .map_or(raw, |r| r.strip_suffix('`').unwrap_or(r));
+                        let raw_expr = tok.kind() != SyntaxKind::Str || raw.starts_with('`');
+                        if raw_expr && has_statement_terminator(expr) {
+                            out.push(diag(
+                                range(tok),
+                                Severity::Warning,
+                                format!(
+                                    "Raw `{kw}:` expression on column `{cname}` contains a statement terminator `;`; it is exported verbatim to SQL"
+                                ),
+                            ));
+                        }
                     }
                 }
             }
@@ -1328,6 +1358,17 @@ mod tests {
             "{m:?}"
         );
         assert!(m.iter().any(|s| s.contains("requires a value")), "{m:?}");
+    }
+
+    #[test]
+    fn raw_default_and_check_with_statement_terminator_warn() {
+        let src = "Table t {\n  a int [default: `1; DROP TABLE t`]\n  b int [check: `b > 0; --`]\n  c text [default: `'a;b'`]\n  d int [default: `now()`]\n}\n";
+        let m = msgs(src);
+        let hits = m
+            .iter()
+            .filter(|s| s.contains("statement terminator"))
+            .count();
+        assert_eq!(hits, 2, "{m:?}");
     }
 
     #[test]
