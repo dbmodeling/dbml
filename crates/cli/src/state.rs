@@ -55,6 +55,33 @@ pub fn generate_token() -> String {
     })
 }
 
+/// Aplica um patch textual a `current`, recusando versão desatualizada ou intervalo inválido.
+///
+/// # Errors
+///
+/// Retorna erro se `current` difere de `expected` ou se `start..end` não é um intervalo válido
+/// em fronteiras de caractere.
+pub fn patch_text(
+    mut current: String,
+    expected: &str,
+    start: usize,
+    end: usize,
+    text: &str,
+) -> anyhow::Result<String> {
+    if current != expected {
+        anyhow::bail!("Document changed outside this editor; reload or reconcile changes");
+    }
+    if start > end
+        || end > current.len()
+        || !current.is_char_boundary(start)
+        || !current.is_char_boundary(end)
+    {
+        anyhow::bail!("Invalid patch range");
+    }
+    current.replace_range(start..end, text);
+    Ok(current)
+}
+
 #[derive(Clone)]
 pub struct AppState {
     /// Token de sessão exigido em `/ws` e `/api/*`.
@@ -229,6 +256,34 @@ impl AppState {
         Ok(())
     }
 
+    /// Lê o arquivo ativo, valida e aplica o patch e persiste o resultado tudo sob um único
+    /// `write_lock`, de modo que dois clientes não percam a edição um do outro.
+    ///
+    /// # Errors
+    ///
+    /// Retorna erro se o arquivo ativo mudou, se o documento diverge de `expected_source`, se o
+    /// intervalo é inválido ou se a gravação falha.
+    pub async fn apply_patch(
+        &self,
+        expected_file: &str,
+        expected_source: &str,
+        start: usize,
+        end: usize,
+        new_text: &str,
+    ) -> anyhow::Result<()> {
+        let _guard = self.write_lock.lock().await;
+        let path = {
+            let path = self.file_path.read().await;
+            if path.to_string_lossy() != expected_file {
+                anyhow::bail!("Active file changed; reload or reconcile changes");
+            }
+            path.clone()
+        };
+        let current = tokio::fs::read_to_string(&path).await?;
+        let updated = patch_text(current, expected_source, start, end, new_text)?;
+        self.save_content(updated).await
+    }
+
     /// Atomically persists `new_content` to the active `.dbml` file and updates in-memory state.
     ///
     /// # Errors
@@ -261,5 +316,17 @@ impl AppState {
         let mut layout_lock = self.layout.write().await;
         *layout_lock = Some(layout_json);
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::patch_text;
+
+    #[test]
+    fn rejects_stale_and_invalid_patches() {
+        assert!(patch_text("new".into(), "old", 0, 3, "x").is_err());
+        assert!(patch_text("é".into(), "é", 1, 2, "x").is_err());
+        assert_eq!(patch_text("é".into(), "é", 0, 2, "x").unwrap(), "x");
     }
 }

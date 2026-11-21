@@ -39,27 +39,6 @@ enum ClientMessage {
     OpenFile(String),
 }
 
-fn apply_patch(
-    mut current: String,
-    expected: &str,
-    start: usize,
-    end: usize,
-    text: &str,
-) -> anyhow::Result<String> {
-    if current != expected {
-        anyhow::bail!("Document changed outside this editor; reload or reconcile changes");
-    }
-    if start > end
-        || end > current.len()
-        || !current.is_char_boundary(start)
-        || !current.is_char_boundary(end)
-    {
-        anyhow::bail!("Invalid patch range");
-    }
-    current.replace_range(start..end, text);
-    Ok(current)
-}
-
 async fn active_file(state: &AppState, expected_file: &str) -> anyhow::Result<std::path::PathBuf> {
     let path = state.file_path.read().await;
     if path.to_string_lossy() != expected_file {
@@ -230,7 +209,6 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
                     continue;
                 }
             };
-            let _guard = state_clone.write_lock.lock().await;
             let result: anyhow::Result<()> = match client_msg {
                 ClientMessage::ApplyPatch {
                     byte_start,
@@ -239,25 +217,16 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
                     expected_file,
                     expected_source,
                 } => {
-                    async {
-                        let path = active_file(&state_clone, &expected_file).await?;
-                        let current = tokio::fs::read_to_string(path).await?;
-                        let updated = apply_patch(
-                            current,
-                            &expected_source,
-                            byte_start,
-                            byte_end,
-                            &new_text,
-                        )?;
-                        state_clone.save_content(updated).await
-                    }
-                    .await
+                    state_clone
+                        .apply_patch(&expected_file, &expected_source, byte_start, byte_end, &new_text)
+                        .await
                 }
                 ClientMessage::SaveLayout {
                     layout,
                     expected_file,
                 } => {
                     async {
+                        let _guard = state_clone.write_lock.lock().await;
                         active_file(&state_clone, &expected_file).await?;
                         let layout = serde_json::to_string_pretty(&layout)?;
                         state_clone.save_layout(layout).await
@@ -269,6 +238,7 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
                     expected_file,
                 } => {
                     async {
+                        let _guard = state_clone.write_lock.lock().await;
                         let path = active_file(&state_clone, &expected_file).await?;
                         if tokio::fs::read_to_string(path).await? != expected_source {
                             anyhow::bail!(
@@ -280,6 +250,7 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
                     .await
                 }
                 ClientMessage::OpenFile(path) => async {
+                    let _guard = state_clone.write_lock.lock().await;
                     state_clone.switch_file(std::path::PathBuf::from(path)).await?;
                     let content = state_clone.content.read().await.clone();
                     let layout: Option<serde_json::Value> = state_clone
@@ -321,7 +292,7 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
 
 #[cfg(test)]
 mod tests {
-    use super::{apply_patch, request_token, token_matches};
+    use super::{request_token, token_matches};
     use axum::http::{HeaderMap, HeaderValue};
 
     #[test]
@@ -340,12 +311,5 @@ mod tests {
         assert_eq!(request_token(&h, None).as_deref(), Some("tk"));
         h.insert("x-dbml-token", HeaderValue::from_static("hh"));
         assert_eq!(request_token(&h, None).as_deref(), Some("hh"));
-    }
-
-    #[test]
-    fn rejects_stale_and_invalid_patches() {
-        assert!(apply_patch("new".into(), "old", 0, 3, "x").is_err());
-        assert!(apply_patch("é".into(), "é", 1, 2, "x").is_err());
-        assert_eq!(apply_patch("é".into(), "é", 0, 2, "x").unwrap(), "x");
     }
 }

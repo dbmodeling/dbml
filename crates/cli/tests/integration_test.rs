@@ -72,3 +72,46 @@ async fn test_switch_file_rejects_outside_workspace() {
     let _ = tokio::fs::remove_dir_all(&base).await;
     let _ = tokio::fs::remove_file(&outside).await;
 }
+
+#[tokio::test]
+async fn concurrent_patches_never_lose_an_edit() {
+    let dir = std::env::temp_dir().join(format!("dbml_patch_race_{}", std::process::id()));
+    let _ = tokio::fs::remove_dir_all(&dir).await;
+    tokio::fs::create_dir_all(&dir).await.unwrap();
+    let file = dir.join("schema.dbml");
+    tokio::fs::write(&file, "Table a { id int }\n")
+        .await
+        .unwrap();
+    let state = dbml_cli::state::AppState::new(file.clone()).await.unwrap();
+    let source = state.content.read().await.clone();
+    let expected_file = state.file_path.read().await.to_string_lossy().into_owned();
+
+    // Dois clientes partem da mesma versão: só um pode vencer, o outro recebe erro de conflito.
+    let (r1, r2) = tokio::join!(
+        state.apply_patch(&expected_file, &source, 0, 0, "// um\n"),
+        state.apply_patch(&expected_file, &source, 0, 0, "// dois\n"),
+    );
+    assert_eq!(
+        u8::from(r1.is_ok()) + u8::from(r2.is_ok()),
+        1,
+        "exatamente um patch vence: {r1:?} / {r2:?}"
+    );
+    let on_disk = tokio::fs::read_to_string(&file).await.unwrap();
+    assert_eq!(on_disk, *state.content.read().await);
+    assert!(on_disk.starts_with("// um\n") ^ on_disk.starts_with("// dois\n"));
+
+    // Com a versão atual o próximo patch passa.
+    let current = on_disk.clone();
+    state
+        .apply_patch(&expected_file, &current, 0, 0, "// tres\n")
+        .await
+        .unwrap();
+    // Arquivo ativo diferente é recusado.
+    assert!(
+        state
+            .apply_patch("/outro.dbml", &current, 0, 0, "x")
+            .await
+            .is_err()
+    );
+    let _ = tokio::fs::remove_dir_all(&dir).await;
+}
