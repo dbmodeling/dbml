@@ -4,10 +4,7 @@ use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
 use tokio::sync::{OwnedRwLockWriteGuard, RwLock, broadcast};
-
-static TMP_SEQ: AtomicU64 = AtomicU64::new(0);
 
 #[must_use]
 pub fn compute_hash(content: &str) -> u64 {
@@ -16,27 +13,26 @@ pub fn compute_hash(content: &str) -> u64 {
     hasher.finish()
 }
 
-/// Realiza gravação atômica em disco utilizando arquivo temporário e rename do sistema de arquivos.
+/// Realiza gravação atômica em disco preservando symlinks e permissões (via `atomic-write`).
 ///
 /// # Errors
 ///
 /// Returns an error if writing the temporary file or renaming it to `path` fails.
 pub async fn atomic_write(path: &Path, content: &str) -> anyhow::Result<()> {
-    let parent = path.parent().unwrap_or_else(|| Path::new("."));
-    let file_name = path.file_name().and_then(|n| n.to_str()).unwrap_or("file");
-    let seq = TMP_SEQ.fetch_add(1, Ordering::Relaxed);
-    let tmp_path = parent.join(format!(".{file_name}.tmp-{}-{seq}", std::process::id()));
-
-    tokio::fs::write(&tmp_path, content)
-        .await
-        .with_context(|| format!("Failed to write temporary file '{}'", tmp_path.display()))?;
-
-    if let Err(err) = tokio::fs::rename(&tmp_path, path).await {
-        let _ = tokio::fs::remove_file(&tmp_path).await;
-        return Err(err).with_context(|| format!("Failed to rename file to '{}'", path.display()));
-    }
-
-    Ok(())
+    let path = path.to_path_buf();
+    let bytes = content.as_bytes().to_vec();
+    tokio::task::spawn_blocking(move || {
+        if let Some(parent) = path.parent()
+            && !parent.as_os_str().is_empty()
+            && !parent.is_dir()
+        {
+            anyhow::bail!("Parent directory '{}' does not exist", parent.display());
+        }
+        atomic_write::atomic_write(&path, &bytes)
+            .with_context(|| format!("Failed to write file '{}'", path.display()))
+    })
+    .await
+    .map_err(|e| anyhow::anyhow!("atomic write task failed: {e}"))?
 }
 
 /// Idade mínima para um arquivo temporário de gravação atômica ser considerado abandonado

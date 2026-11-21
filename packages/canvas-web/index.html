@@ -13,10 +13,17 @@
   <div id="app"></div>
   <script type="module">
     import init, * as wasm from './src/wasm/dbml_wasm.js';
-    import { mountWorkbench, WebSocketTransport } from './src/index.ts';
+    import { APP_ROOT_ID, mountWorkbench, WebSocketTransport } from './src/index.ts';
 
     await init();
-    mountWorkbench(document.getElementById('app'), new WebSocketTransport(), wasm);
+    const api = {
+      ...wasm,
+      reinit: async () => {
+        await init();
+        return api;
+      },
+    };
+    mountWorkbench(document.getElementById(APP_ROOT_ID), new WebSocketTransport(), api);
   </script>
 </body>
 </html>

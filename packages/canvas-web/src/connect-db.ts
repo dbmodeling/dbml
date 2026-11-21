@@ -1,5 +1,6 @@
+import { TLS_MODE } from './constants';
 import { t } from './i18n';
-import type { IntrospectRequest, IntrospectResult } from './types';
+import type { IntrospectRequest, IntrospectResult, TlsMode } from './types';
 
 export type DbEngine = IntrospectRequest['dialect'];
 
@@ -32,7 +33,8 @@ export function parseSchemas(input: string): string[] {
 export function buildRequest(
   engine: DbEngine,
   fields: ConnectFields,
-  trustCert: boolean
+  trustCert: boolean,
+  tls: TlsMode = TLS_MODE.AUTO
 ): IntrospectRequest {
   const port = Number.parseInt(fields.port.trim(), 10);
   return {
@@ -44,6 +46,7 @@ export function buildRequest(
     password: fields.password,
     path: fields.path.trim(),
     trust_server_certificate: engine === 'sqlserver' && trustCert,
+    tls: engine === 'sqlite' ? TLS_MODE.AUTO : tls,
     schemas: engine === 'sqlite' ? [] : parseSchemas(fields.schemas),
   };
 }
@@ -109,6 +112,7 @@ export function summarizeTest(server: string, schemas: string[]): string {
 export class ConnectDbModel {
   engine: DbEngine;
   trustCert = false;
+  tls: TlsMode = TLS_MODE.AUTO;
   status: ConnectStatus = 'idle';
   dbml = '';
   warnings: string[] = [];

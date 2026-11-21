@@ -6,6 +6,7 @@ mod actions;
 mod canvas;
 mod canvas_geom;
 mod connect_db;
+mod constants;
 mod disk_sync;
 mod fatal;
 mod glass;

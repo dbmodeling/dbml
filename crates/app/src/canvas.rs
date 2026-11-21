@@ -528,7 +528,9 @@ impl Diagram {
             f32::NEG_INFINITY,
         );
         for t in &self.schema.tables {
-            let (x, y) = self.positions()[&t.qualified_name()];
+            let Some(&(x, y)) = self.positions().get(&t.qualified_name()) else {
+                continue;
+            };
             x0 = x0.min(x);
             y0 = y0.min(y);
             x1 = x1.max(x + CARD_W);
@@ -569,7 +571,7 @@ impl Diagram {
     fn column_at(&self, p: (f32, f32)) -> Option<(String, String)> {
         self.schema.tables.iter().find_map(|t| {
             let qname = t.qualified_name();
-            let (x, y) = self.pos[&qname];
+            let &(x, y) = self.pos.get(&qname)?;
             let inside =
                 p.0 >= x && p.0 <= x + CARD_W && p.1 >= y && p.1 <= y + card_h(t.columns.len());
             let row = ((p.1 - y - HEADER_H - 4.) / ROW_H).floor();
@@ -584,7 +586,7 @@ impl Diagram {
     fn table_at(&self, p: (f32, f32)) -> Option<(String, String)> {
         self.schema.tables.iter().find_map(|t| {
             let qname = t.qualified_name();
-            let (x, y) = self.pos[&qname];
+            let &(x, y) = self.pos.get(&qname)?;
             let inside =
                 p.0 >= x && p.0 <= x + CARD_W && p.1 >= y && p.1 <= y + card_h(t.columns.len());
             if !inside {
@@ -881,7 +883,9 @@ impl Diagram {
             if x1 - x0 > 2. || y1 - y0 > 2. {
                 for t in &self.schema.tables {
                     let qname = t.qualified_name();
-                    let (x, y) = self.pos[&qname];
+                    let Some(&(x, y)) = self.pos.get(&qname) else {
+                        continue;
+                    };
                     let hit =
                         x < x1 && x + CARD_W > x0 && y < y1 && y + card_h(t.columns.len()) > y0;
                     if hit && !self.is_selected(&qname) {
@@ -1679,7 +1683,11 @@ impl Diagram {
         let (vw, vh) = (f32::from(self.size.width), f32::from(self.size.height));
         for t in order {
             let qname = t.qualified_name();
-            let (x, y) = self.pos[&qname];
+            let (x, y) = self
+                .pos
+                .get(&qname)
+                .copied()
+                .unwrap_or(crate::constants::DEFAULT_CARD_POS);
             // fora da vista (com margem): não monta o cartão
             let (sx, sy) = (x * z + pan_x, y * z + pan_y);
             if vw > 0.
@@ -1873,7 +1881,11 @@ impl Diagram {
                                 return;
                             }
                             let (lx, ly) = this.to_local(e.position);
-                            let (px_, py_) = this.pos[&name];
+                            let (px_, py_) = this
+                                .pos
+                                .get(&name)
+                                .copied()
+                                .unwrap_or(crate::constants::DEFAULT_CARD_POS);
                             let grab = (
                                 (lx - this.pan.0) / this.zoom - px_,
                                 (ly - this.pan.1) / this.zoom - py_,
@@ -2935,6 +2947,14 @@ mod tests {
                     assert_eq!(d.pos["a"], (500., 600.));
                     assert!(!d.pos.contains_key("ghost"));
                     assert!(d.pos.contains_key("b") && d.pos.contains_key("c"));
+                    // tabela ausente de `pos` nunca entra em pânico (#94)
+                    let saved_a = d.pos.remove("a");
+                    d.fit();
+                    let _ = d.column_at((0., 0.));
+                    let _ = d.table_at((0., 0.));
+                    if let Some(p) = saved_a {
+                        d.pos.insert("a".to_string(), p);
+                    }
                     // cache de rotas: reaproveita sem mudança (pan/zoom não contam), recalcula ao mover
                     d.set_schema(dbml_analysis::analyze(
                         "Table a {\n id int\n}\nTable b {\n id int\n}\nTable c {\n id int\n}\nRef: a.id > b.id",

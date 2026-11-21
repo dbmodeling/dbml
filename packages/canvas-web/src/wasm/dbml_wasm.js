@@ -248,6 +248,14 @@ export function import_sql_ddl(sql, dialect) {
 }
 
 /**
+ * Instala o hook de pânico para imprimir a mensagem e localização no `console.error`
+ * em vez de falhar silenciosamente com `RuntimeError: unreachable` (#76).
+ */
+export function install_panic_hook() {
+    wasm.install_panic_hook();
+}
+
+/**
  * Analisa o código-fonte DBML e devolve a projeção semântica (`Schema`), diagnósticos e `Enum`s.
  *
  * # Errors
@@ -387,6 +395,9 @@ function __wbg_get_imports() {
         __wbg_entries_fb6397112b1de25f: function(arg0) {
             const ret = Object.entries(arg0);
             return ret;
+        },
+        __wbg_error_ccb1519d9913634f: function(arg0, arg1) {
+            console.error(getStringFromWasm0(arg0, arg1));
         },
         __wbg_get_658f6698067d9515: function() { return handleError(function (arg0, arg1) {
             const ret = Reflect.get(arg0, arg1);

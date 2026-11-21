@@ -1,5 +1,6 @@
 // @vitest-environment jsdom
 import { beforeEach, afterEach, describe, expect, it, vi } from 'vitest';
+import { Dirty } from '../src/workbench';
 import { fakeTransport, frame, installDomStubs, mount } from './helpers/harness';
 
 beforeEach(() => {
@@ -54,5 +55,23 @@ describe('invalidação do render', () => {
     (workbench as unknown as { scheduleRender(): void }).scheduleRender();
     await frame();
     expect(chrome).toHaveBeenCalledTimes(1);
+  });
+
+  it('invalidate(Dirty.Status) reconstrói só a barra de status, sem tocar sidebar/inspector/world (#108)', async () => {
+    const { workbench, world } = await loaded();
+    const internals = workbench as unknown as Record<string, () => void>;
+    const sidebar = vi.spyOn(internals, 'renderSidebar');
+    const inspector = vi.spyOn(internals, 'renderInspector');
+    const titlebar = vi.spyOn(internals, 'renderTitlebar');
+    const status = vi.spyOn(internals, 'renderStatus');
+
+    workbench.invalidate(Dirty.Status);
+    await frame();
+
+    expect(status).toHaveBeenCalledTimes(1);
+    expect(sidebar).not.toHaveBeenCalled();
+    expect(inspector).not.toHaveBeenCalled();
+    expect(titlebar).not.toHaveBeenCalled();
+    expect(world).not.toHaveBeenCalled();
   });
 });

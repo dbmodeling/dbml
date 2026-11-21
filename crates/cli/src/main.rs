@@ -33,6 +33,7 @@ async fn main() -> anyhow::Result<()> {
         url,
         schemas,
         password_stdin,
+        tls,
         test,
         output,
         force,
@@ -51,6 +52,7 @@ async fn main() -> anyhow::Result<()> {
             if let Some(warning) = warning {
                 eprintln!("warning: {warning}");
             }
+            let url = db_introspect::with_tls_mode(&url, tls.to_tls_mode());
             if test {
                 return run_test_url(&url).await;
             }
@@ -257,6 +259,9 @@ fn run_import(
 
 fn write_atomic(path: &Path, bytes: &[u8], force: bool) -> std::io::Result<()> {
     use std::io::Write as _;
+    if force {
+        return atomic_write::atomic_write(path, bytes);
+    }
     let parent = path
         .parent()
         .filter(|p| !p.as_os_str().is_empty())
@@ -280,13 +285,7 @@ fn write_atomic(path: &Path, bytes: &[u8], force: bool) -> std::io::Result<()> {
     };
     let written = file.write_all(bytes);
     drop(file);
-    let result = written.and_then(|()| {
-        if force {
-            std::fs::rename(&tmp, path)
-        } else {
-            std::fs::hard_link(&tmp, path)
-        }
-    });
+    let result = written.and_then(|()| std::fs::hard_link(&tmp, path));
     let _ = std::fs::remove_file(&tmp);
     result
 }

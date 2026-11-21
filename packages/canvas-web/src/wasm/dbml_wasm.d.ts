@@ -105,6 +105,12 @@ export function import_conflicts(existing: string, incoming: string): string[];
 export function import_sql_ddl(sql: string, dialect: string): any;
 
 /**
+ * Instala o hook de pânico para imprimir a mensagem e localização no `console.error`
+ * em vez de falhar silenciosamente com `RuntimeError: unreachable` (#76).
+ */
+export function install_panic_hook(): void;
+
+/**
  * Analisa o código-fonte DBML e devolve a projeção semântica (`Schema`), diagnósticos e `Enum`s.
  *
  * # Errors
@@ -134,6 +140,7 @@ export interface InitOutput {
     readonly format_dbml: (a: number, b: number) => [number, number];
     readonly import_conflicts: (a: number, b: number, c: number, d: number) => [number, number];
     readonly import_sql_ddl: (a: number, b: number, c: number, d: number) => [number, number, number];
+    readonly install_panic_hook: () => void;
     readonly parse_and_analyze: (a: number, b: number) => [number, number, number];
     readonly session_analysis_count: (a: number) => number;
     readonly session_analyze: (a: number, b: number, c: number) => [number, number, number];

@@ -5,6 +5,16 @@
  */
 
 import {
+  CONNECT_NETWORK_ROW_IDS,
+  LOCAL_SESSION_PREFIX,
+  MAX_LOCAL_SESSIONS,
+  MAX_WASM_RECOVERY_ATTEMPTS,
+  TLS_FIELD_LABEL,
+  TLS_ROW_ID,
+  TLS_SELECT_ID,
+  TLS_SELECT_OPTIONS,
+} from './constants';
+import {
   Command,
   Diagnostic,
   HostTransport,
@@ -147,6 +157,24 @@ function loadPrefs(): Prefs {
   }
 }
 
+/** Máscara de regiões sujas para evitar reconstruir todo o DOM a cada quadro (#108). */
+export const Dirty = {
+  Camera: 1 << 0,
+  World: 1 << 1,
+  Titlebar: 1 << 2,
+  Rails: 1 << 3,
+  Sidebar: 1 << 4,
+  Editor: 1 << 5,
+  Inspector: 1 << 6,
+  Islands: 1 << 7,
+  Status: 1 << 8,
+  Legend: 1 << 9,
+  Theme: 1 << 10,
+  Chrome:
+    (1 << 2) | (1 << 3) | (1 << 4) | (1 << 5) | (1 << 6) | (1 << 7) | (1 << 8) | (1 << 9) | (1 << 10),
+  All: (1 << 11) - 1,
+} as const;
+
 export class Workbench {
   private root: HTMLElement;
   private wb!: HTMLElement;
@@ -240,11 +268,13 @@ export class Workbench {
   /** Cancela todos os listeners globais (window) no `destroy()`. */
   private readonly abort = new AbortController();
   private destroyed = false;
-  /** Algo além da câmera mudou desde o último quadro. */
-  private fullDirty = false;
+  /** Regiões pendentes para o próximo quadro (`Dirty.*`). */
+  private dirtyMask = 0;
   private announcedSelection = '';
-  /** O Wasm sofreu um trap: nenhuma outra chamada é feita até recarregar a página. */
+  /** O Wasm sofreu um trap: aguarda reinstanciação ou recarga da página. */
   private engineFailed = false;
+  private wasmRecoveryCount = 0;
+  private wasmRecovering = false;
   private styleEl: HTMLStyleElement | null = null;
   private resizeObserver: ResizeObserver | null = null;
 
@@ -386,13 +416,45 @@ export class Workbench {
       editorOpen: this.editorOpen,
       zoom: this.zoom,
       pan: { x: this.pan.x, y: this.pan.y },
+      selection: [...this.selection],
+      selectedEnum: this.selectedEnum,
+      savedAt: Date.now(),
     };
     try {
       localStorage.setItem(this.sessionKey(), JSON.stringify(snap));
+      this.pruneLocalSessions();
     } catch {
       /* ignorado */
     }
     this.transport.saveSession?.(snap);
+  }
+
+  /** Mantém no máximo `MAX_LOCAL_SESSIONS` entradas `dbmodeling.session:*` no `localStorage` (#128). */
+  private pruneLocalSessions(): void {
+    const prefix = LOCAL_SESSION_PREFIX;
+    const currentKey = this.sessionKey();
+    const entries: Array<{ key: string; savedAt: number }> = [];
+    for (let i = 0; i < localStorage.length; i++) {
+      const key = localStorage.key(i);
+      if (!key || !key.startsWith(prefix)) continue;
+      let savedAt = 0;
+      try {
+        const parsed = JSON.parse(localStorage.getItem(key) || '{}') as SessionSnapshot;
+        if (typeof parsed.savedAt === 'number' && Number.isFinite(parsed.savedAt)) savedAt = parsed.savedAt;
+      } catch {
+        savedAt = 0;
+      }
+      entries.push({ key, savedAt });
+    }
+    if (entries.length <= MAX_LOCAL_SESSIONS) return;
+    entries.sort((a, b) => a.savedAt - b.savedAt);
+    let toRemove = entries.length - MAX_LOCAL_SESSIONS;
+    for (const entry of entries) {
+      if (toRemove <= 0) break;
+      if (entry.key === currentKey) continue;
+      localStorage.removeItem(entry.key);
+      toRemove--;
+    }
   }
 
   private scheduleSessionSave(): void {
@@ -480,6 +542,12 @@ export class Workbench {
           this.pan = { x: session.pan.x, y: session.pan.y };
           this.needsFit = false;
         }
+        if (Array.isArray(session.selection)) {
+          this.selection = session.selection.filter((s): s is string => typeof s === 'string');
+        }
+        if (typeof session.selectedEnum === 'string' || session.selectedEnum === null) {
+          this.selectedEnum = session.selectedEnum;
+        }
       }
     }
     this.hostSource = source;
@@ -494,14 +562,39 @@ export class Workbench {
     this.renderAll();
   }
 
-  /** Registra a falha de uma chamada ao Wasm; se for fatal, avisa o usuário uma única vez. */
+  /** Registra a falha de uma chamada ao Wasm; se for fatal, tenta reinstanciar o módulo ou avisa o usuário (#76). */
   private wasmFailed(context: string, e: unknown): boolean {
     console.error(`Error in ${context}:`, e);
     if (!isFatalWasmError(e)) return false;
+    this.session = null;
     if (!this.engineFailed) {
       this.engineFailed = true;
-      this.toast(t('O motor de análise falhou. Exporte o DBML e recarregue a página para continuar.'));
-      this.renderStatus();
+      if (this.wasm?.reinit && this.wasmRecoveryCount < MAX_WASM_RECOVERY_ATTEMPTS && !this.wasmRecovering) {
+        this.wasmRecovering = true;
+        this.wasmRecoveryCount++;
+        this.toast(t('O motor de análise falhou; reiniciando…'));
+        this.renderStatus();
+        void this.wasm
+          .reinit()
+          .then((fresh) => {
+            if (this.destroyed) return;
+            this.wasm = fresh;
+            this.engineFailed = false;
+            this.wasmRecovering = false;
+            this.reanalyze();
+            this.renderAll();
+            this.toast(t('Motor de análise recuperado.'));
+          })
+          .catch((reinitErr) => {
+            console.error('Failed to re-instantiate Wasm:', reinitErr);
+            this.wasmRecovering = false;
+            this.toast(t('O motor de análise falhou. Exporte o DBML e recarregue a página para continuar.'));
+            this.renderStatus();
+          });
+      } else {
+        this.toast(t('O motor de análise falhou. Exporte o DBML e recarregue a página para continuar.'));
+        this.renderStatus();
+      }
     }
     return true;
   }
@@ -1062,27 +1155,35 @@ export class Workbench {
 
   // ───────────────────────── renderização ─────────────────────────
 
+  /** Marca regiões específicas para reconstrução no próximo quadro (`Dirty.*`, #108). */
+  public invalidate(mask: number): void {
+    if (this.destroyed) return;
+    this.dirtyMask |= mask;
+    this.requestFrame();
+  }
+
   /** Pedido de render completo (cromo + mundo); vence qualquer pedido só de câmera do mesmo quadro. */
   private scheduleRender(): void {
-    if (this.destroyed) return;
-    this.fullDirty = true;
-    this.requestFrame();
+    this.invalidate(Dirty.All);
   }
 
   /** Pan: muda só o transform do mundo e o fundo em grade, sem refazer o DOM (#108). */
   private scheduleCamera(): void {
-    if (this.destroyed) return;
-    this.requestFrame();
+    this.invalidate(Dirty.Camera);
   }
 
   private requestFrame(): void {
     if (this.raf !== null) return;
     this.raf = requestAnimationFrame(() => {
       this.raf = null;
-      const full = this.fullDirty;
-      this.fullDirty = false;
-      if (full) this.renderAll();
-      else this.applyCamera();
+      const mask = this.dirtyMask;
+      this.dirtyMask = 0;
+      if (mask === 0) return;
+      if (mask === Dirty.Camera) {
+        this.applyCamera();
+      } else {
+        this.renderAll(mask);
+      }
     });
   }
 
@@ -1091,11 +1192,17 @@ export class Workbench {
     this.els['surface'].style.backgroundPosition = `${this.pan.x}px ${this.pan.y}px`;
   }
 
-  private renderAll(): void {
-    if (this.edgesDirty) this.recomputeEdges();
-    this.detectFx();
+  private renderAll(mask: number = Dirty.All): void {
+    const wantsWorld = (mask & Dirty.World) !== 0;
+    const wantsChrome = (mask & Dirty.Chrome) !== 0;
+    if (wantsWorld && this.edgesDirty) this.recomputeEdges();
+    if (wantsWorld || wantsChrome) this.detectFx();
     // chrome primeiro: o ajuste à tela depende da largura que os painéis deixam ao canvas
-    this.renderChrome();
+    if (wantsChrome) this.renderChrome(mask);
+    if (!wantsWorld) {
+      if ((mask & Dirty.Camera) !== 0) this.applyCamera();
+      return;
+    }
     const { width, height } = this.els['surface'].getBoundingClientRect();
     const previous = this.viewport;
     this.viewport = width > 0 && height > 0 ? { x: width, y: height } : null;
@@ -1139,28 +1246,32 @@ export class Workbench {
     return this.prefs.inspector && !(this.prefs.autoHide && none);
   }
 
-  private renderChrome(): void {
-    this.applyTheme();
-    this.els['empty'].querySelectorAll<HTMLElement>('[data-i18n]').forEach((el) => { el.textContent = t(el.dataset.i18n!); });
-    this.renderTitlebar();
-    this.renderRails();
-    this.renderSidebar();
-    this.renderEditor();
-    this.renderInspector();
-    this.renderIslands();
-    this.renderStatus();
-    const left = this.leftPane();
-    this.setShown(this.els['editor'], left === 'dbml', 'flex', 'Left');
-    this.setShown(this.els['sidebar'], !!left && left !== 'dbml', 'flex', 'Left');
-    const leftResize = this.wb.querySelector<HTMLButtonElement>('[data-resize=left]')!;
-    const rightResize = this.wb.querySelector<HTMLButtonElement>('[data-resize=right]')!;
-    leftResize.hidden = !left;
-    rightResize.hidden = !this.inspectorVisible();
-    leftResize.setAttribute('aria-label', t('Redimensionar painel esquerdo'));
-    rightResize.setAttribute('aria-label', t('Redimensionar inspetor'));
-    this.renderLegend();
-    this.els['empty'].style.display = this.schema.tables.length === 0 && this.enums.length === 0 ? 'flex' : 'none';
-    this.applyFx();
+  private renderChrome(mask: number = Dirty.Chrome): void {
+    if (mask & Dirty.Theme) {
+      this.applyTheme();
+      this.els['empty'].querySelectorAll<HTMLElement>('[data-i18n]').forEach((el) => { el.textContent = t(el.dataset.i18n!); });
+    }
+    if (mask & Dirty.Titlebar) this.renderTitlebar();
+    if (mask & Dirty.Rails) this.renderRails();
+    if (mask & Dirty.Sidebar) this.renderSidebar();
+    if (mask & Dirty.Editor) this.renderEditor();
+    if (mask & Dirty.Inspector) this.renderInspector();
+    if (mask & Dirty.Islands) this.renderIslands();
+    if (mask & Dirty.Status) this.renderStatus();
+    if (mask & (Dirty.Sidebar | Dirty.Editor | Dirty.Inspector | Dirty.Titlebar | Dirty.Theme)) {
+      const left = this.leftPane();
+      this.setShown(this.els['editor'], left === 'dbml', 'flex', 'Left');
+      this.setShown(this.els['sidebar'], !!left && left !== 'dbml', 'flex', 'Left');
+      const leftResize = this.wb.querySelector<HTMLButtonElement>('[data-resize=left]')!;
+      const rightResize = this.wb.querySelector<HTMLButtonElement>('[data-resize=right]')!;
+      leftResize.hidden = !left;
+      rightResize.hidden = !this.inspectorVisible();
+      leftResize.setAttribute('aria-label', t('Redimensionar painel esquerdo'));
+      rightResize.setAttribute('aria-label', t('Redimensionar inspetor'));
+      this.els['empty'].style.display = this.schema.tables.length === 0 && this.enums.length === 0 ? 'flex' : 'none';
+    }
+    if (mask & Dirty.Legend) this.renderLegend();
+    if (mask & (Dirty.Sidebar | Dirty.Inspector | Dirty.Titlebar)) this.applyFx();
   }
 
   private tint(name: string): string | null {
@@ -2436,6 +2547,10 @@ export class Workbench {
           ${field('user', 'Usuário', 'usuário')}
           ${field('password', 'Senha', 'senha', 'password')}
           ${field('schemas', 'Schemas', 'todos os schemas (ou: public, sales)')}
+          <label data-row="${TLS_ROW_ID}" for="${TLS_SELECT_ID}">${TLS_FIELD_LABEL}</label>
+          <select data-row="${TLS_ROW_ID}" id="${TLS_SELECT_ID}" class="fld">
+            ${TLS_SELECT_OPTIONS.map((opt) => `<option value="${opt.value}">${translate(opt.labelKey)}</option>`).join('')}
+          </select>
           ${field('path', 'Arquivo', '/caminho/para/banco.sqlite')}
           <label class="chk" data-row="trust"><input id="db-trust" type="checkbox">${translate("Confiar no certificado do servidor (autoassinado, ex.: Docker)")}</label>
         </div>
@@ -2463,7 +2578,7 @@ export class Workbench {
     const syncView = () => {
       const isFile = model.engine === 'sqlite';
       const connecting = model.status === 'connecting';
-      for (const id of ['host', 'port', 'database', 'user', 'password', 'schemas']) {
+      for (const id of CONNECT_NETWORK_ROW_IDS) {
         bg.querySelectorAll<HTMLElement>(`[data-row="${id}"]`).forEach((n) => (n.style.display = isFile ? 'none' : ''));
       }
       bg.querySelectorAll<HTMLElement>('[data-row="path"]').forEach((n) => (n.style.display = isFile ? '' : 'none'));
@@ -2515,6 +2630,9 @@ export class Workbench {
     $<HTMLInputElement>('#db-trust').addEventListener('change', (e) => {
       model.trustCert = (e.target as HTMLInputElement).checked;
     });
+    $<HTMLSelectElement>(`#${TLS_SELECT_ID}`).addEventListener('change', (e) => {
+      model.tls = (e.target as HTMLSelectElement).value as import('./types').TlsMode;
+    });
 
     const readRequest = () =>
       buildRequest(
@@ -2528,7 +2646,8 @@ export class Workbench {
           path: val('path'),
           schemas: val('schemas'),
         },
-        model.trustCert
+        model.trustCert,
+        model.tls
       );
 
     let guard: IntrospectGuard | null = null;
@@ -3595,7 +3714,7 @@ export class Workbench {
       return;
     }
     this.queueSaveLayout();
-    this.scheduleRender();
+    this.invalidate(Dirty.World | Dirty.Islands | Dirty.Status);
   }
 
   /** Teclado no cartão focado: Enter seleciona; setas movem (Shift = 1px, senão 8px). */

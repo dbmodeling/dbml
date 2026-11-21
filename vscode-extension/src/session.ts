@@ -1,3 +1,5 @@
+import { MAX_SESSION_SELECTION } from './constants.js';
+
 /** Estado de sessão do canvas (zoom, pan, painel...) guardado em `workspaceState` por documento. */
 export type SessionState = Record<string, unknown>;
 
@@ -26,6 +28,14 @@ export function sanitizeSession(raw: unknown): SessionState | undefined {
   if ('pan' in out) {
     const pan = out.pan as { x?: unknown; y?: unknown } | null;
     if (!(pan && typeof pan === 'object' && isNum(pan.x) && isNum(pan.y))) delete out.pan;
+  }
+  if ('selection' in out) {
+    if (!Array.isArray(out.selection) || out.selection.length > MAX_SESSION_SELECTION || !out.selection.every((s) => typeof s === 'string')) {
+      delete out.selection;
+    }
+  }
+  if ('selectedEnum' in out && out.selectedEnum !== null && typeof out.selectedEnum !== 'string') {
+    delete out.selectedEnum;
   }
   return out;
 }

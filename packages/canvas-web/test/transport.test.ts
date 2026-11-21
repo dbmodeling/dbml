@@ -244,4 +244,86 @@ describe('VsCodeTransport versão do documento (#51)', () => {
     await expect(transport.sendPatch(patch)).rejects.toThrow(/not synced/i);
     expect(posted).toHaveLength(0);
   });
+
+  it('aplica delta incremental sem reenviar o documento inteiro (#111)', () => {
+    const updates: Array<{ source: string; version?: number }> = [];
+    transport.onDocumentUpdated((source, _layout, meta) => updates.push({ source, version: meta?.version }));
+    fromHost({ type: 'update', source: 'Table users { id int }', version: 1 });
+    fromHost({
+      type: 'delta',
+      version: 2,
+      saved: false,
+      documentId: 'file:///a.dbml',
+      changes: [{ rangeOffset: 6, rangeLength: 5, text: 'accounts' }],
+    });
+    expect(updates[updates.length - 1]).toEqual({ source: 'Table accounts { id int }', version: 2 });
+  });
+});
+
+describe('WebSocketTransport fila offline (#75)', () => {
+  beforeEach(() => {
+    FakeSocket.instances = [];
+    vi.useFakeTimers();
+    vi.stubGlobal('WebSocket', FakeSocket);
+    vi.spyOn(Math, 'random').mockReturnValue(1);
+    setHidden(false);
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+  });
+
+  it('enfileira patches offline e envia ao reconectar quando o servidor não mudou', async () => {
+    const t = new WebSocketTransport('ws://x/ws');
+    const ws1 = FakeSocket.instances[0];
+    ws1.open();
+    ws1.receive({ type: 'init', source: 'Table a { id int }', version: 1, documentId: 'f.dbml' });
+    ws1.close();
+
+    const p = t.sendPatch({
+      range: { start: { line: 0, character: 0 }, end: { line: 0, character: 18 } },
+      byte_start: 0,
+      byte_end: 18,
+      new_text: 'Table b { id int }',
+      expected_source: 'Table a { id int }',
+      expected_file: 'f.dbml',
+    });
+
+    vi.advanceTimersByTime(1000);
+    const ws2 = FakeSocket.instances[1];
+    ws2.open();
+    ws2.receive({ type: 'init', source: 'Table a { id int }', version: 1, documentId: 'f.dbml' });
+
+    expect(ws2.sent).toHaveLength(1);
+    expect(ws2.sent[0]).toMatchObject({ type: 'apply_patch', payload: { base_version: 1, new_text: 'Table b { id int }' } });
+    ws2.receive({ type: 'result', id: ws2.sent[0].id, version: 2 });
+    await expect(p).resolves.toBeUndefined();
+    t.close();
+  });
+
+  it('rejeita fila offline se o documento mudou no servidor durante a desconexão', async () => {
+    const t = new WebSocketTransport('ws://x/ws');
+    const ws1 = FakeSocket.instances[0];
+    ws1.open();
+    ws1.receive({ type: 'init', source: 'Table a { id int }', version: 1, documentId: 'f.dbml' });
+    ws1.close();
+
+    const p = t.sendPatch({
+      range: { start: { line: 0, character: 0 }, end: { line: 0, character: 18 } },
+      byte_start: 0,
+      byte_end: 18,
+      new_text: 'Table b { id int }',
+      expected_source: 'Table a { id int }',
+      expected_file: 'f.dbml',
+    });
+
+    vi.advanceTimersByTime(1000);
+    const ws2 = FakeSocket.instances[1];
+    ws2.open();
+    ws2.receive({ type: 'init', source: 'Table external { id int }', version: 2, documentId: 'f.dbml' });
+
+    await expect(p).rejects.toThrow(/changed while offline/i);
+    t.close();
+  });
 });

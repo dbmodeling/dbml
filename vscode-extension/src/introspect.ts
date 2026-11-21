@@ -1,4 +1,7 @@
 import { execFile } from 'child_process';
+import { TLS_MODE, TLS_QUERY_PARAM } from './constants.js';
+
+export type TlsMode = 'auto' | 'verify' | 'require' | 'disable';
 
 /** Mesmos campos do modal "Connect to Database" (`IntrospectRequest` em `canvas-web`). */
 export interface IntrospectRequest {
@@ -10,6 +13,7 @@ export interface IntrospectRequest {
   password: string;
   path: string;
   trust_server_certificate: boolean;
+  tls?: TlsMode;
   schemas: string[];
 }
 
@@ -34,7 +38,36 @@ export function buildUrl(req: IntrospectRequest): string {
   const scheme = req.dialect;
   let url = `${scheme}://${encodeURIComponent(req.user.trim())}@${hostPart}:${port}`;
   if (req.database.trim()) url += `/${encodeURIComponent(req.database.trim())}`;
-  if (req.dialect === 'sqlserver' && req.trust_server_certificate) url += '?trustServerCertificate=true';
+  const tls = req.tls ?? TLS_MODE.AUTO;
+  const tlsQuery =
+    req.dialect === 'postgres'
+      ? tls === TLS_MODE.VERIFY
+        ? TLS_QUERY_PARAM.PG_VERIFY
+        : tls === TLS_MODE.REQUIRE
+          ? TLS_QUERY_PARAM.PG_REQUIRE
+          : tls === TLS_MODE.DISABLE
+            ? TLS_QUERY_PARAM.PG_DISABLE
+            : ''
+      : req.dialect === 'mysql'
+        ? tls === TLS_MODE.VERIFY
+          ? TLS_QUERY_PARAM.MYSQL_VERIFY
+          : tls === TLS_MODE.REQUIRE
+            ? TLS_QUERY_PARAM.MYSQL_REQUIRE
+            : tls === TLS_MODE.DISABLE
+              ? TLS_QUERY_PARAM.MYSQL_DISABLE
+              : ''
+        : req.dialect === 'sqlserver'
+          ? tls === TLS_MODE.VERIFY
+            ? TLS_QUERY_PARAM.SQLSERVER_VERIFY
+            : tls === TLS_MODE.REQUIRE
+              ? TLS_QUERY_PARAM.SQLSERVER_REQUIRE
+              : tls === TLS_MODE.DISABLE
+                ? TLS_QUERY_PARAM.SQLSERVER_DISABLE
+                : req.trust_server_certificate
+                  ? TLS_QUERY_PARAM.SQLSERVER_TRUST_CERT
+                  : ''
+          : '';
+  if (tlsQuery) url += `?${tlsQuery}`;
   return url;
 }
 

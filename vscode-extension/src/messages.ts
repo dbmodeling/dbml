@@ -2,6 +2,7 @@
  * Validação das mensagens vindas da Webview. A Webview é código que roda em um contexto
  * menos confiável que o host da extensão: nada é usado antes de checar tipo e formato.
  */
+import { TLS_MODES } from './constants.js';
 import type { IntrospectRequest } from './introspect.js';
 
 export interface Position {
@@ -73,6 +74,7 @@ function isIntrospectRequest(v: unknown): v is IntrospectRequest {
     isString(v.password) &&
     isString(v.path) &&
     typeof v.trust_server_certificate === 'boolean' &&
+    (v.tls === undefined || (isString(v.tls) && (TLS_MODES as readonly string[]).includes(v.tls))) &&
     Array.isArray(v.schemas) &&
     v.schemas.every(isString)
   );

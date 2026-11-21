@@ -3,6 +3,7 @@
 //! WebAssembly bindings exposing the DB Modeling Rust core (CST parser, semantic
 //! analysis, minimal text patcher, clustered auto-layout, and orthogonal routing).
 
+pub mod constants;
 pub mod line_index;
 pub mod session;
 pub mod types;
@@ -20,6 +21,28 @@ use types::{
 use wasm_bindgen::prelude::*;
 
 pub use layout::{CARD_W, GROUP_PAD, HEADER_H, ROW_H, TABLE_COLORS, card_h};
+
+#[cfg(target_arch = "wasm32")]
+#[wasm_bindgen]
+extern "C" {
+    #[wasm_bindgen(js_namespace = console)]
+    fn error(s: &str);
+}
+
+/// Instala o hook de pânico para imprimir a mensagem e localização no `console.error`
+/// em vez de falhar silenciosamente com `RuntimeError: unreachable` (#76).
+#[wasm_bindgen(start)]
+pub fn install_panic_hook() {
+    #[cfg(target_arch = "wasm32")]
+    {
+        static ONCE: std::sync::Once = std::sync::Once::new();
+        ONCE.call_once(|| {
+            std::panic::set_hook(Box::new(|info| {
+                error(&format!("{} {info}", constants::PANIC_LOG_PREFIX));
+            }));
+        });
+    }
+}
 
 /// Serializa estruturas para `JsValue` garantindo que `HashMap` vire objeto JSON (`{}`) e não `Map`.
 fn to_js_json<T: Serialize>(value: &T) -> Result<JsValue, JsValue> {

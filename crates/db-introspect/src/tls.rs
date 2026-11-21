@@ -6,6 +6,11 @@
 //! otherwise, and an explicit weaker choice is reported as a warning.
 
 use crate::Dialect;
+use crate::constants::{
+    MYSQL_TLS_DISABLE, MYSQL_TLS_REQUIRE, MYSQL_TLS_VERIFY, PARAM_ENCRYPT, PARAM_SSL_MODE,
+    PARAM_SSLMODE, PARAM_TRUST_SERVER_CERT, PARAM_TRUST_SERVER_CERT_LOWER, PG_TLS_DISABLE,
+    PG_TLS_REQUIRE, PG_TLS_VERIFY, SQLSERVER_FALSE, SQLSERVER_TRUE,
+};
 use std::borrow::Cow;
 
 /// How a network connection must protect its traffic.
@@ -101,6 +106,74 @@ fn parse(target: &str) -> Option<(Dialect, url::Url)> {
     }
     let u = url::Url::parse(target.trim()).ok()?;
     Some((dialect, u))
+}
+
+/// Applies an explicit [`TlsMode`] to `target`, overriding or appending the engine's TLS query
+/// parameter. [`TlsMode::Auto`], SQLite and unparsable targets are returned unchanged.
+#[must_use]
+pub fn apply_mode(target: &str, mode: TlsMode) -> Cow<'_, str> {
+    if mode == TlsMode::Auto {
+        return Cow::Borrowed(target);
+    }
+    let Some((dialect, mut u)) = parse(target) else {
+        return Cow::Borrowed(target);
+    };
+    let existing: Vec<(String, String)> = u
+        .query_pairs()
+        .filter(|(k, _)| {
+            let k = k.to_ascii_lowercase();
+            !matches!(
+                (dialect, k.as_str()),
+                (
+                    Dialect::Postgres | Dialect::Mysql,
+                    PARAM_SSLMODE | PARAM_SSL_MODE
+                ) | (
+                    Dialect::SqlServer,
+                    PARAM_ENCRYPT | PARAM_TRUST_SERVER_CERT_LOWER
+                )
+            )
+        })
+        .map(|(k, v)| (k.into_owned(), v.into_owned()))
+        .collect();
+    {
+        let mut pairs = u.query_pairs_mut();
+        pairs.clear();
+        for (k, v) in existing {
+            pairs.append_pair(&k, &v);
+        }
+        match (dialect, mode) {
+            (Dialect::Postgres, TlsMode::Verify) => {
+                pairs.append_pair(PARAM_SSLMODE, PG_TLS_VERIFY);
+            }
+            (Dialect::Postgres, TlsMode::Require) => {
+                pairs.append_pair(PARAM_SSLMODE, PG_TLS_REQUIRE);
+            }
+            (Dialect::Postgres, TlsMode::Disable) => {
+                pairs.append_pair(PARAM_SSLMODE, PG_TLS_DISABLE);
+            }
+            (Dialect::Mysql, TlsMode::Verify) => {
+                pairs.append_pair(PARAM_SSL_MODE, MYSQL_TLS_VERIFY);
+            }
+            (Dialect::Mysql, TlsMode::Require) => {
+                pairs.append_pair(PARAM_SSL_MODE, MYSQL_TLS_REQUIRE);
+            }
+            (Dialect::Mysql, TlsMode::Disable) => {
+                pairs.append_pair(PARAM_SSL_MODE, MYSQL_TLS_DISABLE);
+            }
+            (Dialect::SqlServer, TlsMode::Verify) => {
+                pairs.append_pair(PARAM_ENCRYPT, SQLSERVER_TRUE);
+            }
+            (Dialect::SqlServer, TlsMode::Require) => {
+                pairs.append_pair(PARAM_ENCRYPT, SQLSERVER_TRUE);
+                pairs.append_pair(PARAM_TRUST_SERVER_CERT, SQLSERVER_TRUE);
+            }
+            (Dialect::SqlServer, TlsMode::Disable) => {
+                pairs.append_pair(PARAM_ENCRYPT, SQLSERVER_FALSE);
+            }
+            _ => {}
+        }
+    }
+    Cow::Owned(u.into())
 }
 
 /// Applies the default TLS policy to `target`: a non-loopback host without any TLS parameter

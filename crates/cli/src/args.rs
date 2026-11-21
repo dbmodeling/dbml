@@ -41,6 +41,33 @@ impl CliDialect {
     }
 }
 
+/// TLS mode for `dbml import --url`.
+#[derive(ValueEnum, Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum CliTlsMode {
+    /// Verified TLS on remote hosts; driver default on loopback
+    #[default]
+    Auto,
+    /// Require TLS and verify server certificate and hostname
+    Verify,
+    /// Require TLS without verifying the server certificate (self-signed)
+    Require,
+    /// Disable TLS (clear text — explicit opt-out)
+    Disable,
+}
+
+impl CliTlsMode {
+    /// Converts this CLI flag into [`db_introspect::TlsMode`].
+    #[must_use]
+    pub const fn to_tls_mode(self) -> db_introspect::TlsMode {
+        match self {
+            Self::Auto => db_introspect::TlsMode::Auto,
+            Self::Verify => db_introspect::TlsMode::Verify,
+            Self::Require => db_introspect::TlsMode::Require,
+            Self::Disable => db_introspect::TlsMode::Disable,
+        }
+    }
+}
+
 /// Source SQL dialect for `dbml import`.
 #[derive(ValueEnum, Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ImportDialect {
@@ -200,6 +227,10 @@ pub enum Commands {
         /// With --url: read the password from the first line of stdin
         #[arg(long, requires = "url")]
         password_stdin: bool,
+
+        /// With --url: TLS mode (`auto`, `verify`, `require`, `disable`)
+        #[arg(long, value_enum, default_value_t = CliTlsMode::Auto, requires = "url")]
+        tls: CliTlsMode,
 
         /// With --url: only test the connection and print `{"server":..,"schemas":[..]}` as JSON
         #[arg(long, requires = "url")]

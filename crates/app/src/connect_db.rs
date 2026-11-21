@@ -1,6 +1,6 @@
 //! View-model for the "Conectar ao banco…" modal (parity with `connect-db.ts` on the web).
 
-use db_introspect::{ConnectionParams, Dialect, Options};
+use db_introspect::{ConnectionParams, Dialect, Options, TlsMode};
 use std::time::Duration;
 
 /// Where the connection attempt is.
@@ -24,6 +24,7 @@ pub enum Status {
 pub struct ConnectModel {
     pub dialect: Dialect,
     pub trust_cert: bool,
+    pub tls: TlsMode,
     pub status: Status,
     pub dbml: String,
     pub warnings: Vec<String>,
@@ -37,6 +38,7 @@ impl ConnectModel {
         Self {
             dialect,
             trust_cert: false,
+            tls: TlsMode::Auto,
             status: Status::Idle,
             dbml: String::new(),
             warnings: Vec::new(),

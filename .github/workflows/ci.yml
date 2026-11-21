@@ -187,6 +187,11 @@ jobs:
           ./scripts/check-workflow-pins.sh --self-test
           ./scripts/check-workflow-pins.sh
 
+      - name: Dependências frontend com versões exatas
+        run: |
+          ./scripts/check-npm-pins.sh --self-test
+          ./scripts/check-npm-pins.sh
+
       - name: Testes dos scripts de build e instalação
         run: |
           ./scripts/check-web-assets.sh --self-test

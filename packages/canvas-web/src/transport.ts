@@ -3,6 +3,7 @@
  * com a Webview do VS Code e com o servidor Axum CLI via WebSocket.
  */
 
+import { TRANSPORT_COMMAND, TRANSPORT_ERROR, TRANSPORT_EVENT } from './constants';
 import {
   HostTransport,
   DocumentMetadata,
@@ -60,6 +61,7 @@ class DocumentVersion {
 /** Transporte para execução dentro da Webview do VS Code */
 export class VsCodeTransport implements HostTransport {
   private readonly version = new DocumentVersion();
+  private syncedSource: string | null = null;
   private vscode: ReturnType<typeof acquireVsCodeApi>;
   private readonly abort = new AbortController();
   private updateCallback?: (
@@ -110,6 +112,7 @@ export class VsCodeTransport implements HostTransport {
         case 'update':
           // Também é a resposta do host a um patch recusado (versão velha): ressincroniza o estado.
           this.version.adopt(message.version);
+          if (typeof message.source === 'string') this.syncedSource = message.source;
           if (this.updateCallback) {
             this.updateCallback(message.source, message.layout, {
               title: message.title,
@@ -126,6 +129,27 @@ export class VsCodeTransport implements HostTransport {
             this.workspaceFilesCallback(message.files, message.title);
           }
           break;
+        case TRANSPORT_EVENT.DELTA: {
+          if (this.syncedSource === null || !Array.isArray(message.changes)) {
+            this.ready();
+            break;
+          }
+          let next = this.syncedSource;
+          for (const ch of message.changes as Array<{ rangeOffset: number; rangeLength: number; text: string }>) {
+            next = next.slice(0, ch.rangeOffset) + ch.text + next.slice(ch.rangeOffset + ch.rangeLength);
+          }
+          this.syncedSource = next;
+          this.version.adopt(message.version);
+          if (this.updateCallback) {
+            this.updateCallback(next, undefined, {
+              title: message.title,
+              saved: message.saved,
+              documentId: message.documentId,
+              version: message.version,
+            });
+          }
+          break;
+        }
         case 'workspace_files':
           if (this.workspaceFilesCallback) {
             this.workspaceFilesCallback(message.files || [], message.title);
@@ -304,6 +328,10 @@ export class WebSocketTransport implements HostTransport {
   private closed = false;
   private readonly abort = new AbortController();
   private readonly version = new DocumentVersion();
+  private hasSynced = false;
+  /** Edições feitas enquanto o socket estava fora do ar, aguardando reconexão (#75). */
+  private offlinePatches: Array<{ patch: TextPatch; resolve: () => void; reject: (e: Error) => void }> = [];
+  private pendingLayout: { layout: SidecarLayout; expected_file?: string } | null = null;
   /** Aba oculta: nenhuma tentativa agendada até `visibilitychange`. */
   private waitingVisible = false;
   private requestSeq = 0;
@@ -322,6 +350,16 @@ export class WebSocketTransport implements HostTransport {
   constructor(url = `ws://${window.location.host}/ws`) {
     this.url = url;
     document.addEventListener('visibilitychange', () => this.onVisibility(), { signal: this.abort.signal });
+    window.addEventListener(
+      'beforeunload',
+      (e) => {
+        if (this.offlinePatches.length > 0 || this.pendingLayout !== null) {
+          e.preventDefault();
+          e.returnValue = '';
+        }
+      },
+      { signal: this.abort.signal }
+    );
     this.connect();
   }
 
@@ -338,8 +376,10 @@ export class WebSocketTransport implements HostTransport {
       ws.onopen = ws.onmessage = ws.onclose = null;
       ws.close();
     }
-    for (const p of this.pending.values()) p.reject(new Error('Connection closed'));
+    for (const p of this.pending.values()) p.reject(new Error(TRANSPORT_ERROR.CONNECTION_CLOSED));
     this.pending.clear();
+    for (const q of this.offlinePatches.splice(0)) q.reject(new Error(TRANSPORT_ERROR.CONNECTION_CLOSED));
+    this.pendingLayout = null;
     this.connectionCallback = undefined;
   }
 
@@ -397,6 +437,21 @@ export class WebSocketTransport implements HostTransport {
             // `patch_rejected` traz o estado atual do documento para o cliente ressincronizar; o erro
             // do pedido chega em seguida no `result` (e é ele que avisa o usuário).
             this.version.adopt(msg.version, msg.type === 'init');
+            if (msg.type === TRANSPORT_EVENT.INIT) {
+              this.hasSynced = true;
+              if (this.offlinePatches.length > 0) {
+                const queued = this.offlinePatches.splice(0);
+                if (queued[0].patch.expected_source === msg.source) {
+                  void this.flushOfflinePatches(queued);
+                  this.flushPendingLayout();
+                  return;
+                }
+                for (const q of queued) {
+                  q.reject(new Error(TRANSPORT_ERROR.OFFLINE_CONFLICT));
+                }
+              }
+              this.flushPendingLayout();
+            }
             if (this.updateCallback) {
               this.updateCallback(msg.source, msg.layout, {
                 title: msg.title,
@@ -431,9 +486,40 @@ export class WebSocketTransport implements HostTransport {
     }
   }
 
+  private async flushOfflinePatches(
+    queued: Array<{ patch: TextPatch; resolve: () => void; reject: (e: Error) => void }>
+  ): Promise<void> {
+    for (let i = 0; i < queued.length; i++) {
+      const item = queued[i];
+      try {
+        const { byte_start, byte_end, new_text, expected_source, expected_file } = item.patch;
+        const base_version = this.version.base();
+        await this.request(TRANSPORT_COMMAND.APPLY_PATCH, { base_version, byte_start, byte_end, new_text, expected_source, expected_file });
+        item.resolve();
+      } catch (err) {
+        const e = err instanceof Error ? err : new Error(String(err));
+        item.reject(e);
+        for (let j = i + 1; j < queued.length; j++) queued[j].reject(e);
+        return;
+      }
+    }
+  }
+
+  private flushPendingLayout(): void {
+    const pending = this.pendingLayout;
+    if (!pending || !this.ws || this.ws.readyState !== WebSocket.OPEN) return;
+    this.pendingLayout = null;
+    void this.request(TRANSPORT_COMMAND.SAVE_LAYOUT, pending).catch(() => {});
+  }
+
   public async sendPatch(patch: TextPatch): Promise<void> {
     const { byte_start, byte_end, new_text, expected_source, expected_file } = patch;
     const base_version = this.version.base();
+    if (this.hasSynced && (!this.ws || this.ws.readyState !== WebSocket.OPEN)) {
+      return new Promise((resolve, reject) => {
+        this.offlinePatches.push({ patch, resolve, reject });
+      });
+    }
     await this.request('apply_patch', { base_version, byte_start, byte_end, new_text, expected_source, expected_file });
   }
 
@@ -468,6 +554,10 @@ export class WebSocketTransport implements HostTransport {
   }
 
   public saveLayout(layout: SidecarLayout, expected_file?: string): Promise<void> {
+    if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
+      this.pendingLayout = { layout, expected_file };
+      return Promise.resolve();
+    }
     return this.request('save_layout', { layout, expected_file });
   }
 

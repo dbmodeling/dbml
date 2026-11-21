@@ -38,4 +38,22 @@ describe('falha fatal do Wasm (#76)', () => {
     expect(root.querySelector('[data-engine-failed]')).not.toBeNull();
     expect(root.querySelectorAll('[data-engine-failed]')).toHaveLength(1);
   });
+
+  it('reinstancia o módulo Wasm automaticamente quando reinit está disponível', async () => {
+    const fresh = fakeWasm();
+    const broken = fakeWasm();
+    broken.parse_and_analyze = () => {
+      throw new WebAssembly.RuntimeError('unreachable');
+    };
+    broken.reinit = vi.fn(async () => fresh);
+    const transport = fakeTransport();
+    const { root } = mount(transport, broken);
+    transport.update('Table a { id int }', undefined, { saved: true });
+    await frame();
+    await Promise.resolve();
+    await frame();
+    expect(broken.reinit).toHaveBeenCalledTimes(1);
+    expect(root.querySelector('[data-engine-failed]')).toBeNull();
+    expect(root.querySelectorAll('.card')).toHaveLength(1);
+  });
 });

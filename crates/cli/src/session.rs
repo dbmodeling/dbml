@@ -45,11 +45,8 @@ pub fn save(session: &CliSession) {
 }
 
 pub fn save_to(p: &Path, session: &CliSession) {
-    if let Some(dir) = p.parent() {
-        let _ = std::fs::create_dir_all(dir);
-    }
     if let Ok(json) = serde_json::to_string_pretty(session) {
-        let _ = std::fs::write(p, json);
+        let _ = atomic_write::atomic_write(p, json.as_bytes());
     }
 }
 

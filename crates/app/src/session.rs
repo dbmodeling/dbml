@@ -4,61 +4,16 @@
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
-
-static TMP_SEQ: AtomicU64 = AtomicU64::new(0);
 
 /// Atomically writes `content` to `path` via a unique temporary file and rename.
 pub fn atomic_write_sync(path: &Path, content: &str) -> std::io::Result<()> {
     atomic_write_bytes(path, content.as_bytes())
 }
 
-/// Como [`atomic_write_sync`], para dados binários (exports PNG/JPEG). Faz `fsync` do arquivo
-/// temporário antes do rename e, em Unix, do diretório depois, para que queda de energia não
-/// deixe o destino vazio ou parcial.
+/// Como [`atomic_write_sync`], para dados binários (exports PNG/JPEG). Delega à crate
+/// compartilhada `atomic-write` (preserva symlinks, permissões e faz `fsync`).
 pub fn atomic_write_bytes(path: &Path, content: &[u8]) -> std::io::Result<()> {
-    use std::io::Write;
-    let target = if std::fs::symlink_metadata(path).is_ok_and(|m| m.file_type().is_symlink()) {
-        std::fs::canonicalize(path)?
-    } else {
-        path.to_path_buf()
-    };
-    let parent = target.parent().unwrap_or_else(|| Path::new("."));
-    std::fs::create_dir_all(parent)?;
-    let file_name = target
-        .file_name()
-        .and_then(|n| n.to_str())
-        .unwrap_or("file");
-    let seq = TMP_SEQ.fetch_add(1, Ordering::Relaxed);
-    let tmp_path = parent.join(format!(".{file_name}.tmp-{}-{seq}", std::process::id()));
-    let permissions = std::fs::metadata(&target).ok().map(|m| m.permissions());
-    let mut options = std::fs::OpenOptions::new();
-    options.write(true).create_new(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        options.mode(if permissions.is_some() { 0o600 } else { 0o666 });
-    }
-    let mut file = options.open(&tmp_path)?;
-    let result = (|| {
-        file.write_all(content)?;
-        if let Some(permissions) = permissions {
-            file.set_permissions(permissions)?;
-        }
-        file.sync_all()?;
-        drop(file);
-        std::fs::rename(&tmp_path, &target)
-    })();
-    if result.is_err() {
-        let _ = std::fs::remove_file(&tmp_path);
-    }
-    result?;
-    // Persiste a entrada de diretório do rename (não existe em Windows; melhor esforço).
-    #[cfg(unix)]
-    if let Ok(dir) = std::fs::File::open(parent) {
-        let _ = dir.sync_all();
-    }
-    Ok(())
+    atomic_write::atomic_write(path, content)
 }
 
 /// Sidecar de layout ao lado do arquivo: `<arquivo>.dbml.layout.json` (mesmo da CLI web e VS Code).
@@ -275,8 +230,39 @@ fn path() -> Option<PathBuf> {
     config_dir().map(|d| d.join("session.json"))
 }
 
+pub use crate::constants::MAX_VIEWPORTS;
+
+impl SessionState {
+    /// Remove entradas de `viewports` cujos arquivos não existem mais no disco e aplica o teto
+    /// [`MAX_VIEWPORTS`], preservando abas abertas e arquivo ativo.
+    pub fn prune_missing(&mut self) {
+        self.viewports.retain(|path, _| path.exists());
+        if self.viewports.len() > MAX_VIEWPORTS {
+            let keep: std::collections::HashSet<&PathBuf> = self
+                .open_tabs
+                .iter()
+                .chain(self.active_file.iter())
+                .chain(self.recent.iter().map(|r| &r.path))
+                .collect();
+            let to_drop = self.viewports.len() - MAX_VIEWPORTS;
+            let removable: Vec<PathBuf> = self
+                .viewports
+                .keys()
+                .filter(|k| !keep.contains(k))
+                .take(to_drop)
+                .cloned()
+                .collect();
+            for k in removable {
+                self.viewports.remove(&k);
+            }
+        }
+    }
+}
+
 pub fn load() -> SessionState {
-    path().map(|p| load_from(&p)).unwrap_or_default()
+    let mut state = path().map(|p| load_from(&p)).unwrap_or_default();
+    state.prune_missing();
+    state
 }
 
 /// Avisos de persistência (falha ao gravar, arquivo ilegível) para o shell mostrar na janela.
@@ -351,7 +337,9 @@ pub fn load_from(p: &Path) -> SessionState {
 
 pub fn save(state: &SessionState) {
     let Some(p) = path() else { return };
-    save_to(&p, state);
+    let mut pruned = state.clone();
+    pruned.prune_missing();
+    save_to(&p, &pruned);
 }
 
 pub fn save_to(p: &Path, state: &SessionState) {
@@ -629,5 +617,26 @@ mod tests {
         assert_eq!(short_dir(Path::new("/home/u/p/db"), Some(home)), "~/p/db");
         assert_eq!(short_dir(Path::new("/home/u"), Some(home)), "~");
         assert_eq!(short_dir(Path::new("/srv/db"), Some(home)), "/srv/db");
+    }
+
+    #[test]
+    fn prune_missing_removes_deleted_viewport_files() {
+        let dir = std::env::temp_dir().join(format!("dbm_prune_test_{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+        let existing = dir.join("exists.dbml");
+        let missing = dir.join("deleted.dbml");
+        std::fs::write(&existing, "Table a { id int }").unwrap();
+        let vp = ViewportState {
+            zoom: 1.0,
+            pan_x: 0.0,
+            pan_y: 0.0,
+        };
+        let mut state = SessionState::default();
+        state.viewports.insert(existing.clone(), vp.clone());
+        state.viewports.insert(missing.clone(), vp);
+        state.prune_missing();
+        assert!(state.viewports.contains_key(&existing));
+        assert!(!state.viewports.contains_key(&missing));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

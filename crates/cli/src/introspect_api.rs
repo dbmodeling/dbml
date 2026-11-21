@@ -2,12 +2,13 @@
 //! server (browsers cannot open TCP sockets). Read-only; credentials only travel in the request
 //! body and are never logged or echoed back.
 
+use crate::constants::{TLS_MODE_AUTO, TLS_MODE_DISABLE, TLS_MODE_REQUIRE, TLS_MODE_VERIFY};
 use axum::{
     Json,
     http::StatusCode,
     response::{IntoResponse, Response},
 };
-use db_introspect::{ConnectionParams, Dialect, Options};
+use db_introspect::{ConnectionParams, Dialect, Options, TlsMode};
 use serde::{Deserialize, Serialize};
 
 /// Form fields sent by the "Connect to Database" modal.
@@ -24,6 +25,8 @@ pub struct IntrospectRequest {
     /// SQLite file path on the machine running `dbml run`.
     pub path: String,
     pub trust_server_certificate: bool,
+    /// Optional TLS mode (`auto`, `verify`, `require`, `disable`).
+    pub tls: Option<String>,
     /// Only these schemas; empty means all user schemas.
     pub schemas: Vec<String>,
 }
@@ -51,11 +54,25 @@ pub struct TestResponse {
     pub schemas: Vec<String>,
 }
 
+fn parse_tls(s: Option<&str>) -> Result<TlsMode, (StatusCode, String)> {
+    match s.map(str::to_ascii_lowercase).as_deref() {
+        None | Some("" | TLS_MODE_AUTO) => Ok(TlsMode::Auto),
+        Some(TLS_MODE_VERIFY) => Ok(TlsMode::Verify),
+        Some(TLS_MODE_REQUIRE) => Ok(TlsMode::Require),
+        Some(TLS_MODE_DISABLE) => Ok(TlsMode::Disable),
+        Some(other) => Err((
+            StatusCode::BAD_REQUEST,
+            format!("invalid tls mode `{other}`"),
+        )),
+    }
+}
+
 fn target(req: IntrospectRequest) -> Result<(String, Options), (StatusCode, String)> {
     let dialect = parse_dialect(&req.dialect).ok_or((
         StatusCode::BAD_REQUEST,
         format!("unsupported database `{}`", req.dialect),
     ))?;
+    let tls = parse_tls(req.tls.as_deref())?;
     let mut params = ConnectionParams::new(dialect);
     params.host = req.host;
     params.port = req.port;
@@ -64,6 +81,7 @@ fn target(req: IntrospectRequest) -> Result<(String, Options), (StatusCode, Stri
     params.password = req.password;
     params.path = req.path;
     params.trust_server_certificate = req.trust_server_certificate;
+    params.tls = tls;
     let url = params
         .to_url()
         .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?;

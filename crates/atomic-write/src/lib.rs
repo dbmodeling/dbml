@@ -104,7 +104,13 @@ fn write_via_temp(
     if result.is_err() {
         let _ = fs::remove_file(&tmp_path);
     }
-    result
+    result?;
+    // Persiste a entrada de diretório do rename (não existe em Windows; melhor esforço).
+    #[cfg(unix)]
+    if let Ok(dir) = File::open(parent) {
+        let _ = dir.sync_all();
+    }
+    Ok(())
 }
 
 fn write_in_place(target: &Path, bytes: &[u8]) -> io::Result<()> {

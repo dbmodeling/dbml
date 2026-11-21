@@ -2499,6 +2499,7 @@ impl Shell {
                             params.password = password.read(cx).value().to_string();
                             params.path = path.read(cx).value().to_string();
                             params.trust_server_certificate = m.trust_cert;
+                            params.tls = m.tls;
                             let filter = parse_schemas(&schemas.read(cx).value());
                             model.update(cx, |m, cx| {
                                 m.reset_result();
@@ -2646,6 +2647,60 @@ impl Shell {
                             .child(row(crate::i18n::t("Usuário"), user.clone()))
                             .child(row(crate::i18n::t("Senha"), password.clone()))
                             .child(row("Schemas", schemas.clone()));
+                        {
+                            let model = model.clone();
+                            let tls_modes = [
+                                (crate::constants::ID_TLS_AUTO, "Auto", db_introspect::TlsMode::Auto),
+                                (
+                                    crate::constants::ID_TLS_VERIFY,
+                                    crate::i18n::t("Verificar"),
+                                    db_introspect::TlsMode::Verify,
+                                ),
+                                (
+                                    crate::constants::ID_TLS_REQUIRE,
+                                    crate::i18n::t("Exigir"),
+                                    db_introspect::TlsMode::Require,
+                                ),
+                                (
+                                    crate::constants::ID_TLS_DISABLE,
+                                    crate::i18n::t("Desativar"),
+                                    db_introspect::TlsMode::Disable,
+                                ),
+                            ];
+                            let mut tls_row = div()
+                                .flex()
+                                .items_center()
+                                .gap(px(crate::constants::TLS_BTN_GAP_PX));
+                            for (id, label, mode) in tls_modes {
+                                let model = model.clone();
+                                let active = st.tls == mode;
+                                tls_row = tls_row.child(
+                                    dialog_btn(&g, id, label, None, active, !active, !connecting)
+                                        .h(px(crate::constants::TLS_BTN_HEIGHT_PX))
+                                        .on_click(move |_, _, cx| {
+                                            model.update(cx, |m, cx| {
+                                                m.tls = mode;
+                                                cx.notify();
+                                            });
+                                        }),
+                                );
+                            }
+                            form = form.child(
+                                div()
+                                    .flex()
+                                    .items_center()
+                                    .gap(px(crate::constants::TLS_ROW_GAP_PX))
+                                    .child(
+                                        div()
+                                            .w(px(crate::constants::TLS_LABEL_WIDTH_PX))
+                                            .flex_none()
+                                            .text_size(px(crate::constants::TLS_LABEL_FONT_PX))
+                                            .text_color(g.text_muted)
+                                            .child(crate::constants::TLS_FIELD_LABEL),
+                                    )
+                                    .child(tls_row),
+                            );
+                        }
                         if st.dialect == Dialect::SqlServer {
                             let model = model.clone();
                             form = form.child(

@@ -9,6 +9,7 @@ publish.workspace = true
 gpui-kit.workspace = true
 schema.workspace = true
 layout.workspace = true
+atomic-write.workspace = true
 diagram-export.workspace = true
 base64 = "0.22"
 dbml-analysis.workspace = true

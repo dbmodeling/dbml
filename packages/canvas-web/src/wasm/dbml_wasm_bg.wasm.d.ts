@@ -9,6 +9,7 @@ export const export_sql_ddl: (a: number, b: number, c: number, d: number) => [nu
 export const format_dbml: (a: number, b: number) => [number, number];
 export const import_conflicts: (a: number, b: number, c: number, d: number) => [number, number];
 export const import_sql_ddl: (a: number, b: number, c: number, d: number) => [number, number, number];
+export const install_panic_hook: () => void;
 export const parse_and_analyze: (a: number, b: number) => [number, number, number];
 export const session_analysis_count: (a: number) => number;
 export const session_analyze: (a: number, b: number, c: number) => [number, number, number];

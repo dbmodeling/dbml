@@ -5,6 +5,7 @@
 //! Only catalog queries are issued and connections are opened read-only. Network and driver
 //! dependencies live in this crate so the pure core (`schema`, `dbml-*`) stays free of them.
 
+mod constants;
 mod dbml;
 mod model;
 mod mysql;
@@ -18,7 +19,10 @@ mod url;
 pub use dbml::to_dbml;
 pub use model::{Column, EnumType, ForeignKey, Index, Introspected, Table};
 pub use params::ConnectionParams;
-pub use tls::{TlsMode, apply_default as with_default_tls, is_loopback_host, weak_tls_warning};
+pub use tls::{
+    TlsMode, apply_default as with_default_tls, apply_mode as with_tls_mode, is_loopback_host,
+    weak_tls_warning,
+};
 pub use url::{Dialect, detect_dialect, mask_url, with_password};
 
 /// Error raised while connecting to or reading a database. Messages never contain the password.

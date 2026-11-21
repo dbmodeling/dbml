@@ -257,7 +257,13 @@ export interface SessionSnapshot {
   editorOpen?: boolean;
   zoom?: number;
   pan?: { x: number; y: number };
+  selection?: string[];
+  selectedEnum?: string | null;
+  savedAt?: number;
 }
+
+/** Política de TLS para introspecção de banco remoto. */
+export type TlsMode = 'auto' | 'verify' | 'require' | 'disable';
 
 /** Interface unificada de comunicação com o hospedeiro (VS Code Webview ou CLI WebSocket) */
 /** Campos do modal "Connect to Database" (iguais a `IntrospectRequest` em `crates/cli`). */
@@ -270,6 +276,7 @@ export interface IntrospectRequest {
   password: string;
   path: string;
   trust_server_certificate: boolean;
+  tls?: TlsMode;
   schemas: string[];
 }
 
@@ -353,6 +360,8 @@ export interface WasmSession {
 export interface WasmApi {
   /** Ausente em hosts antigos (ex.: bundle do VS Code): o workbench cai nas funções soltas. */
   Session?: new () => WasmSession;
+  /** Reinstancia o módulo Wasm após um trap fatal (#76). */
+  reinit?: () => Promise<WasmApi>;
   parse_and_analyze(source: string): { schema: Schema; diagnostics: Diagnostic[]; enums?: string[] };
   compute_scene(source: string, positions: Record<string, NodeCoordinate>): SceneGeometry;
   compute_layout(source: string, options: object): { positions: Record<string, NodeCoordinate> };

@@ -2,6 +2,23 @@ import * as vscode from 'vscode';
 import { base64ToBytes } from './base64.js';
 import type { CliHost } from './cliHost.js';
 import { getTrustedCliPath } from './cliPath.js';
+import {
+  CSP_NONCE_BYTES,
+  DELTA_OVERHEAD_BYTES,
+  DELTA_SIZE_RATIO,
+  HEX_PAD_CHAR,
+  HEX_PAD_LEN,
+  HEX_RADIX,
+  TEXT_CHANGE_DEBOUNCE_MS,
+  WEBVIEW_APP_ROOT_ID,
+  WEBVIEW_BG_COLOR,
+  WEBVIEW_CANVAS_BUNDLE,
+  WEBVIEW_DIST_DIR,
+  WEBVIEW_HTML_LANG,
+  WEBVIEW_OUTBOUND_TYPE,
+  WEBVIEW_TITLE,
+  WEBVIEW_WASM_BUNDLE,
+} from './constants.js';
 import { parseWebviewMessage, type WebviewMessage } from './messages.js';
 import { sanitizeSession } from './session.js';
 import { isAllowedDbmlUri } from './uriPolicy.js';
@@ -121,20 +138,43 @@ export class DbmlCustomEditorProvider implements vscode.CustomTextEditorProvider
     // `version` (document.version) também conta: texto igual com versão nova (digitou e desfez) precisa
     // chegar à Webview, senão o próximo patch dela sairia com a versão velha e seria rejeitado.
     let lastPosted: { source: string; saved: boolean; version: number } | null = null;
+    type TextDelta = { rangeOffset: number; rangeLength: number; text: string };
+    let pendingDeltas: TextDelta[] | null = null;
     const postTextUpdate = (extra: Record<string, unknown> = {}, force = false) => {
-      if (!force && !webviewPanel.visible) return;
+      if (!force && !webviewPanel.visible) {
+        pendingDeltas = null;
+        return;
+      }
       const source = document.getText();
       const saved = !document.isDirty;
       const version = document.version;
+      const deltas = pendingDeltas;
+      pendingDeltas = null;
       if (!force && lastPosted && lastPosted.source === source && lastPosted.saved === saved && lastPosted.version === version) return;
+      if (!force && lastPosted && deltas && deltas.length > 0) {
+        const deltaBytes = deltas.reduce((acc, d) => acc + d.text.length + DELTA_OVERHEAD_BYTES, 0);
+        if (deltaBytes < source.length * DELTA_SIZE_RATIO) {
+          lastPosted = { source, saved, version };
+          void webview.postMessage({ type: WEBVIEW_OUTBOUND_TYPE.DELTA, changes: deltas, documentId, saved, version, ...extra });
+          return;
+        }
+      }
       lastPosted = { source, saved, version };
-      void webview.postMessage({ type: 'update', source, documentId, saved, version, ...extra });
+      void webview.postMessage({ type: WEBVIEW_OUTBOUND_TYPE.UPDATE, source, documentId, saved, version, ...extra });
     };
     let changeTimer: ReturnType<typeof setTimeout> | null = null;
     const changeSub = vscode.workspace.onDidChangeTextDocument((e) => {
       if (e.document.uri.toString() !== document.uri.toString()) return;
+      if (webviewPanel.visible && lastPosted && e.contentChanges && e.contentChanges.length > 0) {
+        if (pendingDeltas === null) pendingDeltas = [];
+        for (const c of e.contentChanges) {
+          pendingDeltas.push({ rangeOffset: c.rangeOffset, rangeLength: c.rangeLength, text: c.text });
+        }
+      } else {
+        pendingDeltas = null;
+      }
       if (changeTimer) clearTimeout(changeTimer);
-      changeTimer = setTimeout(() => postTextUpdate({ title: title() }), 80);
+      changeTimer = setTimeout(() => postTextUpdate({ title: title() }), TEXT_CHANGE_DEBOUNCE_MS);
     });
     const saveSub = vscode.workspace.onDidSaveTextDocument((savedDocument) => {
       if (savedDocument.uri.toString() !== documentId) return;
@@ -347,34 +387,49 @@ export class DbmlCustomEditorProvider implements vscode.CustomTextEditorProvider
 
   private getHtmlForWebview(webview: vscode.Webview): string {
     const wasmScriptUri = webview.asWebviewUri(
-      vscode.Uri.joinPath(this.context.extensionUri, 'dist', 'dbml-wasm.bundle.js')
+      vscode.Uri.joinPath(this.context.extensionUri, WEBVIEW_DIST_DIR, WEBVIEW_WASM_BUNDLE)
     );
     const canvasScriptUri = webview.asWebviewUri(
-      vscode.Uri.joinPath(this.context.extensionUri, 'dist', 'canvas-web.js')
+      vscode.Uri.joinPath(this.context.extensionUri, WEBVIEW_DIST_DIR, WEBVIEW_CANVAS_BUNDLE)
     );
+    const nonce = generateNonce();
+    const csp = [
+      "default-src 'none'",
+      `img-src ${webview.cspSource} data: blob:`,
+      `style-src ${webview.cspSource} 'unsafe-inline'`,
+      `script-src 'nonce-${nonce}' 'wasm-unsafe-eval'`,
+      `connect-src ${webview.cspSource}`,
+    ].join('; ');
 
     return `<!DOCTYPE html>
-<html lang="pt-BR">
+<html lang="${WEBVIEW_HTML_LANG}">
 <head>
   <meta charset="UTF-8">
+  <meta http-equiv="Content-Security-Policy" content="${csp}">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>DB Modeling</title>
+  <title>${WEBVIEW_TITLE}</title>
   <style>
-    html, body, #app { margin: 0; padding: 0; width: 100%; height: 100%; overflow: hidden; background: #0a0b0c; }
+    html, body, #${WEBVIEW_APP_ROOT_ID} { margin: 0; padding: 0; width: 100%; height: 100%; overflow: hidden; background: ${WEBVIEW_BG_COLOR}; }
   </style>
 </head>
 <body>
-  <div id="app"></div>
-  <script src="${wasmScriptUri}"></script>
-  <script src="${canvasScriptUri}"></script>
-  <script>
+  <div id="${WEBVIEW_APP_ROOT_ID}"></div>
+  <script nonce="${nonce}" src="${wasmScriptUri}"></script>
+  <script nonce="${nonce}" src="${canvasScriptUri}"></script>
+  <script nonce="${nonce}">
     (function () {
       const transport = new DbModelingCanvasLib.VsCodeTransport();
-      DbModelingCanvasLib.mountWorkbench(document.getElementById('app'), transport, window.DbModelingParser);
+      DbModelingCanvasLib.mountWorkbench(document.getElementById(${JSON.stringify(WEBVIEW_APP_ROOT_ID)}), transport, window.DbModelingParser);
       transport.ready();
     })();
   </script>
 </body>
 </html>`;
   }
+}
+
+function generateNonce(): string {
+  const bytes = new Uint8Array(CSP_NONCE_BYTES);
+  globalThis.crypto.getRandomValues(bytes);
+  return Array.from(bytes, (b) => b.toString(HEX_RADIX).padStart(HEX_PAD_LEN, HEX_PAD_CHAR)).join('');
 }
