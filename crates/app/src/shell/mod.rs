@@ -626,11 +626,11 @@ impl Shell {
             active: 0,
             untitled: 0,
             pane: Pane::Schema,
-            sidebar_open: std::env::var("DBM_SIDEBAR").is_ok()
+            sidebar_open: crate::harness::var("DBM_SIDEBAR").is_some()
                 || crate::settings::load().sidebar_open,
-            editor_open: std::env::var("DBM_EDITOR").is_ok(),
+            editor_open: crate::harness::var("DBM_EDITOR").is_some(),
             code_only: false,
-            inspector_open: std::env::var("DBM_INSPECTOR").is_ok()
+            inspector_open: crate::harness::var("DBM_INSPECTOR").is_some()
                 || crate::settings::load().inspector_open,
             mode,
             translucent,
@@ -666,13 +666,13 @@ impl Shell {
             disk_watcher: None,
             loading: 0,
             loose_files: (PathBuf::new(), Vec::new()),
-            preselect: std::env::var("DBM_SELECT").ok(),
+            preselect: crate::harness::var("DBM_SELECT"),
         };
         this.disk_watcher = Some(Self::spawn_disk_watcher(window, cx));
         // DBM_PANE: painel inicial (usado pelo harness de screenshot)
-        this.pane = match std::env::var("DBM_PANE").as_deref() {
-            Ok("files") => Pane::Files,
-            Ok("problems") => Pane::Problems,
+        this.pane = match crate::harness::var("DBM_PANE").as_deref() {
+            Some("files") => Pane::Files,
+            Some("problems") => Pane::Problems,
             _ => Pane::Schema,
         };
         match start {
@@ -972,7 +972,7 @@ impl Shell {
     fn set_project(&mut self, dir: PathBuf, window: &mut Window, cx: &mut Context<Self>) {
         self.files.clear();
         self.project = Some(dir.clone());
-        if std::env::var("DBM_PANE").is_err() {
+        if crate::harness::var("DBM_PANE").is_none() {
             self.pane = Pane::Files;
         }
         self.save_session(cx);
@@ -1002,7 +1002,7 @@ impl Shell {
     /// abre na hora e `finish_restore` monta as abas quando a leitura termina.
     fn restore_session(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let session = crate::session::load();
-        if std::env::var("DBM_PANE").is_err()
+        if crate::harness::var("DBM_PANE").is_none()
             && let Some(pane) = session.pane.as_deref()
         {
             self.pane = match pane {
@@ -1011,7 +1011,7 @@ impl Shell {
                 _ => Pane::Schema,
             };
         }
-        if std::env::var("DBM_EDITOR").is_err()
+        if crate::harness::var("DBM_EDITOR").is_none()
             && let Some(ed) = session.editor_open
         {
             self.editor_open = ed;

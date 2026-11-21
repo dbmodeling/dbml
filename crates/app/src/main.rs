@@ -9,6 +9,7 @@ mod connect_db;
 mod disk_sync;
 mod fatal;
 mod glass;
+mod harness;
 mod history;
 mod ide;
 mod i18n;
@@ -84,16 +85,16 @@ fn main() {
         cx.bind_keys(actions::catalog().into_iter().filter_map(|e| e.binding));
         let prefs = settings::load();
         i18n::set(std::env::var("DBM_LANG").ok().and_then(|v| i18n::Lang::parse(&v)).or(prefs.lang).unwrap_or_else(i18n::system));
-        let env_mode = match std::env::var("DBM_MODE").as_deref() {
-            Ok("light" | "light-translucent") => Some(Mode::Light),
-            Ok("dark" | "dark-translucent") => Some(Mode::Dark),
+        let env_mode = match crate::harness::var("DBM_MODE").as_deref() {
+            Some("light" | "light-translucent") => Some(Mode::Light),
+            Some("dark" | "dark-translucent") => Some(Mode::Dark),
             _ => None,
         };
         // transparência da janela desativada (decisão de produto, 2026-11-16): sempre opaca
         let translucent = false;
         let background = platform::window_background(translucent);
         // DBM_SIZE=LxA abre a janela nesse tamanho (harness de screenshot do responsivo)
-        let bounds = std::env::var("DBM_SIZE").ok().and_then(|v| {
+        let bounds = crate::harness::var("DBM_SIZE").and_then(|v| {
             let (w, h) = v.split_once('x')?;
             let sz = size(px(w.parse().ok()?), px(h.parse().ok()?));
             Some(WindowBounds::Windowed(Bounds::centered(None, sz, cx)))
