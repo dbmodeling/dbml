@@ -104,6 +104,52 @@ describe('validação das mensagens da Webview', () => {
   });
 });
 
+describe('falhas de gravação visíveis ao usuário', () => {
+  const layout = { positions: { a: { x: 1, y: 2 } } };
+
+  it('falha ao gravar o sidecar avisa uma vez por arquivo, com a causa', async () => {
+    const h = await openEditor(DbmlCustomEditorProvider);
+    mockState.writeError = new Error('EACCES: permission denied');
+    await h.send({ command: 'save_layout', id: 1, layout });
+    await h.send({ command: 'save_layout', id: 2, layout });
+    expect(mockState.messages.warnings).toHaveLength(1);
+    expect(mockState.messages.warnings[0].message).toContain('EACCES: permission denied');
+    expect(mockState.messages.warnings[0].message).toContain('schema.dbml');
+    // a webview continua recebendo o erro de cada tentativa
+    expect(h.posted.filter((m) => m.type === 'result' && m.error)).toHaveLength(2);
+  });
+
+  it('sidecar gravado com sucesso não avisa', async () => {
+    const h = await openEditor(DbmlCustomEditorProvider);
+    await h.send({ command: 'save_layout', id: 1, layout });
+    expect(mockState.messages.warnings).toHaveLength(0);
+  });
+
+  it('applyEdit recusado avisa uma vez por arquivo', async () => {
+    const h = await openEditor(DbmlCustomEditorProvider, { text: 'abc' });
+    mockState.applyEditResult = false;
+    const patch = {
+      range: { start: { line: 0, character: 0 }, end: { line: 0, character: 1 } },
+      new_text: 'X',
+      expected_source: 'abc',
+    };
+    await h.send({ command: 'apply_patch', id: 1, patch });
+    await h.send({ command: 'apply_patch', id: 2, patch });
+    expect(mockState.messages.warnings).toHaveLength(1);
+    expect(mockState.messages.warnings[0].message).toMatch(/could not apply/i);
+  });
+
+  it('conflito de texto desatualizado não gera aviso (é fluxo normal de reconciliação)', async () => {
+    const h = await openEditor(DbmlCustomEditorProvider, { text: 'abc' });
+    await h.send({
+      command: 'apply_patch',
+      id: 1,
+      patch: { range: { start: { line: 0, character: 0 }, end: { line: 0, character: 1 } }, new_text: 'X', expected_source: 'zzz' },
+    });
+    expect(mockState.messages.warnings).toHaveLength(0);
+  });
+});
+
 describe('lista de arquivos do workspace', () => {
   it('não substitui files.exclude do usuário (exclude indefinido) e limita o resultado', async () => {
     const h = await openEditor(DbmlCustomEditorProvider);

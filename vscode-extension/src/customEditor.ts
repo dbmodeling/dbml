@@ -128,6 +128,14 @@ export class DbmlCustomEditorProvider implements vscode.CustomTextEditorProvider
       });
     };
 
+    // Falhas de gravação aparecem uma vez por arquivo e tipo (não a cada arraste de tabela).
+    const warned = new Set<string>();
+    const warnOnce = (kind: 'sidecar' | 'edit', text: string) => {
+      if (warned.has(kind)) return;
+      warned.add(kind);
+      void vscode.window.showWarningMessage(text);
+    };
+
     const handleMessage = async (message: WebviewMessage) => {
       try {
         switch (message.command) {
@@ -141,7 +149,10 @@ export class DbmlCustomEditorProvider implements vscode.CustomTextEditorProvider
             const edit = new vscode.WorkspaceEdit();
             edit.replace(document.uri, range, patch.new_text);
             // Integra com o histórico nativo (Ctrl+Z / Ctrl+Y)
-            if (!await vscode.workspace.applyEdit(edit)) throw new Error('Could not apply edit');
+            if (!await vscode.workspace.applyEdit(edit)) {
+              warnOnce('edit', `Could not apply the change to ${title()}: the editor rejected the edit (is the file read-only?).`);
+              throw new Error('Could not apply edit');
+            }
             break;
           }
           case 'save_document': {
@@ -165,6 +176,8 @@ export class DbmlCustomEditorProvider implements vscode.CustomTextEditorProvider
               layoutData = message.layout;
             } catch (err) {
               try { await vscode.workspace.fs.delete(temp); } catch { /* temporary file may not exist */ }
+              const cause = err instanceof Error ? err.message : String(err);
+              warnOnce('sidecar', `Could not save the layout of ${title()} (${cause}). Table positions will not be kept.`);
               throw err;
             }
             break;
