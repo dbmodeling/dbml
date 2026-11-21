@@ -6,21 +6,37 @@ on:
   pull_request:
     branches: [ main, master, develop, dev ]
 
+# Somente leitura por padrão; nenhum job de CI precisa escrever no repositório.
+permissions:
+  contents: read
+
 # Cancela execuções concorrentes do mesmo PR se novos commits forem enviados
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
+env:
+  CARGO_TERM_COLOR: always
+  # Manter igual a `channel` em rust-toolchain.toml.
+  RUST_TOOLCHAIN: "1.99.1"
+
+# Todas as ações de terceiros são fixadas por SHA de commit (comentário = versão);
+# scripts/check-workflow-pins.sh rejeita tags/branches mutáveis.
 jobs:
   quality:
-    name: Verificação e Testes
-    runs-on: ubuntu-latest
+    name: Rust (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
 
     steps:
       - name: Checkout do repositório
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       - name: Instalar dependências nativas (GPUI / Wayland / Vulkan / X11 / Fontconfig)
+        if: runner.os == 'Linux'
         run: |
           sudo apt-get update
           sudo apt-get install -y \
@@ -38,20 +54,140 @@ jobs:
             libssl-dev
 
       - name: Instalar Toolchain Rust
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@39008827e6b4319a349e9a42dfc90579dd25f1ca # stable
         with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
           components: clippy, rustfmt
 
       - name: Cache de compilação do Rust
-        uses: Swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
         with:
-          shared-key: "workspace-ci"
+          shared-key: "workspace-ci-${{ matrix.os }}"
 
       - name: Verificar formatação (cargo fmt)
+        if: runner.os == 'Linux'
         run: cargo fmt --all -- --check
 
       - name: Executar linter (cargo clippy)
-        run: cargo clippy --workspace --all-targets -- -D warnings
+        run: cargo clippy --locked --workspace --all-targets -- -D warnings
 
       - name: Executar suíte de testes (cargo test)
-        run: cargo test --workspace
+        run: cargo test --locked --workspace
+
+  wasm:
+    name: Wasm (dbml-wasm)
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout do repositório
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Instalar Toolchain Rust (alvo wasm32)
+        uses: dtolnay/rust-toolchain@39008827e6b4319a349e9a42dfc90579dd25f1ca # stable
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+          components: clippy
+          targets: wasm32-unknown-unknown
+
+      - name: Cache de compilação do Rust
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
+        with:
+          shared-key: "wasm-ci"
+
+      - name: Clippy para wasm32
+        run: cargo clippy --locked -p dbml-wasm --target wasm32-unknown-unknown -- -D warnings
+
+      - name: Compilar dbml-wasm (release)
+        run: cargo build --locked -p dbml-wasm --target wasm32-unknown-unknown --release
+
+  web:
+    name: Web (canvas-web, bundle da CLI e extensão VS Code)
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout do repositório
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Instalar Toolchain Rust (alvo wasm32)
+        uses: dtolnay/rust-toolchain@39008827e6b4319a349e9a42dfc90579dd25f1ca # stable
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+          targets: wasm32-unknown-unknown
+
+      - name: Cache de compilação do Rust
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
+        with:
+          shared-key: "web-ci"
+
+      - name: Descobrir a versão do wasm-bindgen travada no Cargo.lock
+        id: bindgen
+        run: |
+          version="$(awk '/^name = "wasm-bindgen"$/ {getline; gsub(/[version = "]/, ""); print; exit}' Cargo.lock)"
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+
+      - name: Instalar wasm-bindgen-cli
+        uses: taiki-e/install-action@25f51f6b1bf4e18876107cece836f4f77ac17c8c # v2
+        with:
+          tool: wasm-bindgen@${{ steps.bindgen.outputs.version }}
+
+      - name: Configurar Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: |
+            packages/canvas-web/package-lock.json
+            vscode-extension/package-lock.json
+
+      - name: Instalar dependências do canvas-web
+        run: npm ci
+        working-directory: packages/canvas-web
+
+      - name: Testes do canvas-web (vitest)
+        run: npm test
+        working-directory: packages/canvas-web
+
+      - name: Reconstruir os ativos web (Wasm + canvas-web -> crates/cli/web)
+        run: ./scripts/build-web-assets.sh
+
+      # O bundle em crates/cli/web é versionado e embutido na CLI: se divergir do que o código
+      # atual gera, alguém esqueceu de rodar ./scripts/sync-build.sh e a UI publicada estaria velha.
+      - name: Verificar que o bundle versionado está em dia
+        run: |
+          if [ -n "$(git status --porcelain -- crates/cli/web)" ]; then
+            echo "::error::crates/cli/web está desatualizado. Rode ./scripts/sync-build.sh e faça commit."
+            git status --short -- crates/cli/web
+            exit 1
+          fi
+
+      - name: Instalar dependências da extensão VS Code
+        run: npm ci
+        working-directory: vscode-extension
+
+      - name: Verificar tipos e empacotar a extensão
+        run: |
+          rm -rf dist
+          npm run compile
+          npm run build
+        working-directory: vscode-extension
+
+      - name: Verificar saídas de build sem referência
+        run: ./scripts/check-web-assets.sh
+
+  scripts:
+    name: Scripts e workflows
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout do repositório
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Ações de workflow fixadas por SHA
+        run: |
+          ./scripts/check-workflow-pins.sh --self-test
+          ./scripts/check-workflow-pins.sh
+
+      - name: Testes dos scripts de build e instalação
+        run: |
+          ./scripts/check-web-assets.sh --self-test
+          ./scripts/tests/install_test.sh
