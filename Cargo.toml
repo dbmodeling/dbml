@@ -43,7 +43,7 @@ thiserror = "=2.0.21"
 tracing = "=0.1.44"
 
 # Desktop UI & Platform (crates/app)
-gpui-kit = "=0.8.0"
+gpui-kit = "=0.10.0"
 lsp-types = "=0.97.0"
 embed-resource = "=3.0.12"
 
