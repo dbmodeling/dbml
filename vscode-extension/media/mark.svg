@@ -1,8 +1,8 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
-  <!-- Marca simplificada (16–32 px, monocromática via currentColor): duas tabelas + relação -->
-  <rect x="6" y="8" width="26" height="20" rx="5" fill="none" stroke="currentColor" stroke-width="4"/>
-  <rect x="6" y="8" width="26" height="7" rx="3" fill="currentColor"/>
-  <rect x="32" y="36" width="26" height="20" rx="5" fill="none" stroke="currentColor" stroke-width="4"/>
-  <rect x="32" y="36" width="26" height="7" rx="3" fill="currentColor"/>
-  <path d="M19 28 V40 Q19 44 23 44 H32" fill="none" stroke="currentColor" stroke-width="4" stroke-linecap="round"/>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="14 14 72 72">
+  <!-- Glifo sem fundo (monocromático via currentColor): duas tabelas + relação em cotovelo -->
+  <rect x="16" y="18" width="38" height="10" fill="currentColor"/>
+  <rect x="16" y="28" width="38" height="20" fill="currentColor" fill-opacity="0.5"/>
+  <rect x="46" y="52" width="38" height="10" fill="currentColor"/>
+  <rect x="46" y="62" width="38" height="20" fill="currentColor" fill-opacity="0.5"/>
+  <path d="M31 48 H37 V63 H46 V69 H31 Z" fill="currentColor"/>
 </svg>

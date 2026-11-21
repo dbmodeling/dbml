@@ -1,40 +1,18 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
-  <!-- DB Modeling — ícone do app: duas tabelas ligadas por uma relação, em vidro azul-noite -->
+  <!-- dbmodeling — ícone do app: duas tabelas ligadas por uma relação, sobre "brasa" -->
   <defs>
-    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
-      <stop offset="0" stop-color="#2a4fd6"/>
-      <stop offset="0.55" stop-color="#14287a"/>
-      <stop offset="1" stop-color="#0a1230"/>
-    </linearGradient>
     <linearGradient id="sheen" x1="0" y1="0" x2="0" y2="1">
-      <stop offset="0" stop-color="#ffffff" stop-opacity="0.28"/>
-      <stop offset="0.45" stop-color="#ffffff" stop-opacity="0"/>
-    </linearGradient>
-    <linearGradient id="card" x1="0" y1="0" x2="0" y2="1">
-      <stop offset="0" stop-color="#ffffff" stop-opacity="0.24"/>
-      <stop offset="1" stop-color="#ffffff" stop-opacity="0.08"/>
+      <stop offset="0" stop-color="#ffffff" stop-opacity="0.22"/>
+      <stop offset="0.4" stop-color="#ffffff" stop-opacity="0"/>
     </linearGradient>
   </defs>
-  <rect x="16" y="16" width="480" height="480" rx="112" fill="url(#bg)"/>
-  <rect x="16" y="16" width="480" height="480" rx="112" fill="url(#sheen)"/>
-  <rect x="17.5" y="17.5" width="477" height="477" rx="110.5" fill="none" stroke="#ffffff" stroke-opacity="0.22" stroke-width="3"/>
-
-  <!-- relação (por baixo dos cartões) -->
-  <path d="M184 262 V318 Q184 340 206 340 H242" fill="none" stroke="#8fb6ff" stroke-width="14" stroke-linecap="round"/>
-
-  <!-- tabela A -->
-  <rect x="88" y="104" width="192" height="150" rx="26" fill="url(#card)" stroke="#ffffff" stroke-opacity="0.45" stroke-width="3"/>
-  <path d="M114 104 H254 A26 26 0 0 1 280 130 V150 H88 V130 A26 26 0 0 1 114 104 Z" fill="#5b9bff"/>
-  <rect x="112" y="176" width="112" height="13" rx="6.5" fill="#ffffff" fill-opacity="0.75"/>
-  <rect x="112" y="210" width="76" height="13" rx="6.5" fill="#ffffff" fill-opacity="0.45"/>
-
-  <!-- tabela B -->
-  <rect x="236" y="262" width="192" height="150" rx="26" fill="url(#card)" stroke="#ffffff" stroke-opacity="0.45" stroke-width="3"/>
-  <path d="M262 262 H402 A26 26 0 0 1 428 288 V308 H236 V288 A26 26 0 0 1 262 262 Z" fill="#a5c4ff"/>
-  <rect x="260" y="334" width="112" height="13" rx="6.5" fill="#ffffff" fill-opacity="0.75"/>
-  <rect x="260" y="368" width="76" height="13" rx="6.5" fill="#ffffff" fill-opacity="0.45"/>
-
-  <!-- portas da relação -->
-  <circle cx="184" cy="262" r="12" fill="#ffffff"/>
-  <circle cx="242" cy="340" r="12" fill="#ffffff"/>
+  <rect x="16" y="16" width="480" height="480" rx="130" fill="#e56731"/>
+  <rect x="16" y="16" width="480" height="480" rx="130" fill="url(#sheen)"/>
+  <g transform="translate(16 16) scale(4.8)" fill="#ffffff">
+    <path d="M19 18 H51 A3 3 0 0 1 54 21 V28 H16 V21 A3 3 0 0 1 19 18 Z"/>
+    <path d="M16 28 H54 V45 A3 3 0 0 1 51 48 H19 A3 3 0 0 1 16 45 Z" fill-opacity="0.5"/>
+    <path d="M49 52 H81 A3 3 0 0 1 84 55 V62 H46 V55 A3 3 0 0 1 49 52 Z"/>
+    <path d="M46 62 H84 V79 A3 3 0 0 1 81 82 H49 A3 3 0 0 1 46 79 Z" fill-opacity="0.5"/>
+    <path d="M31 48 H37 V63 H46 V69 H31 Z"/>
+  </g>
 </svg>

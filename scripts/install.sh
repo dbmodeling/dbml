@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # ==============================================================================
-# DB Modeling - Assistente de Instalação, Atualização e Desinstalação Oficial
+# dbmodeling - Assistente de Instalação, Atualização e Desinstalação Oficial
 # Suporta: Ubuntu/Debian, Fedora/RHEL e macOS.
 # Detecta e instala dependências do sistema automaticamente na hora.
 # ==============================================================================
@@ -8,7 +8,7 @@ set -euo pipefail
 
 REPO="brenoLucasN/db_modeling"
 APP_NAME="db-modeling"
-DISPLAY_NAME="DB Modeling"
+DISPLAY_NAME="dbmodeling"
 
 BOLD="\033[1m"
 GREEN="\033[32m"
@@ -19,7 +19,7 @@ RESET="\033[0m"
 
 echo -e "${BOLD}${BLUE}"
 echo "=========================================================="
-echo "          DB Modeling - Assistente de Instalação         "
+echo "          dbmodeling - Assistente de Instalação          "
 echo "=========================================================="
 echo -e "${RESET}"
 
