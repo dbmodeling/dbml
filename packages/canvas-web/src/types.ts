@@ -292,6 +292,9 @@ export interface DocumentMetadata {
   autosave?: boolean;
 }
 
+/** `connecting`: tentando (re)conectar; `online`: canal aberto; `offline`: caiu, aguardando nova tentativa. */
+export type ConnectionState = 'connecting' | 'online' | 'offline';
+
 export interface HostTransport {
   checkDatabaseSupport?(): Promise<void>;
   /** Só confere as credenciais e lista os schemas (sem ler tabelas). */
@@ -318,6 +321,8 @@ export interface HostTransport {
   ): void;
   onFileChangedExternally?(callback: (newSource: string, documentId?: string) => void): void;
   onError?(callback: (diagnostics: Diagnostic[]) => void): void;
+  /** Estado do canal com o host; só transportes que podem cair (WebSocket) o emitem. */
+  onConnectionChange?(callback: (state: ConnectionState) => void): void;
   /** Publica os diagnósticos do Wasm no host (ex.: aba Problems do VS Code). */
   sendDiagnostics?(diagnostics: Diagnostic[]): void;
 }

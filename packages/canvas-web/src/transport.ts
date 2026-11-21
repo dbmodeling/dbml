@@ -13,6 +13,7 @@ import {
   SessionSnapshot,
   IntrospectRequest,
   IntrospectResult,
+  ConnectionState,
   TestConnectionResult,
 } from './types';
 
@@ -251,6 +252,8 @@ export class WebSocketTransport implements HostTransport {
     meta?: DocumentMetadata
   ) => void;
   private externalChangeCallback?: (newSource: string, documentId?: string) => void;
+  private connectionState: ConnectionState = 'connecting';
+  private connectionCallback?: (state: ConnectionState) => void;
   private reconnectTimer: number | null = null;
   private reconnectAttempts = 0;
   /** Aba oculta: nenhuma tentativa agendada até `visibilitychange`. */
@@ -294,12 +297,25 @@ export class WebSocketTransport implements HostTransport {
     }, delay);
   }
 
+  private setConnectionState(state: ConnectionState): void {
+    if (state === this.connectionState) return;
+    this.connectionState = state;
+    this.connectionCallback?.(state);
+  }
+
+  public onConnectionChange(callback: (state: ConnectionState) => void): void {
+    this.connectionCallback = callback;
+    callback(this.connectionState);
+  }
+
   private connect(): void {
+    this.setConnectionState('connecting');
     try {
       this.ws = new WebSocket(this.url);
 
       this.ws.onopen = () => {
         this.reconnectAttempts = 0;
+        this.setConnectionState('online');
       };
 
       this.ws.onmessage = (event) => {
@@ -332,10 +348,12 @@ export class WebSocketTransport implements HostTransport {
       this.ws.onclose = () => {
         for (const p of this.pending.values()) p.reject(new Error('Connection lost; reconnect and save again'));
         this.pending.clear();
+        this.setConnectionState('offline');
         this.scheduleReconnect();
       };
     } catch (e) {
       console.warn('Falha ao conectar WebSocket:', e);
+      this.setConnectionState('offline');
       this.scheduleReconnect();
     }
   }

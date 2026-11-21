@@ -12,6 +12,7 @@ import {
   Schema,
   SceneGeometry,
   SidecarLayout,
+  ConnectionState,
   WasmApi,
   EdgeStyle,
   edgeKey,
@@ -152,6 +153,7 @@ export class Workbench {
   private patchQueue: Promise<void> = Promise.resolve();
   private patchError: Error | null = null;
   private autosave = true;
+  private connection: ConnectionState = 'online';
   private autosaveTimer?: number;
   private title = 'example.dbml';
   private files: WorkspaceFileEntry[] = [];
@@ -238,6 +240,10 @@ export class Workbench {
     transport.onFileChangedExternally?.((src, documentId) => {
       if (documentId && documentId !== this.documentId) return;
       this.setDocument(src, undefined, { saved: true, documentId });
+    });
+    transport.onConnectionChange?.((state) => {
+      this.connection = state;
+      this.renderStatus();
     });
     transport.onWorkspaceFilesUpdated?.((files, title) => {
       this.files = files;
@@ -1370,6 +1376,14 @@ export class Workbench {
     return translate("Clique em uma tabela para inspecionar · arraste o fundo para selecionar · role para mover · Ctrl+role para zoom");
   }
 
+  /** Só aparece fora do estado `online`: edições feitas sem canal com o servidor não são gravadas. */
+  private connectionHtml(): string {
+    if (this.connection === 'online') return '';
+    const offline = this.connection === 'offline';
+    const label = offline ? t('Sem conexão com o servidor. Edições não serão salvas.') : t('Reconectando ao servidor…');
+    return `<span class="stat conn" role="status" data-conn="${this.connection}" style="color:var(--${offline ? 'danger' : 'warning'})">${ICON(offline ? 'CircleX' : 'TriangleAlert', 12)}${esc(label)}</span>`;
+  }
+
   private renderStatus(): void {
     const errs = this.errorCount();
     const dark = this.prefs.mode === 'dark';
@@ -1378,6 +1392,7 @@ export class Workbench {
     this.els['status'].innerHTML = `
       <span class="stat" data-act="ShowProblems" title="${t("Problemas")}" style="color:${errs ? 'var(--danger)' : problems ? 'var(--warning)' : 'var(--ok)'}">${ICON(problems ? 'CircleX' : 'CircleCheck', 12)}${probTxt}</span>
       <span class="cnts">${ICON('Table2', 12)}${t('{} tabelas · {} relações', this.schema.tables.length, this.schema.refs.length)}</span>
+      ${this.connectionHtml()}
       <span class="hint">${esc(this.hint())}</span>
       <span>${Math.round(this.zoom * 100)}%</span><span>DBML</span><span>v0.1.4</span>
       <span class="theme" data-act="ToggleTheme" title="${t("Alternar tema · Ctrl+T")}">${ICON(dark ? 'Moon' : 'Sun', 12)}${t(dark ? 'Escuro' : 'Claro')}</span>`;

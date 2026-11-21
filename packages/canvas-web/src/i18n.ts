@@ -1,6 +1,8 @@
 export type Language = 'pt-BR' | 'en';
 
 export const translations: ReadonlyArray<readonly [string, string]> = [
+  ["Sem conexão com o servidor. Edições não serão salvas.", "Disconnected from the server. Edits will not be saved."],
+  ["Reconectando ao servidor…", "Reconnecting to the server…"],
   ["Suas alterações continuam abertas. Tente salvar novamente ou exporte uma cópia em DBML.", "Your changes are still open. Try saving again or export a DBML copy."],
   ["O DBML foi salvo, mas o layout do diagrama não foi gravado. Tente salvar novamente.", "The DBML was saved, but the diagram layout was not. Try saving again."],
   ["O layout do diagrama não foi gravado. Tente salvar novamente.", "The diagram layout was not saved. Try saving again."],
