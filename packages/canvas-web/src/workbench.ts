@@ -6,6 +6,7 @@
 
 import {
   CONNECT_NETWORK_ROW_IDS,
+  GUIDE_STORAGE_KEY,
   LOCAL_SESSION_PREFIX,
   MAX_LOCAL_SESSIONS,
   MAX_WASM_RECOVERY_ATTEMPTS,
@@ -61,6 +62,8 @@ import { exportToMermaid, exportToSvg, exportSvgStringToRasterBlob } from './exp
 import { canvasGridStep, canvasGroups } from './scene-style';
 import { ConnectDbModel, DB_ENGINES, DbEngine, INTROSPECT_TIMEOUT_MS, IntrospectGuard, buildRequest } from './connect-db';
 import { IMPORT_DIALECTS, ImportDialect, ImportSqlModel, ImportSqlResult } from './import-sql';
+import { APP_VERSION, GuideState, PRODUCT_GUIDE, TourTarget, decideStartupGuide, pickText } from './guide';
+import { TourController } from './tour';
 
 type Pt = { x: number; y: number };
 type Pane = 'files' | 'schema' | 'problems';
@@ -107,7 +110,7 @@ const ACTION_ICON: Partial<Record<ActionId, IconName>> = {
   ExportSqlOracle: 'Database', ExportMermaid: 'GitFork', ExportDocsHtml: 'FileCode', ExportDocsMarkdown: 'FileCode',
   ExportPng: 'Image', ExportJpeg: 'Image', ExportSvg: 'PenTool',
   OpenPalette: 'Command', QuickSearch: 'Search', ToggleFocusMode: 'Scan', CycleFocusDepth: 'Layers',
-  ShowShortcuts: 'Keyboard', AddPresetUuidPk: 'Fingerprint', AddPresetBigIntPk: 'KeyRound',
+  ShowShortcuts: 'Keyboard', ShowTour: 'Info', ShowWhatsNew: 'WandSparkles', AddPresetUuidPk: 'Fingerprint', AddPresetBigIntPk: 'KeyRound',
   AddPresetTimestamps: 'Clock', AddPresetSoftDelete: 'Archive',
 };
 
@@ -247,6 +250,11 @@ export class Workbench {
   private paletteOpen = false;
   private quickSearchOpen = false;
   private shortcutsOpen = false;
+  private whatsNewOpen = false;
+  private tour: TourController | null = null;
+  private guideChecked = false;
+  private guideState: GuideState = { onboardingDone: false, lastSeenVersion: null };
+  private readonly autoGuide: boolean;
   private paletteQuery = '';
   private paletteIdx = 0;
   private quickSearchQuery = '';
@@ -295,11 +303,14 @@ export class Workbench {
 
   private els: Record<string, HTMLElement> = {};
 
-  constructor(root: HTMLElement, transport: HostTransport, wasm?: WasmApi) {
+  constructor(root: HTMLElement, transport: HostTransport, wasm?: WasmApi, options?: { autoGuide?: boolean }) {
     setLanguage(this.prefs.lang);
     this.root = root;
     this.transport = transport;
     this.wasm = wasm || (window as unknown as { DbModelingParser?: WasmApi }).DbModelingParser;
+    const isJsdom = typeof navigator !== 'undefined' && /jsdom/i.test(navigator.userAgent);
+    this.autoGuide = options?.autoGuide ?? !isJsdom;
+    this.guideState = this.loadLocalGuideState();
     this.build();
     this.bind();
     transport.onDocumentUpdated((src, layout, meta) => { if (!this.destroyed) this.setDocument(src, layout, meta); });
@@ -336,13 +347,13 @@ export class Workbench {
       <div class="titlebar ui" id="titlebar" role="toolbar" aria-label="${t('Barra de título')}"></div>
       <div class="main">
         <div class="rail left ui" id="rail-left" role="toolbar" aria-orientation="vertical" aria-label="${t('Painéis')}"></div>
-        <div class="sidebar ui" id="sidebar" role="region" aria-label="${t('Painel lateral')}"></div>
+        <div class="sidebar ui" id="sidebar" data-tour="sidebar" role="region" aria-label="${t('Painel lateral')}"></div>
         <div class="editor ui" id="editor" role="region" aria-label="${t('Editor DBML')}">
           <div class="eh" id="ed-head"></div>
           <div class="ebody"><div class="ebd" id="ebd"><div class="ebd-in" id="ebd-in"></div></div><textarea class="code" id="code" aria-label="DBML" spellcheck="false" wrap="off"></textarea></div>
         </div>
         <button type="button" class="panel-resize" data-resize="left"></button>
-        <div class="surface" id="surface" tabindex="0" role="region" aria-label="${t('Diagrama')}">
+        <div class="surface" id="surface" data-tour="canvas" tabindex="0" role="region" aria-label="${t('Diagrama')}">
           <div class="world" id="world"></div>
           <div class="marquee" id="marquee"></div>
           <div class="empty" id="empty">
@@ -361,11 +372,11 @@ export class Workbench {
           </div>
           <div class="island tools ui" id="tools" role="toolbar" aria-label="${t('Ferramentas')}"></div>
           <div class="island zoomi ui" id="zoomi"></div>
-          <div class="minimap ui" id="minimap" role="region" aria-label="${t('Minimapa')}"></div>
+          <div class="minimap ui" id="minimap" data-tour="minimap" role="region" aria-label="${t('Minimapa')}"></div>
           <div class="legend ui" id="legend"></div>
         </div>
         <button type="button" class="panel-resize" data-resize="right"></button>
-        <div class="inspector ui" id="inspector" role="region" aria-label="${t('Inspetor')}"></div>
+        <div class="inspector ui" id="inspector" data-tour="inspector" role="region" aria-label="${t('Inspetor')}"></div>
       </div>
       <div class="status ui" id="status"></div>
       <div class="toast" id="toast" role="status"></div>
@@ -576,6 +587,7 @@ export class Workbench {
     this.syncEditorValue();
     this.reanalyze();
     this.renderAll();
+    this.maybeStartGuide(meta?.guideState);
   }
 
   /** Registra a falha de uma chamada ao Wasm; se for fatal, tenta reinstanciar o módulo ou avisa o usuário (#76). */
@@ -1591,7 +1603,7 @@ export class Workbench {
         <button class="${left !== 'dbml' ? 'on' : ''}" data-act="ShowDiagramView" title="${t("Diagrama · Ctrl+1")}">${ICON('Workflow', 14)}</button>
         <button class="${left === 'dbml' ? 'on' : ''}" data-act="ShowSplitView" title="${t("Dividido · DBML · Ctrl+2")}">${ICON('Columns2', 14)}</button>
       </div>
-      <div class="tb-acts">
+      <div class="tb-acts" data-tour="export-btn">
         ${this.tbtn('ExportDbml', 'FileDown', 'Exportar DBML')}
         ${this.tbtn('menu:export-code', 'DatabaseZap', 'Exportar código')}
         ${this.tbtn('menu:export-image', 'ImageDown', 'Exportar imagem')}
@@ -1630,7 +1642,7 @@ export class Workbench {
       ${tb('ToolSelect', 'MousePointer2', 'Selecionar · V', this.tool === 'select' ? 'on' : '')}
       ${tb('ToolHand', 'Hand', 'Mão: mover a vista · H', this.tool === 'hand' ? 'on' : '')}
       <div class="sep"></div>
-      ${tb('NewTable', 'SquarePlus', 'Nova tabela · T')}
+      <button class="tb" data-act="NewTable" data-tour="topbar-add" title="${esc(t('Nova tabela · T'))}">${ICON('SquarePlus', 16)}</button>
       ${tb('NewEnum', 'ListPlus', 'Novo enum · E')}
       ${tb('GroupSelection', 'Group', 'Agrupar seleção · Ctrl+G')}
       <div class="sep"></div>
@@ -1797,7 +1809,7 @@ export class Workbench {
       <span class="cnts">${ICON('Table2', 12)}${t('{} tabelas · {} relações', this.schema.tables.length, this.schema.refs.length)}</span>
       ${this.connectionHtml()}${this.engineHtml()}
       <span class="hint">${esc(this.hint())}</span>
-      <span>${Math.round(this.zoom * 100)}%</span><span>DBML</span><span>v0.2.0</span>
+      <span>${Math.round(this.zoom * 100)}%</span><span>DBML</span><button type="button" class="ver-btn" data-act="ShowWhatsNew" title="${esc(t('Ver novidades desta versão'))}">v${APP_VERSION}</button>
       <span class="theme" data-act="ToggleTheme" title="${t("Alternar tema · Ctrl+T")}">${ICON(dark ? 'Moon' : 'Sun', 12)}${t(dark ? 'Escuro' : 'Claro')}</span>`;
   }
 
@@ -2485,6 +2497,8 @@ export class Workbench {
       case 'OpenPalette': this.openPalette(); return;
       case 'QuickSearch': this.openQuickSearch(); return;
       case 'ShowShortcuts': this.openShortcuts(); return;
+      case 'ShowTour': this.openTour(); return;
+      case 'ShowWhatsNew': this.openWhatsNew(); return;
       case 'ExportSvg': this.doExport('svg'); return;
       case 'ExportPng': this.doExport('png'); return;
       case 'ExportJpeg': this.doExport('jpeg'); return;
@@ -2668,7 +2682,9 @@ export class Workbench {
     m.className = 'menus';
     m.innerHTML = `<div class="menu" style="width:220px">${root}<hr>
         <button class="mi" data-act="OpenPalette">${ICON('Command', 14)}${t('Paleta de comandos')}<span class="k">Ctrl K</span></button>
-        <button class="mi" data-act="ShowShortcuts">${ICON('Keyboard', 14)}${t('Atalhos de teclado')}<span class="k">Ctrl /</span></button></div>
+        <button class="mi" data-act="ShowShortcuts">${ICON('Keyboard', 14)}${t('Atalhos de teclado')}<span class="k">Ctrl /</span></button>
+        <button class="mi" data-act="ShowTour">${ICON('Info', 14)}${t('Tour guiado')}</button>
+        <button class="mi" data-act="ShowWhatsNew">${ICON('WandSparkles', 14)}${t('O que há de novo')}</button></div>
       <div class="menu" style="width:280px">${items}</div>`;
     this.wb.appendChild(m);
   }
@@ -2744,6 +2760,7 @@ export class Workbench {
     this.paletteOpen = false;
     this.quickSearchOpen = false;
     this.shortcutsOpen = false;
+    this.whatsNewOpen = false;
   }
 
   private importConflicts(dbml: string): string[] {
@@ -3347,6 +3364,138 @@ export class Workbench {
     input.addEventListener('input', () => draw(input.value.trim().toLowerCase()));
     (bg.querySelector('#sc-x') as HTMLButtonElement).addEventListener('click', () => this.closeModal());
     input.focus();
+  }
+
+  private loadLocalGuideState(): GuideState {
+    try {
+      const done = localStorage.getItem(GUIDE_STORAGE_KEY.ONBOARDING_DONE) === 'true';
+      const seen = localStorage.getItem(GUIDE_STORAGE_KEY.LAST_SEEN_VERSION);
+      return { onboardingDone: done, lastSeenVersion: seen && seen.trim() ? seen.trim() : null };
+    } catch {
+      return { onboardingDone: false, lastSeenVersion: null };
+    }
+  }
+
+  private saveGuideState(next: GuideState): void {
+    this.guideState = { ...next };
+    try {
+      localStorage.setItem(GUIDE_STORAGE_KEY.ONBOARDING_DONE, String(next.onboardingDone));
+      if (next.lastSeenVersion) localStorage.setItem(GUIDE_STORAGE_KEY.LAST_SEEN_VERSION, next.lastSeenVersion);
+    } catch {
+      /* fallback seguro em memória quando localStorage está indisponível */
+    }
+    this.transport.saveGuideState?.(this.guideState);
+  }
+
+  private maybeStartGuide(hostState?: GuideState): void {
+    if (hostState) this.guideState = { ...hostState };
+    if (this.guideChecked || !this.autoGuide) return;
+    this.guideChecked = true;
+    const decision = decideStartupGuide(APP_VERSION, this.guideState.onboardingDone, this.guideState.lastSeenVersion);
+    if (decision === 'tour') {
+      this.openTour();
+    } else if (decision === 'whats-new') {
+      this.openWhatsNew();
+    }
+  }
+
+  private ensureTourTarget(target: TourTarget): void {
+    if (target === 'sidebar' && !this.prefs.sidebar) {
+      this.prefs.sidebar = true;
+      this.pane = 'schema';
+      this.renderChrome();
+    } else if (target === 'inspector') {
+      if (this.selection.length === 0 && !this.selectedEnum && !this.selectedRef && this.schema.tables.length > 0) {
+        this.selection = [qualifiedTableName(this.schema.tables[0])];
+      }
+      this.prefs.inspector = true;
+      this.renderChrome();
+    } else if (target === 'minimap' && !this.prefs.minimap) {
+      this.prefs.minimap = true;
+      this.renderIslands();
+    }
+  }
+
+  public openTour(): void {
+    this.closeModal();
+    this.closeMenus();
+    if (!this.tour) {
+      this.tour = new TourController(this.wb, PRODUCT_GUIDE.tour, () => this.prefs.lang, {
+        ensureTarget: (target) => this.ensureTourTarget(target),
+        onFinish: () => {
+          this.saveGuideState({ onboardingDone: true, lastSeenVersion: APP_VERSION });
+        },
+      });
+    }
+    this.tour.start(0);
+  }
+
+  public openWhatsNew(): void {
+    this.tour?.close();
+    this.closeMenus();
+    const lang = this.prefs.lang;
+    const badgeLabel = (kind: 'added' | 'improved' | 'fixed') =>
+      kind === 'added' ? t('Novo') : kind === 'improved' ? t('Melhorado') : t('Corrigido');
+    const releasesHtml = PRODUCT_GUIDE.releases
+      .map(
+        (rel) => `
+        <section class="wn-rel">
+          <div class="wn-rel-hd"><span class="wn-ver">v${esc(rel.version)}</span><span class="wn-date">${esc(rel.date)}</span></div>
+          ${rel.highlights
+            .map(
+              (h) => `
+            <div class="wn-item">
+              <span class="wn-badge ${h.kind}">${esc(badgeLabel(h.kind))}</span>
+              <div class="wn-copy">
+                <strong>${esc(pickText(h.title, lang))}</strong>
+                <span>${esc(pickText(h.detail, lang))}</span>
+              </div>
+              ${h.action ? `<button type="button" class="btn ghost" data-wn-action="${esc(h.action)}">${esc(t('Experimentar'))}</button>` : ''}
+            </div>`
+            )
+            .join('')}
+        </section>`
+      )
+      .join('');
+
+    const markSeen = () => {
+      this.saveGuideState({ onboardingDone: this.guideState.onboardingDone, lastSeenVersion: APP_VERSION });
+    };
+
+    const bg = this.modal(
+      `<div role="dialog" aria-modal="true" aria-labelledby="wn-title" style="display:flex;flex-direction:column;min-height:0">
+        <div class="mhd">
+          <div>
+            <div class="tt" id="wn-title">${esc(t('Novidades da versão {}', APP_VERSION))}</div>
+            <div class="st">${esc(t('Histórico de atualizações'))}</div>
+          </div>
+          <span class="grow"></span>
+          <button type="button" class="ib" id="wn-x" aria-label="${esc(t('Fechar'))}" title="${esc(t('Fechar'))}">${ICON('X', 15)}</button>
+        </div>
+        <div class="wn-list">${releasesHtml}</div>
+        <div class="mfooter">
+          <button type="button" class="btn ghost" id="wn-tour">${ICON('Info', 13)}${esc(t('Tour guiado'))}</button>
+          <span class="grow"></span>
+          <button type="button" class="btn primary" id="wn-ok">${esc(t('Entendi'))}</button>
+        </div>
+      </div>`,
+      'w560',
+      'mid',
+    );
+    this.whatsNewOpen = true;
+    markSeen();
+
+    bg.querySelector('#wn-x')?.addEventListener('click', () => this.closeModal());
+    bg.querySelector('#wn-ok')?.addEventListener('click', () => this.closeModal());
+    bg.querySelector('#wn-tour')?.addEventListener('click', () => this.openTour());
+    bg.querySelectorAll<HTMLButtonElement>('[data-wn-action]').forEach((btn) =>
+      btn.addEventListener('click', () => {
+        const act = btn.dataset.wnAction as ActionId | undefined;
+        this.closeModal();
+        if (act) this.runAction(act);
+      })
+    );
+    (bg.querySelector('#wn-ok') as HTMLElement | null)?.focus();
   }
 
   // ───────────────────────── eventos ─────────────────────────
@@ -4178,19 +4327,20 @@ export class Workbench {
       return;
     }
     const entry = catalog().find((a) => a.key === key || (a.id === 'DeleteSelection' && key === 'delete'));
+    const modalOpen = this.paletteOpen || this.quickSearchOpen || this.shortcutsOpen || this.whatsNewOpen;
     if (!entry || !entry.key) {
-      if (e.key === 'Escape' && (this.paletteOpen || this.quickSearchOpen || this.shortcutsOpen)) this.closeModal();
+      if (e.key === 'Escape' && modalOpen) this.closeModal();
       return;
     }
-    if (entry.context === 'Canvas' && (typing || this.paletteOpen || this.quickSearchOpen || this.shortcutsOpen)) {
-      if (entry.id === 'Deselect' && (this.paletteOpen || this.quickSearchOpen || this.shortcutsOpen)) this.closeModal();
+    if (entry.context === 'Canvas' && (typing || modalOpen)) {
+      if (entry.id === 'Deselect' && modalOpen) this.closeModal();
       return;
     }
     // Alt+Up/Down só valem dentro do editor DBML
     if ((entry.id === 'MoveLineUp' || entry.id === 'MoveLineDown') && ae !== this.els['code']) return;
     e.preventDefault();
     this.closeMenus();
-    if (entry.id === 'Deselect' && (this.paletteOpen || this.quickSearchOpen || this.shortcutsOpen)) { this.closeModal(); return; }
+    if (entry.id === 'Deselect' && modalOpen) { this.closeModal(); return; }
     this.runAction(entry.id);
   }
 
@@ -4207,6 +4357,8 @@ export class Workbench {
   public destroy(): void {
     if (this.destroyed) return;
     this.destroyed = true;
+    this.tour?.destroy();
+    this.tour = null;
     this.abort.abort();
     this.resizeObserver?.disconnect();
     this.resizeObserver = null;

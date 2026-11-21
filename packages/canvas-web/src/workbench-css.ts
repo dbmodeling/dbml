@@ -421,6 +421,42 @@ export const WORKBENCH_CSS = `${FONT_FACE_CSS}
 .wb .toast { position: absolute; z-index: 80; left: 50%; bottom: 44px; transform: translateX(-50%); padding: 8px 14px; border-radius: 8px;
   background: var(--modal); border: 1px solid var(--edge-strong); box-shadow: var(--pop-shadow); color: var(--text); display: none; font-size: 12.5px; }
 
+/* ───────── Tour Guiado (Spotlight) & Modal de Novidades (What's New) ───────── */
+.wb .status .ver-btn { background: transparent; border: 0; color: inherit; font: inherit; padding: 0 5px; height: 18px; border-radius: 4px; cursor: pointer; display: inline-flex; align-items: center; }
+.wb .status .ver-btn:hover { background: var(--hover); color: var(--text); }
+.wb .wb-tour-layer { position: absolute; inset: 0; z-index: 85; pointer-events: auto; }
+.wb .wb-tour-scrim { position: absolute; inset: 0; background: var(--scrim); }
+.wb .wb-tour-hole { position: absolute; border-radius: 10px; border: 2px solid var(--accent); box-shadow: 0 0 0 9999px var(--scrim), 0 0 0 4px color-mix(in srgb, var(--accent) 26%, transparent); pointer-events: none; transition: left .2s var(--ease), top .2s var(--ease), width .2s var(--ease), height .2s var(--ease); }
+.wb .wb-tour-card { position: absolute; width: min(320px, calc(100vw - 24px)); padding: 14px 16px 14px; border-radius: 12px; background: var(--modal); border: 1px solid var(--edge-strong); box-shadow: var(--pop-shadow); color: var(--text); display: flex; flex-direction: column; gap: 8px; transition: left .2s var(--ease), top .2s var(--ease); }
+.wb .wb-tour-top { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.wb .wb-tour-step { font-size: 11px; font-weight: 600; letter-spacing: .04em; text-transform: uppercase; color: var(--accent); }
+.wb .wb-tour-title { margin: 0; font-size: 14.5px; font-weight: 600; color: var(--text); }
+.wb .wb-tour-body { margin: 0; font-size: 12.5px; line-height: 1.5; color: var(--muted); }
+.wb .wb-tour-foot { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-top: 6px; }
+.wb .wb-tour-dots { display: flex; align-items: center; gap: 5px; }
+.wb .wb-tour-dot { width: 6px; height: 6px; border-radius: 99px; background: var(--edge-strong); }
+.wb .wb-tour-dot.on { width: 16px; background: var(--accent); }
+.wb .wb-tour-btns { display: flex; align-items: center; gap: 6px; }
+.wb .wb-tour-btns .btn { height: 28px; padding: 0 10px; font-size: 12px; }
+.wb .wb-tour-arrow { position: absolute; width: 12px; height: 12px; background: var(--modal); border: 1px solid var(--edge-strong); transform: rotate(45deg); }
+.wb .wb-tour-arrow[data-side="top"] { top: -7px; margin-left: -6px; border-right: 0; border-bottom: 0; }
+.wb .wb-tour-arrow[data-side="bottom"] { bottom: -7px; margin-left: -6px; border-left: 0; border-top: 0; }
+.wb .wb-tour-arrow[data-side="left"] { left: -7px; margin-top: -6px; border-right: 0; border-top: 0; }
+.wb .wb-tour-arrow[data-side="right"] { right: -7px; margin-top: -6px; border-left: 0; border-bottom: 0; }
+.wb .wn-list { padding: 12px 18px 4px; overflow-y: auto; display: flex; flex-direction: column; gap: 16px; max-height: 440px; }
+.wb .wn-rel { display: flex; flex-direction: column; gap: 8px; }
+.wb .wn-rel-hd { display: flex; align-items: center; gap: 8px; font-size: 12.5px; font-weight: 600; color: var(--text); }
+.wb .wn-ver { font-family: var(--mono); font-size: 11.5px; padding: 2px 7px; border-radius: 6px; background: color-mix(in srgb, var(--accent) 16%, transparent); color: var(--accent); }
+.wb .wn-date { font-size: 11.5px; color: var(--faint); font-weight: 400; }
+.wb .wn-item { display: flex; align-items: flex-start; gap: 10px; padding: 10px 12px; border-radius: 9px; background: var(--input); border: 1px solid var(--edge-soft); }
+.wb .wn-badge { flex: none; font-size: 10.5px; font-weight: 600; padding: 2px 7px; border-radius: 99px; margin-top: 1px; }
+.wb .wn-badge.added { background: color-mix(in srgb, var(--ok) 18%, transparent); color: var(--ok); }
+.wb .wn-badge.improved { background: color-mix(in srgb, var(--accent) 18%, transparent); color: var(--accent); }
+.wb .wn-badge.fixed { background: color-mix(in srgb, var(--warning) 18%, transparent); color: var(--warning); }
+.wb .wn-copy { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 3px; }
+.wb .wn-copy strong { font-size: 13px; font-weight: 600; color: var(--text); }
+.wb .wn-copy span { font-size: 12px; line-height: 1.45; color: var(--muted); }
+
 /* ───────── Movimento: rápido 120ms (hover/press) · base 180ms (menus, seleção) · lento 260ms (painéis, câmera) ───────── */
 .wb { --ease: cubic-bezier(.2,.8,.2,1); }
 /* estados (hover, foco, ativo) fazem transição em vez de trocar de uma vez */

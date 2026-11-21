@@ -392,42 +392,53 @@ impl Shell {
                     .gap(px(2.))
                     .ml(px(4.))
                     .child(
-                        Button::new("save-dbml-btn")
-                            .ghost()
-                            .small()
-                            .w(px(28.))
-                            .h(px(28.))
-                            .rounded(px(7.))
-                            .icon(
-                                Icon::new(IconName::FileDown)
-                                    .size(px(15.))
-                                    .text_color(g.text_faint),
+                        div()
+                            .relative()
+                            .flex()
+                            .items_center()
+                            .gap(px(2.))
+                            .child(
+                                Button::new("save-dbml-btn")
+                                    .ghost()
+                                    .small()
+                                    .w(px(28.))
+                                    .h(px(28.))
+                                    .rounded(px(7.))
+                                    .icon(
+                                        Icon::new(IconName::FileDown)
+                                            .size(px(15.))
+                                            .text_color(g.text_faint),
+                                    )
+                                    .tooltip_with_action(
+                                        crate::i18n::t("Exportar DBML"),
+                                        &SaveFile,
+                                        Some(actions::CTX),
+                                    )
+                                    .on_click(|_, window, cx| {
+                                        window.dispatch_action(Box::new(SaveFile), cx);
+                                    }),
                             )
-                            .tooltip_with_action(
-                                crate::i18n::t("Exportar DBML"),
-                                &SaveFile,
-                                Some(actions::CTX),
-                            )
-                            .on_click(|_, window, cx| {
-                                window.dispatch_action(Box::new(SaveFile), cx);
-                            }),
+                            .child(export_dropdown(
+                                g,
+                                &self.focus,
+                                "export-code-btn",
+                                IconName::DatabaseZap,
+                                crate::i18n::t("Exportar código (SQL / Mermaid)…"),
+                                actions::GROUP_EXPORT_CODE,
+                            ))
+                            .child(export_dropdown(
+                                g,
+                                &self.focus,
+                                "export-image-btn",
+                                IconName::ImageDown,
+                                crate::i18n::t("Exportar imagem (PNG / JPEG / SVG)…"),
+                                actions::GROUP_EXPORT_IMAGE,
+                            ))
+                            .child(crate::shell::guide_ui::track_tour_anchor(
+                                crate::guide::TourTarget::ExportBtn,
+                                self.tour_bounds.clone(),
+                            )),
                     )
-                    .child(export_dropdown(
-                        g,
-                        &self.focus,
-                        "export-code-btn",
-                        IconName::DatabaseZap,
-                        crate::i18n::t("Exportar código (SQL / Mermaid)…"),
-                        actions::GROUP_EXPORT_CODE,
-                    ))
-                    .child(export_dropdown(
-                        g,
-                        &self.focus,
-                        "export-image-btn",
-                        IconName::ImageDown,
-                        crate::i18n::t("Exportar imagem (PNG / JPEG / SVG)…"),
-                        actions::GROUP_EXPORT_IMAGE,
-                    ))
                     .child(
                         Button::new("theme-toggle")
                             .ghost()
@@ -5036,7 +5047,18 @@ impl Shell {
         };
         let theme_name = crate::i18n::t(g.theme_name());
         bar.child("DBML")
-            .child(div().child(format!("v{}", env!("CARGO_PKG_VERSION"))))
+            .child(
+                div()
+                    .id("status-version")
+                    .role(Role::Button)
+                    .aria_label(crate::i18n::t("Ver novidades desta versão"))
+                    .px(px(5.))
+                    .rounded(px(4.))
+                    .cursor_pointer()
+                    .hover(move |s| s.bg(g.hover).text_color(g.text))
+                    .on_click(|_, window, cx| window.dispatch_action(Box::new(ShowWhatsNew), cx))
+                    .child(format!("v{}", env!("CARGO_PKG_VERSION"))),
+            )
             .child(
                 div()
                     .id("status-theme")
@@ -5085,6 +5107,16 @@ fn main_menu_items(menu: PopupMenu, window: &mut Window, cx: &mut Context<PopupM
             crate::i18n::t("Atalhos de teclado"),
             Icon::new(IconName::Keyboard),
             Box::new(ShowShortcuts),
+        )
+        .menu_with_icon(
+            crate::i18n::t("Tour guiado"),
+            Icon::new(IconName::Info),
+            Box::new(ShowTour),
+        )
+        .menu_with_icon(
+            crate::i18n::t("O que há de novo"),
+            Icon::new(IconName::WandSparkles),
+            Box::new(ShowWhatsNew),
         )
 }
 

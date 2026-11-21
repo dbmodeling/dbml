@@ -86,6 +86,7 @@ comandos, e palavras-chave estruturais do OpenSpec.
 - Núcleo desacoplado de UI; crates puras e testáveis headless.
 - Toda ação de UI: acessível por teclado, presente na command palette, sem modal, com undo.
 - **Sincronia obrigatória Desktop + CLI Web + VS Code:** Qualquer mudança em funcionalidades, comandos semânticos ou UX/UI deve ser sincronizada nas 3 modalidades (`crates/app`, `packages/canvas-web` + `crates/cli`, e `vscode-extension` + `crates/dbml-wasm`). Sempre rodar `./scripts/sync-build.sh` após alterações no núcleo ou no `packages/canvas-web`.
+- **Zero magic strings e zero magic numbers (em todo o projeto — backend, frontend e extensão):** Nunca espalhar strings literais (chaves de configuração/storage, comandos IPC/WS, nomes de eventos, variáveis de ambiente, IDs/atributos de UI) nem números mágicos (dimensões em px, limites, timeouts, paddings, margens, debounces) no meio da lógica. Centralizar sempre em constantes nomeadas (`crates/app/src/constants.rs`, `packages/canvas-web/src/constants.ts`, `vscode-extension/src/constants.ts`).
 
 ## Stack (fixar versões exatas)
 - **Desktop:** `gpui-kit` =0.8.0 (→ `gpui-pre` =0.3.9, `gpui-component` =0.8.0), `logos` 0.16.1, `rowan` 0.17.0, `petgraph` 0.8.3, `kurbo` 0.13.1, `resvg` 0.48.1, `tiny-skia` 0.12.0.

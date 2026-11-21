@@ -17,6 +17,7 @@ mod constants;
 mod disk_sync;
 mod fatal;
 mod glass;
+mod guide;
 mod handoff;
 mod harness;
 mod history;

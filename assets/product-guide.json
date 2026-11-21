@@ -1,0 +1,153 @@
+{
+  "tour": [
+    {
+      "id": "new-table",
+      "target": "topbar-add",
+      "placement": "right",
+      "title": {
+        "pt": "Crie tabelas, enums e notas",
+        "en": "Create tables, enums, and notes"
+      },
+      "body": {
+        "pt": "Use a barra de ferramentas à esquerda (ou pressione T para tabela e E para enum) para modelar rapidamente. Cada ação gera DBML limpo automaticamente.",
+        "en": "Use the floating toolbar on the left (or press T for table and E for enum) to model quickly. Every action generates clean DBML automatically."
+      }
+    },
+    {
+      "id": "sidebar",
+      "target": "sidebar",
+      "placement": "right",
+      "title": {
+        "pt": "Explore o esquema e problemas",
+        "en": "Explore your schema and diagnostics"
+      },
+      "body": {
+        "pt": "Alterne entre arquivos, tabelas, grupos e diagnósticos em tempo real. Pressione Ctrl+F para busca rápida em tabelas, colunas e enums.",
+        "en": "Switch between project files, tables, groups, and real-time diagnostics. Press Ctrl+F for quick search across tables, columns, and enums."
+      }
+    },
+    {
+      "id": "canvas",
+      "target": "canvas",
+      "placement": "center",
+      "title": {
+        "pt": "Arraste, conecte e foque",
+        "en": "Drag, connect, and focus"
+      },
+      "body": {
+        "pt": "Arraste tabelas livremente, conecte colunas para criar chaves estrangeiras e pressione F com uma tabela selecionada para ativar o Modo Foco.",
+        "en": "Drag tables freely, connect columns to create foreign keys, and press F with a table selected to toggle Focus Mode."
+      }
+    },
+    {
+      "id": "minimap",
+      "target": "minimap",
+      "placement": "left",
+      "title": {
+        "pt": "Navegue com o minimapa",
+        "en": "Navigate with the minimap"
+      },
+      "body": {
+        "pt": "Clique ou arraste diretamente no minimapa para se mover por diagramas grandes. Pressione M para mostrar ou ocultar quando quiser.",
+        "en": "Click or drag directly inside the minimap to pan across large diagrams. Press M to show or hide it anytime."
+      }
+    },
+    {
+      "id": "inspector",
+      "target": "inspector",
+      "placement": "left",
+      "title": {
+        "pt": "Edite propriedades sem sair do visual",
+        "en": "Edit properties visually"
+      },
+      "body": {
+        "pt": "Selecione qualquer tabela ou relação para editar colunas, tipos, índices, notas e cores. Tudo sincroniza bidirecionalmente com o arquivo .dbml.",
+        "en": "Select any table or relation to edit columns, types, indexes, notes, and colors. Everything stays bidirectionally synced with your .dbml file."
+      }
+    },
+    {
+      "id": "export",
+      "target": "export-btn",
+      "placement": "bottom",
+      "title": {
+        "pt": "Exporte SQL, imagens e documentação",
+        "en": "Export SQL, images, and docs"
+      },
+      "body": {
+        "pt": "Gere DDL para 5 bancos, PNG/SVG, Mermaid ou documentação estática em HTML/Markdown — e use Ctrl+K para acessar qualquer comando.",
+        "en": "Generate DDL for 5 databases, PNG/SVG, Mermaid, or static HTML/Markdown docs — and press Ctrl+K to reach any command."
+      }
+    }
+  ],
+  "releases": [
+    {
+      "version": "0.2.0",
+      "date": "2026-11-21",
+      "highlights": [
+        {
+          "kind": "added",
+          "title": {
+            "pt": "Minimapa clicável e arrastável",
+            "en": "Clickable & draggable minimap"
+          },
+          "detail": {
+            "pt": "Navegue por esquemas grandes clicando ou arrastando a viewport no canto inferior direito (atalho M).",
+            "en": "Navigate large schemas by clicking or dragging the viewport in the bottom-right corner (shortcut M)."
+          },
+          "action": "ToggleMinimap"
+        },
+        {
+          "kind": "added",
+          "title": {
+            "pt": "Modo Foco, Busca Rápida, Notas e Documentação Estática",
+            "en": "Focus Mode, Quick Search, Notes & Static Docs"
+          },
+          "detail": {
+            "pt": "Isole vizinhanças FK com F / Shift+F, encontre colunas com Ctrl+F, edite notas e exporte documentação HTML/Markdown.",
+            "en": "Isolate FK neighborhoods with F / Shift+F, jump to columns with Ctrl+F, edit notes, and export HTML/Markdown docs."
+          },
+          "action": "QuickSearch"
+        },
+        {
+          "kind": "improved",
+          "title": {
+            "pt": "Desempenho do motor Wasm e roteamento no canvas",
+            "en": "Wasm engine & canvas routing performance"
+          },
+          "detail": {
+            "pt": "Sessão Wasm persistente com uma análise por edição, cache de rotas e otimização opt-level 3.",
+            "en": "Persistent Wasm session with one analysis per edit, cached edge routing, and opt-level 3 optimization."
+          }
+        },
+        {
+          "kind": "fixed",
+          "title": {
+            "pt": "Robustez no Desktop, CLI e VS Code",
+            "en": "Desktop, CLI & VS Code hardening"
+          },
+          "detail": {
+            "pt": "Recuperação de abas não salvas, patches versionados no protocolo, escrita atômica e detecção de versão mínima da CLI.",
+            "en": "Unsaved tab crash recovery, versioned protocol patches, atomic writes, and minimum CLI version detection."
+          }
+        }
+      ]
+    },
+    {
+      "version": "0.1.4",
+      "date": "2026-11-14",
+      "highlights": [
+        {
+          "kind": "added",
+          "title": {
+            "pt": "Introspecção SQLite e pacotes Linux/Windows/macOS",
+            "en": "SQLite introspection & cross-platform installers"
+          },
+          "detail": {
+            "pt": "Suporte completo a bancos SQLite locais e instaladores oficiais para Debian, Fedora, Windows e macOS.",
+            "en": "Full local SQLite database introspection plus official installers for Debian, Fedora, Windows, and macOS."
+          }
+        }
+      ]
+    }
+  ]
+}

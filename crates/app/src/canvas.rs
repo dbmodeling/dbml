@@ -167,6 +167,8 @@ pub struct Diagram {
     focus_depth: usize,
     /// Coluna destacada via Busca Rápida (`(qualified_table, column)`).
     highlighted_column: Option<(String, String)>,
+    /// Mapa compartilhado de bounds reais dos controles para o Spotlight Tour.
+    pub tour_bounds: Option<crate::shell::guide_ui::TourBoundsMap>,
 }
 
 impl Diagram {
@@ -208,6 +210,7 @@ impl Diagram {
             focus_mode: false,
             focus_depth: 1,
             highlighted_column: None,
+            tour_bounds: None,
         };
         d.set_schema(schema);
         d
@@ -2633,6 +2636,12 @@ impl Diagram {
                 .top(relative(0.5))
                 .mt(px(-130.))
                 .child(tools)
+                .when_some(self.tour_bounds.clone(), |d, map| {
+                    d.child(crate::shell::guide_ui::track_tour_anchor(
+                        crate::guide::TourTarget::TopbarAdd,
+                        map,
+                    ))
+                })
                 .into_any_element(),
         );
         if self.focus_mode() {
@@ -2902,7 +2911,16 @@ impl Diagram {
                         canvas(
                             |_, _, _| (),
                             move |bounds, (), window, cx| {
-                                entity.read(cx).minimap_origin.set(Some(bounds.origin));
+                                let d = entity.read(cx);
+                                d.minimap_origin.set(Some(bounds.origin));
+                                if let Some(map) = &d.tour_bounds {
+                                    crate::shell::guide_ui::record_tour_bounds(
+                                        map,
+                                        crate::guide::TourTarget::Minimap,
+                                        bounds,
+                                        window,
+                                    );
+                                }
                                 for &(x, y, w, h, c) in &mm_groups {
                                     window.paint_quad(
                                         fill(
