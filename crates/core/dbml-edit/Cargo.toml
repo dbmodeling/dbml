@@ -11,6 +11,7 @@ rowan.workspace = true
 schema.workspace = true
 
 [dev-dependencies]
+dbml-analysis.workspace = true
 insta.workspace = true
 proptest.workspace = true
 

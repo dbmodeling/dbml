@@ -331,3 +331,19 @@ mod never_panics {
         }
     }
 }
+
+#[test]
+fn preserves_column_check_and_warns_for_table_check() {
+    let out = import_sql_ddl(
+        "CREATE TABLE t (amount integer CHECK (amount > 0), CHECK (amount < 100));",
+        SqlDialect::Sqlite,
+    );
+    assert!(out.dbml.contains("check: `amount>0`"), "{}", out.dbml);
+    assert!(
+        out.warnings
+            .iter()
+            .any(|w| w.message.contains("constraint"))
+    );
+    let sql = export_sql_ddl(&out.dbml, ExportDialect::Sqlite);
+    assert!(sql.contains("CHECK (amount>0)"), "{sql}");
+}

@@ -151,7 +151,12 @@ impl Parser<'_> {
         };
         let node_kind = if let Some(k) = forced_kind {
             k
-        } else if self.at_kw("note") {
+        } else if self.at_kw("note")
+            && self.toks[self.pos + 1..]
+                .iter()
+                .find(|(k, _)| *k != SyntaxKind::Whitespace)
+                .is_some_and(|(k, _)| matches!(k, SyntaxKind::Colon | LBrace))
+        {
             Note
         } else if is_block && self.at_kw("indexes") {
             Indexes

@@ -91,11 +91,12 @@ pub(super) fn write_create_table(
     out.push_str(" (\n");
 
     let pk_count = table.columns.iter().filter(|c| c.pk).count();
-    let composite_pk_index = table
-        .indexes
-        .iter()
-        .find(|ix| ix.pk && ix.columns.len() > 1);
-    let inline_single_pk = pk_count == 1 && composite_pk_index.is_none();
+    let composite_pk_index = table.indexes.iter().find(|ix| ix.pk);
+    let indexed_pk = composite_pk_index.and_then(|ix| match ix.columns.as_slice() {
+        [col] => col.column_name(),
+        _ => None,
+    });
+    let inline_single_pk = (pk_count == 1 && composite_pk_index.is_none()) || indexed_pk.is_some();
     let mut first = true;
 
     for col in &table.columns {
@@ -120,7 +121,7 @@ pub(super) fn write_create_table(
             out.push_str(" DEFAULT ");
             write_default_literal(out, def, dialect);
         }
-        if inline_single_pk && col.pk {
+        if inline_single_pk && indexed_pk.map_or(col.pk, |name| name == col.name) {
             out.push_str(" PRIMARY KEY");
             if dialect == SqlDialect::Sqlite && col.increment {
                 out.push_str(" AUTOINCREMENT");
@@ -164,7 +165,7 @@ pub(super) fn write_create_table(
             write_single_ident(out, &c.name, dialect);
         }
         out.push(')');
-    } else if let Some(ix) = composite_pk_index {
+    } else if let Some(ix) = composite_pk_index.filter(|_| indexed_pk.is_none()) {
         begin_table_item(out, &mut first);
         out.push_str("PRIMARY KEY (");
         write_index_cols(out, ix, dialect);

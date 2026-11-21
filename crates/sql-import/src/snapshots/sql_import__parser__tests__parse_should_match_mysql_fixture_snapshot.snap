@@ -21,6 +21,7 @@ Ir {
                     references: None,
                     enum_values: None,
                     comment: None,
+                    check: None,
                 },
                 Column {
                     name: "email",
@@ -35,6 +36,7 @@ Ir {
                     comment: Some(
                         "Login e-mail",
                     ),
+                    check: None,
                 },
                 Column {
                     name: "role",
@@ -56,6 +58,7 @@ Ir {
                         ],
                     ),
                     comment: None,
+                    check: None,
                 },
                 Column {
                     name: "active",
@@ -72,6 +75,7 @@ Ir {
                     references: None,
                     enum_values: None,
                     comment: None,
+                    check: None,
                 },
                 Column {
                     name: "updated_at",
@@ -88,6 +92,7 @@ Ir {
                     references: None,
                     enum_values: None,
                     comment: None,
+                    check: None,
                 },
             ],
             constraints: [
@@ -128,6 +133,7 @@ Ir {
                     references: None,
                     enum_values: None,
                     comment: None,
+                    check: None,
                 },
                 Column {
                     name: "user_id",
@@ -140,6 +146,7 @@ Ir {
                     references: None,
                     enum_values: None,
                     comment: None,
+                    check: None,
                 },
             ],
             constraints: [

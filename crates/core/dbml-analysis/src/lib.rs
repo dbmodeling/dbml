@@ -6,7 +6,7 @@ mod complete;
 mod export_sql;
 mod lint;
 pub use complete::{Completion, CompletionKind, complete};
-pub use export_sql::{SqlDialect, SqlExportError, export_sql_ddl};
+pub use export_sql::{SqlDialect, SqlExportError, export_sql_ddl, try_export_sql_ddl};
 pub use lint::{Diagnostic, Severity, lint};
 
 use dbml_syntax::{
@@ -17,6 +17,46 @@ use schema::{
     Ref, RefAction, RefKind, Schema, Table,
 };
 use std::collections::{HashMap, HashSet};
+
+/// Returns names that would be duplicated by appending an imported document.
+#[must_use]
+pub fn import_conflicts(existing: &str, incoming: &str) -> Vec<String> {
+    let existing = analyze(existing);
+    let incoming = analyze(incoming);
+    let mut tables: HashSet<_> = existing.tables.iter().map(Table::qualified_name).collect();
+    let mut enums: HashSet<_> = existing.enums.iter().map(EnumDef::qualified_name).collect();
+    let mut conflicts: Vec<_> = incoming
+        .tables
+        .iter()
+        .map(Table::qualified_name)
+        .filter(|name| !tables.insert(name.clone()))
+        .collect();
+    conflicts.extend(
+        incoming
+            .enums
+            .iter()
+            .map(EnumDef::qualified_name)
+            .filter(|name| !enums.insert(name.clone())),
+    );
+    conflicts.sort();
+    conflicts.dedup();
+    conflicts
+}
+
+#[cfg(test)]
+#[test]
+fn import_conflicts_use_qualified_names() {
+    assert_eq!(
+        import_conflicts(
+            "Table sales.users { id int }
+Enum sales.kind { a }",
+            "Table app.users { id int }
+Table sales.users { id int }
+Enum sales.kind { b }"
+        ),
+        ["sales.kind", "sales.users"],
+    );
+}
 
 /// Parses `text` into a CST and projects it into a semantic [`Schema`].
 #[must_use]
@@ -669,6 +709,19 @@ Ref: posts.author_id > users.id
         assert_eq!(s.groups[0].tables, vec!["a".to_string(), "b".to_string()]);
         assert_eq!(s.groups[0].color.as_deref(), Some("#22c55e"));
         assert_eq!(s.group_of("b").unwrap().name, "core");
+    }
+
+    #[test]
+    fn coluna_note_e_notas_de_tabela() {
+        for nota in ["Note: 'x'", "Note { 'x' }"] {
+            let src = format!("Table t {{\n id int [pk]\n note text\n {nota}\n}}\n");
+            let schema = analyze(&src);
+            let tabela = schema.table("t").unwrap();
+            assert_eq!(tabela.columns.len(), 2);
+            assert_eq!(tabela.columns[1].name, "note");
+            assert_eq!(tabela.columns[1].ty, "text");
+            assert_eq!(tabela.note.as_deref(), Some("x"));
+        }
     }
 
     #[test]

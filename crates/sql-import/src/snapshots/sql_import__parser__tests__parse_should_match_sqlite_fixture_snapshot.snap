@@ -21,6 +21,7 @@ Ir {
                     references: None,
                     enum_values: None,
                     comment: None,
+                    check: None,
                 },
                 Column {
                     name: "email",
@@ -33,6 +34,7 @@ Ir {
                     references: None,
                     enum_values: None,
                     comment: None,
+                    check: None,
                 },
                 Column {
                     name: "status",
@@ -55,6 +57,9 @@ Ir {
                         ],
                     ),
                     comment: None,
+                    check: Some(
+                        "status IN('new','active','banned')",
+                    ),
                 },
                 Column {
                     name: "created",
@@ -71,6 +76,7 @@ Ir {
                     references: None,
                     enum_values: None,
                     comment: None,
+                    check: None,
                 },
             ],
             constraints: [],
@@ -95,6 +101,7 @@ Ir {
                     references: None,
                     enum_values: None,
                     comment: None,
+                    check: None,
                 },
                 Column {
                     name: "user_id",
@@ -127,6 +134,7 @@ Ir {
                     ),
                     enum_values: None,
                     comment: None,
+                    check: None,
                 },
                 Column {
                     name: "body",
@@ -139,6 +147,7 @@ Ir {
                     references: None,
                     enum_values: None,
                     comment: None,
+                    check: None,
                 },
             ],
             constraints: [

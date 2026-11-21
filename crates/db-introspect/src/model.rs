@@ -47,6 +47,8 @@ pub struct Column {
     pub default: Option<String>,
     /// Column comment.
     pub comment: Option<String>,
+    /// SQL CHECK expression, when representable in DBML.
+    pub check: Option<String>,
 }
 
 /// An index or composite key.

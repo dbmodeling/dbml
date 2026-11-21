@@ -206,3 +206,32 @@ Table items {
         "{pg}"
     );
 }
+
+#[test]
+fn preserves_qualified_tables_and_single_column_index_primary_keys() {
+    let src = "Table a.parent {\n id int [increment]\n indexes {\n id [pk]\n }\n}\nTable b.parent {\n id int [pk]\n}\nTable a.child {\n id int\n parent_id int\n}\nRef: a.child.parent_id > a.parent.id";
+    let sql = export_sql_ddl(src, SqlDialect::Postgres);
+    assert!(sql.contains("CREATE TABLE \"a\".\"parent\""), "{sql}");
+    assert!(sql.contains("CREATE TABLE \"b\".\"parent\""), "{sql}");
+    assert_eq!(
+        sql.matches("REFERENCES \"a\".\"parent\"").count(),
+        1,
+        "{sql}"
+    );
+    let sqlite = export_sql_ddl(src, SqlDialect::Sqlite);
+    assert!(sqlite.contains("PRIMARY KEY AUTOINCREMENT"), "{sqlite}");
+}
+
+#[test]
+fn checked_export_rejects_invalid_dbml_and_unrepresentable_sqlite_schema() {
+    use super::{SqlExportError, try_export_sql_ddl};
+
+    assert!(matches!(
+        try_export_sql_ddl("Table incomplete {", SqlDialect::Postgres),
+        Err(SqlExportError::InvalidSource(_))
+    ));
+    assert!(matches!(
+        try_export_sql_ddl("Table sales.orders { id int [pk] }", SqlDialect::Sqlite),
+        Err(SqlExportError::SqliteSchema(schema)) if schema == "sales"
+    ));
+}

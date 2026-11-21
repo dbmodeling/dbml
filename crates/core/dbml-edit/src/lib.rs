@@ -14,11 +14,13 @@ mod groups;
 mod indexes;
 pub use indexes::{add_index, delete_index, set_column_check, set_column_default, update_index};
 mod model;
+mod table;
 pub use model::{
     RefUpdate, add_column as add_column_text, add_column_preset as add_column_preset_text, add_ref,
     add_table, delete_column, delete_ref, delete_table, link_tables, rename_column, rename_table,
     set_column_flag, set_column_type, unique_column_name, unique_table_name, update_ref,
 };
+pub use table::{duplicate_table, move_column, set_table_note, table_range};
 
 use dbml_syntax::{SyntaxKind, parse};
 use rowan::TextRange;

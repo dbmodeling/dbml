@@ -35,7 +35,7 @@ fn value_tok(col: &SyntaxNode) -> Option<SyntaxToken> {
         .find(|t| matches!(t.kind(), SyntaxKind::Ident | SyntaxKind::Str))
 }
 
-fn format_ident(name: &str) -> String {
+pub(crate) fn format_ident(name: &str) -> String {
     if name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') && !name.is_empty() {
         name.to_string()
     } else {

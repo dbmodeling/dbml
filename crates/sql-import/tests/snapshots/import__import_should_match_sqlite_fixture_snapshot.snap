@@ -11,7 +11,7 @@ Enum users_status {
 Table users {
   id integer [pk, increment]
   email text [not null, unique]
-  status users_status [not null, default: 'new']
+  status users_status [not null, default: 'new', check: `status IN('new','active','banned')`]
   created text [default: `datetime('now')`]
 }
 

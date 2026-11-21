@@ -42,57 +42,65 @@ fn set_column_kv(
     let root = parse(text).syntax();
     let c = find_column(&find_table(&root, table)?, col)?;
     let toks = sig(&c);
-    let open = toks.iter().position(|k| k.kind() == SyntaxKind::LBracket);
-    let close = toks.iter().position(|k| k.kind() == SyntaxKind::RBracket);
-    match (open, close) {
-        (Some(o), Some(cl)) if o < cl => {
-            let inner = &toks[o + 1..cl];
-            let mut kept: Vec<String> = Vec::new();
-            let mut replaced = false;
-            for part in inner.split(|t| t.kind() == SyntaxKind::Comma) {
-                let Some(first) = part.first() else { continue };
-                let Some(last) = part.last() else { continue };
-                if first.text().eq_ignore_ascii_case(key)
-                    && part.get(1).is_some_and(|t| t.kind() == SyntaxKind::Colon)
-                {
-                    if let Some(ref val) = formatted_val
-                        && !replaced
-                    {
-                        kept.push(format!("{key}: {val}"));
-                        replaced = true;
-                    }
-                    continue;
-                }
-                let s = usize::from(first.text_range().start());
-                let e = usize::from(last.text_range().end());
-                kept.push(text[s..e].to_string());
-            }
+    if let Some(edit) = kv_edit(text, &toks, key, formatted_val.as_deref()) {
+        return Some(apply(text, vec![edit]));
+    }
+    if let Some(val) = formatted_val {
+        let end = usize::from(toks.last()?.text_range().end());
+        Some(apply(text, vec![(end..end, format!(" [{key}: {val}]"))]))
+    } else {
+        Some(text.to_string())
+    }
+}
+
+/// Rewrites the first `[...]` settings list in `toks`, replacing (or with `None`, removing)
+/// every `key: ...` entry; drops the brackets when nothing is left. `None` if there is no list.
+pub(crate) fn kv_edit(
+    text: &str,
+    toks: &[SyntaxToken],
+    key: &str,
+    formatted_val: Option<&str>,
+) -> Option<(Range<usize>, String)> {
+    let o = toks.iter().position(|k| k.kind() == SyntaxKind::LBracket)?;
+    let cl = toks.iter().position(|k| k.kind() == SyntaxKind::RBracket)?;
+    if o >= cl {
+        return None;
+    }
+    let inner = &toks[o + 1..cl];
+    let mut kept: Vec<String> = Vec::new();
+    let mut replaced = false;
+    for part in inner.split(|t| t.kind() == SyntaxKind::Comma) {
+        let Some(first) = part.first() else { continue };
+        let Some(last) = part.last() else { continue };
+        if first.text().eq_ignore_ascii_case(key)
+            && part.get(1).is_some_and(|t| t.kind() == SyntaxKind::Colon)
+        {
             if let Some(val) = formatted_val
                 && !replaced
             {
                 kept.push(format!("{key}: {val}"));
+                replaced = true;
             }
-            let whole =
-                usize::from(toks[o].text_range().start())..usize::from(toks[cl].text_range().end());
-            let edit = if kept.is_empty() {
-                (
-                    text[..whole.start].trim_end().len()..whole.end,
-                    String::new(),
-                )
-            } else {
-                (whole, format!("[{}]", kept.join(", ")))
-            };
-            Some(apply(text, vec![edit]))
+            continue;
         }
-        _ => {
-            if let Some(val) = formatted_val {
-                let end = usize::from(toks.last()?.text_range().end());
-                Some(apply(text, vec![(end..end, format!(" [{key}: {val}]"))]))
-            } else {
-                Some(text.to_string())
-            }
-        }
+        let s = usize::from(first.text_range().start());
+        let e = usize::from(last.text_range().end());
+        kept.push(text[s..e].to_string());
     }
+    if let Some(val) = formatted_val
+        && !replaced
+    {
+        kept.push(format!("{key}: {val}"));
+    }
+    let whole = usize::from(toks[o].text_range().start())..usize::from(toks[cl].text_range().end());
+    Some(if kept.is_empty() {
+        (
+            text[..whole.start].trim_end().len()..whole.end,
+            String::new(),
+        )
+    } else {
+        (whole, format!("[{}]", kept.join(", ")))
+    })
 }
 
 /// Sets or clears the `default: ...` attribute on `table.col`, preserving other column settings.

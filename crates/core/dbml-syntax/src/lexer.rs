@@ -14,6 +14,8 @@ enum Tok {
     #[regex(r#""[^"\n]*"?"#)]
     #[regex(r"'[^'\n]*'?")]
     #[regex(r"`[^`]*`?")]
+    // DBML multi-line string: may contain `'`, `''` and newlines, closes at the first `'''`.
+    #[regex(r"'''([^']|'[^']|''[^'])*'''")]
     Str,
     #[regex(r"[0-9]+(\.[0-9]+)?")]
     Number,
@@ -60,4 +62,21 @@ pub fn lex(text: &str) -> Vec<(SyntaxKind, &str)> {
         out.push((kind, &text[span]));
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn triple_quoted_string_is_one_token() {
+        let toks = lex("Note: '''it's\nmulti'''\n");
+        assert_eq!(toks[3], (SyntaxKind::Str, "'''it's\nmulti'''"));
+    }
+
+    #[test]
+    fn empty_and_unterminated_quotes_still_lex() {
+        assert_eq!(lex("''")[0], (SyntaxKind::Str, "''"));
+        assert_eq!(lex("'''abc")[0], (SyntaxKind::Str, "''"));
+    }
 }

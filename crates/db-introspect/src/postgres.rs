@@ -203,6 +203,7 @@ async fn read_conn(
                 auto_increment: serial || identity,
                 default,
                 comment: c.try_get("cmt").map_err(e)?,
+                check: None,
             });
         }
         pos.insert((schema.clone(), name.clone()), db.tables.len());

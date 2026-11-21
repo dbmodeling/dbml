@@ -1542,6 +1542,7 @@ dependencies = [
  "percent-encoding",
  "rusqlite",
  "schema",
+ "sql-import",
  "sqlx",
  "tiberius",
  "tokio",
@@ -1589,6 +1590,7 @@ dependencies = [
 name = "dbml-edit"
 version = "0.1.4"
 dependencies = [
+ "dbml-analysis",
  "dbml-syntax",
  "insta",
  "proptest",

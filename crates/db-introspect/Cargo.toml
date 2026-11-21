@@ -7,6 +7,8 @@ publish.workspace = true
 description = "Read-only database introspection (catalog to DBML). Network and driver code lives here, never in the pure core."
 
 [dependencies]
+sql-import.workspace = true
+dbml-analysis.workspace = true
 # Bundled SQLite via libsqlite3-sys >= 0.39 (RUSTSEC-2026-0459). Do not use sqlx-sqlite: it caps
 # libsqlite3-sys below 0.38.
 rusqlite = { version = "=0.42.0", features = ["bundled"] }
@@ -19,7 +21,6 @@ percent-encoding = "2"
 
 [dev-dependencies]
 sqlx = { version = "=0.9.0", default-features = false, features = ["runtime-tokio", "postgres", "mysql"] }
-dbml-analysis.workspace = true
 schema.workspace = true
 
 [lints]

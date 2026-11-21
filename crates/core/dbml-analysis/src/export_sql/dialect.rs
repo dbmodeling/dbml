@@ -59,11 +59,19 @@ impl FromStr for SqlDialect {
 pub enum SqlExportError {
     /// The requested SQL dialect name is not recognized.
     UnknownDialect(String),
+    /// The source has an error diagnostic and cannot be exported reliably.
+    InvalidSource(String),
+    /// SQLite does not support the schema-qualified objects used by the model.
+    SqliteSchema(String),
 }
 
 impl fmt::Display for SqlExportError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::InvalidSource(message) => write!(f, "invalid DBML: {message}"),
+            Self::SqliteSchema(schema) => {
+                write!(f, "SQLite export does not support schema `{schema}`")
+            }
             Self::UnknownDialect(d) => write!(
                 f,
                 "unknown SQL dialect `{d}` (expected: postgres, mysql, sqlite, sqlserver, oracle)"

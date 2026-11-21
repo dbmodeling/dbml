@@ -85,6 +85,30 @@ fn remove_members(text: &str, tables: &[&str]) -> String {
 #[must_use]
 pub fn group_tables(text: &str, tables: &[&str], name: &str) -> String {
     let mut out = remove_members(text, tables);
+    // grupo já existe: acrescenta as tabelas nele em vez de declarar outro com o mesmo nome
+    let existing = parse(&out)
+        .syntax()
+        .children()
+        .filter(|n| n.kind() == SyntaxKind::TableGroup)
+        .find(|n| name_of(n).as_deref() == Some(name))
+        .and_then(|g| {
+            g.descendants_with_tokens()
+                .filter_map(rowan::NodeOrToken::into_token)
+                .filter(|t| t.kind() == SyntaxKind::RBrace)
+                .last()
+        })
+        .map(|t| usize::from(t.text_range().start()));
+    if let Some(close) = existing {
+        let mut lines = String::new();
+        for t in tables {
+            let _ = writeln!(lines, "  {t}");
+        }
+        let at = out[..close].rfind('\n').map_or(close, |i| i + 1);
+        // `}` na mesma linha do último membro: quebra a linha antes de inserir
+        let lead = if out[at..close].trim().is_empty() { "" } else { "\n" };
+        out.replace_range(at..close, &format!("{}{lead}{lines}", out[at..close].trim_end()));
+        return out;
+    }
     while out.ends_with("\n\n") {
         out.pop();
     }
@@ -183,6 +207,19 @@ mod tests {
         assert!(one.contains("TableGroup core {\n  b\n}\n"), "{one}");
         let none = ungroup_table(&one, "b");
         assert_eq!(none, S, "grupo vazio some e o texto volta ao original");
+    }
+
+    #[test]
+    fn group_into_existing_group_appends_instead_of_duplicating() {
+        let src = "Table a { id int }\nTable b { id int }\nTable c { id int }\n\nTableGroup g {\n  a\n}\n";
+        let out = group_tables(src, &["b"], "g");
+        assert_eq!(out.matches("TableGroup g").count(), 1);
+        assert!(out.ends_with("TableGroup g {\n  a\n  b\n}\n"), "{out}");
+        // tabela que já estava no grupo continua uma vez só
+        let again = group_tables(&out, &["a", "c"], "g");
+        assert_eq!(again.matches("TableGroup g").count(), 1);
+        assert_eq!(again.matches("\n  a\n").count(), 1, "{again}");
+        assert!(again.contains("  c\n"), "{again}");
     }
 
     #[test]
