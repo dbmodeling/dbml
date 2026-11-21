@@ -1,21 +1,34 @@
-MIT License
+Licença de Uso Proprietária — DB Modeling
 
-Copyright (c) 2026 Samuel Viana da Silva
+Copyright (c) 2026 Samuel Viana da Silva. Todos os direitos reservados.
 
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
+1. Concessão. Fica concedida a qualquer pessoa uma licença pessoal, gratuita,
+   não exclusiva, intransferível e revogável para BAIXAR e USAR o software
+   DB Modeling, em formato binário ou pelos instaladores oficiais publicados
+   pelo titular, para fins próprios, inclusive profissionais internos.
 
-The above copyright notice and this permission notice shall be included in all
-copies or substantial portions of the Software.
+2. Restrições. Sem autorização prévia e por escrito do titular, é proibido:
+   a) clonar, copiar, espelhar (mirror) ou fazer fork do repositório ou do
+      código-fonte, salvo o necessário para visualizá-lo no próprio GitHub;
+   b) redistribuir, sublicenciar, publicar, vender, alugar ou de qualquer
+      forma comercializar o software, no todo ou em parte, ou oferecê-lo
+      como serviço (SaaS/hospedagem) a terceiros;
+   c) criar e distribuir obras derivadas;
+   d) remover avisos de copyright ou esta licença;
+   e) usar o código para treinar modelos de IA ou construir produto concorrente.
 
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-SOFTWARE.
+3. Propriedade. O software é licenciado, não vendido. Todos os direitos não
+   concedidos expressamente ficam reservados ao titular.
+
+4. Dependências de terceiros. Bibliotecas de terceiros incluídas permanecem
+   sob suas respectivas licenças.
+
+5. Isenção de garantia. O SOFTWARE É FORNECIDO "NO ESTADO EM QUE SE ENCONTRA",
+   SEM GARANTIA DE QUALQUER TIPO. O TITULAR NÃO RESPONDE POR DANOS DECORRENTES
+   DO USO.
+
+6. Rescisão. A licença termina automaticamente em caso de violação de
+   qualquer termo; o uso deve então cessar e as cópias ser destruídas.
+
+Contato para licenciamento comercial: abra uma issue em
+https://github.com/dbmodeling/dbml

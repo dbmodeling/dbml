@@ -15,8 +15,8 @@ exclude = ["fuzz"]
 [workspace.package]
 edition = "2024"
 rust-version = "1.99"
-version = "0.2.0"
-license = "MIT"
+version = "0.3.0"
+license = "LicenseRef-Proprietary"
 publish = false
 
 [workspace.dependencies]
