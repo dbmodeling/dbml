@@ -83,6 +83,10 @@ enum Drag {
         last: (f32, f32),
         start: EdgeStyles,
     },
+    /// arrasta o retângulo da câmera dentro do minimapa (`grab` = deslocamento em px no minimapa)
+    Minimap {
+        grab: (f32, f32),
+    },
 }
 
 /// Alvo do último clique direito (escolhe os itens do menu de contexto).
@@ -140,6 +144,9 @@ pub struct Diagram {
     /// barra de espaço pressionada: arrastar move a vista (temporariamente)
     space: bool,
     pub legend_open: bool,
+    pub minimap_open: bool,
+    minimap_origin: std::cell::Cell<Option<Point<Pixels>>>,
+    minimap_xform: std::cell::Cell<Option<crate::canvas_geom::MinimapTransform>>,
     focus: FocusHandle,
     /// tema atual (o shell atualiza ao trocar); o canvas é uma view própria
     pub glass: Option<Glass>,
@@ -184,6 +191,9 @@ impl Diagram {
             tool: Tool::Select,
             space: false,
             legend_open: false,
+            minimap_open: true,
+            minimap_origin: std::cell::Cell::new(None),
+            minimap_xform: std::cell::Cell::new(None),
             focus: cx.focus_handle(),
             glass: None,
             needs_fit: true,
@@ -467,6 +477,62 @@ impl Diagram {
         }
     }
 
+    fn minimap_transform(
+        &self,
+    ) -> Option<(crate::canvas_geom::MinimapTransform, (f32, f32, f32, f32))> {
+        if self.schema.tables.is_empty() {
+            return None;
+        }
+        let (vw, vh) = (
+            f32::from(self.size.width).max(1.0),
+            f32::from(self.size.height).max(1.0),
+        );
+        let vp_x = -self.pan.0 / self.zoom;
+        let vp_y = -self.pan.1 / self.zoom;
+        let vp_w = vw / self.zoom;
+        let vp_h = vh / self.zoom;
+        let (mut min_x, mut min_y, mut max_x, mut max_y) = (vp_x, vp_y, vp_x + vp_w, vp_y + vp_h);
+        for t in &self.schema.tables {
+            let q = t.qualified_name();
+            if let Some(&(x, y)) = self.pos.get(&q) {
+                min_x = min_x.min(x);
+                min_y = min_y.min(y);
+                max_x = max_x.max(x + CARD_W);
+                max_y = max_y.max(y + card_h(t.columns.len()));
+            }
+        }
+        for en in &self.schema.enums {
+            let key = enum_key(en);
+            if let Some(&(x, y)) = self.pos.get(&key) {
+                min_x = min_x.min(x);
+                min_y = min_y.min(y);
+                max_x = max_x.max(x + ENUM_W);
+                max_y = max_y.max(y + enum_h(en));
+            }
+        }
+        let margin = 40.0;
+        let xf = crate::canvas_geom::MinimapTransform::compute(
+            min_x - margin,
+            min_y - margin,
+            max_x + margin,
+            max_y + margin,
+            crate::canvas_geom::MINIMAP_W,
+            crate::canvas_geom::MINIMAP_H,
+            crate::canvas_geom::MINIMAP_PAD,
+        );
+        Some((xf, (vp_x, vp_y, vp_w, vp_h)))
+    }
+
+    fn pan_from_minimap(&mut self, screen_pos: Point<Pixels>, grab: (f32, f32)) {
+        let (Some(origin), Some(xf)) = (self.minimap_origin.get(), self.minimap_xform.get()) else {
+            return;
+        };
+        let mx = f32::from(screen_pos.x - origin.x) - grab.0;
+        let my = f32::from(screen_pos.y - origin.y) - grab.1;
+        let (vw, vh) = (f32::from(self.size.width), f32::from(self.size.height));
+        self.pan = xf.pan_for_map_point(mx, my, self.zoom, vw, vh);
+    }
+
     /// Frase curta para a barra de status: o que o usuário pode fazer agora.
     pub fn hint(&self) -> String {
         match (&self.drag, self.tool) {
@@ -482,6 +548,7 @@ impl Diagram {
             (Some(Drag::Group { name, .. }), _) => crate::i18n::t("Movendo grupo {}").replace("{}", name),
             (Some(Drag::Enum { name, .. }), _) => crate::i18n::t("Movendo enum {}").replace("{}", name),
             (Some(Drag::Edge { .. }), _) => crate::i18n::t("Curvando a relação: solte para gravar").into(),
+            (Some(Drag::Minimap { .. }), _) => crate::i18n::t("Navegando pelo minimapa").into(),
             (None, Tool::Hand) => crate::i18n::t("Mão: arraste para mover a vista · V volta a Selecionar").into(),
             (None, Tool::Select) if !self.multi.is_empty() => {
                 crate::i18n::t("{} tabelas selecionadas · Ctrl+G agrupa").replace("{}", &(self.multi.len() + 1).to_string())
@@ -1196,7 +1263,8 @@ impl Diagram {
                 | Drag::Cards { .. }
                 | Drag::Group { .. }
                 | Drag::Enum { .. }
-                | Drag::Edge { .. },
+                | Drag::Edge { .. }
+                | Drag::Minimap { .. },
             ) => Some(CursorStyle::ClosedHand),
             Some(Drag::Marquee { .. } | Drag::Link { .. }) => Some(CursorStyle::Crosshair),
             None if self.space => Some(CursorStyle::OpenHand),
@@ -1467,6 +1535,10 @@ impl Diagram {
                         this.pan.0 += f32::from(e.position.x - last.x);
                         this.pan.1 += f32::from(e.position.y - last.y);
                         *last = e.position;
+                    }
+                    Some(Drag::Minimap { grab }) => {
+                        let grab = *grab;
+                        this.pan_from_minimap(e.position, grab);
                     }
                     None => return,
                 }
@@ -2680,6 +2752,15 @@ impl Diagram {
                         ))
                         .child(vsep())
                         .child(tool_btn(
+                            "toggle-minimap",
+                            IconName::Frame,
+                            crate::i18n::t("Minimapa"),
+                            Box::new(ToggleMinimap),
+                            self.minimap_open && !self.schema.tables.is_empty(),
+                            !self.schema.tables.is_empty(),
+                            30.,
+                        ))
+                        .child(tool_btn(
                             "help-legend",
                             IconName::Info,
                             crate::i18n::t("Legenda"),
@@ -2692,7 +2773,196 @@ impl Diagram {
                 .into_any_element(),
         );
 
-        // Legenda acima da ilha de zoom.
+        let minimap_visible = self.minimap_open && !self.schema.tables.is_empty();
+        if minimap_visible && let Some((xf, vp_world)) = self.minimap_transform() {
+            self.minimap_xform.set(Some(xf));
+            let map_w = crate::canvas_geom::MINIMAP_W;
+            let map_h = crate::canvas_geom::MINIMAP_H;
+            let schema = &self.schema;
+            let dark = g.mode == Mode::Dark;
+            let mut mm_groups: Vec<(f32, f32, f32, f32, Hsla)> = Vec::new();
+            for gr in &schema.groups {
+                let members: Vec<_> = gr
+                    .tables
+                    .iter()
+                    .filter_map(|t| Some((self.pos.get(t)?, schema.table(t)?)))
+                    .collect();
+                if members.is_empty() {
+                    continue;
+                }
+                let (mut x0, mut y0, mut x1, mut y1) = (f32::MAX, f32::MAX, f32::MIN, f32::MIN);
+                for ((x, y), t) in &members {
+                    x0 = x0.min(*x);
+                    y0 = y0.min(*y);
+                    x1 = x1.max(x + CARD_W);
+                    y1 = y1.max(y + card_h(t.columns.len()));
+                }
+                let pad = GROUP_PAD - 8.;
+                let c = gr
+                    .color
+                    .as_deref()
+                    .and_then(hex)
+                    .unwrap_or_else(|| group_color(schema, &gr.name));
+                let (mx0, my0) = xf.world_to_map(x0 - pad, y0 - pad - 8.);
+                let (mx1, my1) = xf.world_to_map(x1 + pad, y1 + pad);
+                mm_groups.push((mx0, my0, (mx1 - mx0).max(2.), (my1 - my0).max(2.), c));
+            }
+            let mut mm_tables: Vec<(f32, f32, f32, f32, Hsla, bool)> =
+                Vec::with_capacity(schema.tables.len());
+            for t in &schema.tables {
+                let q = t.qualified_name();
+                let (x, y) = self
+                    .pos
+                    .get(&q)
+                    .copied()
+                    .unwrap_or(crate::constants::DEFAULT_CARD_POS);
+                let grp = schema.group_of(&q);
+                let tint = t
+                    .color
+                    .as_deref()
+                    .or_else(|| grp.and_then(|gr| gr.color.as_deref()))
+                    .and_then(hex)
+                    .or_else(|| grp.map(|gr| group_color(schema, &gr.name)))
+                    .unwrap_or(g.text_muted);
+                let (mx0, my0) = xf.world_to_map(x, y);
+                let (mx1, my1) = xf.world_to_map(x + CARD_W, y + card_h(t.columns.len()));
+                mm_tables.push((
+                    mx0,
+                    my0,
+                    (mx1 - mx0).max(3.),
+                    (my1 - my0).max(3.),
+                    tint,
+                    self.is_selected(&q),
+                ));
+            }
+            let mut mm_enums: Vec<(f32, f32, f32, f32)> = Vec::with_capacity(schema.enums.len());
+            for en in &schema.enums {
+                let key = enum_key(en);
+                if let Some(&(x, y)) = self.pos.get(&key) {
+                    let (mx0, my0) = xf.world_to_map(x, y);
+                    let (mx1, my1) = xf.world_to_map(x + ENUM_W, y + enum_h(en));
+                    mm_enums.push((mx0, my0, (mx1 - mx0).max(3.), (my1 - my0).max(3.)));
+                }
+            }
+            let (vp_left, vp_top) = xf.world_to_map(vp_world.0, vp_world.1);
+            let (vp_right, vp_bottom) =
+                xf.world_to_map(vp_world.0 + vp_world.2, vp_world.1 + vp_world.3);
+            let vp_rect = (
+                vp_left,
+                vp_top,
+                (vp_right - vp_left).max(8.),
+                (vp_bottom - vp_top).max(6.),
+            );
+            let accent = g.accent;
+            let muted = g.text_faint;
+            let entity = cx.entity();
+            out.push(
+                float(div().id("canvas-minimap"))
+                    .role(Role::Region)
+                    .aria_label(crate::i18n::t("Minimapa"))
+                    .absolute()
+                    .bottom(px(56.))
+                    .right(px(12.))
+                    .w(px(map_w))
+                    .h(px(map_h))
+                    .overflow_hidden()
+                    .cursor_pointer()
+                    .on_scroll_wheel(|_, _, cx| cx.stop_propagation())
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(move |this, e: &MouseDownEvent, window, cx| {
+                            cx.stop_propagation();
+                            this.interrupt_motion();
+                            window.focus(&this.focus, cx);
+                            let Some(origin) = this.minimap_origin.get() else {
+                                return;
+                            };
+                            let mx = f32::from(e.position.x - origin.x);
+                            let my = f32::from(e.position.y - origin.y);
+                            let inside_vp = mx >= vp_rect.0
+                                && mx <= vp_rect.0 + vp_rect.2
+                                && my >= vp_rect.1
+                                && my <= vp_rect.1 + vp_rect.3;
+                            let grab = if inside_vp {
+                                (
+                                    mx - (vp_rect.0 + vp_rect.2 * 0.5),
+                                    my - (vp_rect.1 + vp_rect.3 * 0.5),
+                                )
+                            } else {
+                                (0.0, 0.0)
+                            };
+                            if !inside_vp {
+                                this.pan_from_minimap(e.position, grab);
+                            }
+                            this.drag = Some(Drag::Minimap { grab });
+                            cx.notify();
+                        }),
+                    )
+                    .child(
+                        canvas(
+                            |_, _, _| (),
+                            move |bounds, (), window, cx| {
+                                entity.read(cx).minimap_origin.set(Some(bounds.origin));
+                                for &(x, y, w, h, c) in &mm_groups {
+                                    window.paint_quad(
+                                        fill(
+                                            Bounds::new(
+                                                bounds.origin + point(px(x), px(y)),
+                                                size(px(w), px(h)),
+                                            ),
+                                            c.opacity(if dark { 0.14 } else { 0.16 }),
+                                        )
+                                        .corner_radii(px(3.))
+                                        .border_widths(px(1.))
+                                        .border_color(c.opacity(0.35)),
+                                    );
+                                }
+                                for &(x, y, w, h) in &mm_enums {
+                                    window.paint_quad(
+                                        fill(
+                                            Bounds::new(
+                                                bounds.origin + point(px(x), px(y)),
+                                                size(px(w), px(h)),
+                                            ),
+                                            muted.opacity(0.45),
+                                        )
+                                        .corner_radii(px(2.)),
+                                    );
+                                }
+                                for &(x, y, w, h, c, sel) in &mm_tables {
+                                    window.paint_quad(
+                                        fill(
+                                            Bounds::new(
+                                                bounds.origin + point(px(x), px(y)),
+                                                size(px(w), px(h)),
+                                            ),
+                                            if sel { accent } else { c.opacity(0.75) },
+                                        )
+                                        .corner_radii(px(2.)),
+                                    );
+                                }
+                                window.paint_quad(
+                                    fill(
+                                        Bounds::new(
+                                            bounds.origin + point(px(vp_rect.0), px(vp_rect.1)),
+                                            size(px(vp_rect.2), px(vp_rect.3)),
+                                        ),
+                                        accent.opacity(0.14),
+                                    )
+                                    .corner_radii(px(3.))
+                                    .border_widths(px(1.5))
+                                    .border_color(accent),
+                                );
+                            },
+                        )
+                        .size_full(),
+                    )
+                    .into_any_element(),
+            );
+        }
+
+        // Legenda acima da ilha de zoom (ou acima do minimapa quando visível).
+        let legend_bottom = if minimap_visible { 202. } else { 56. };
         if legend_progress > 0. {
             let row = |swatch: AnyElement, text: &'static str| {
                 div()
@@ -2723,7 +2993,7 @@ impl Diagram {
             out.push(
                 float(div().id("canvas-legend"))
                     .absolute()
-                    .bottom(px(56. - 6. * (1. - legend_progress)))
+                    .bottom(px(legend_bottom - 6. * (1. - legend_progress)))
                     .opacity(legend_progress)
                     .right(px(12.))
                     .w(px(256.))

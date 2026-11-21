@@ -51,6 +51,7 @@ import {
 } from './glass';
 import { iconSvg, IconName } from './icons';
 import { ActionId, COLUMN_PRESET_ACTIONS, GROUP_EXPORT_CODE, GROUP_EXPORT_IMAGE, catalog } from './actions';
+import { MINIMAP_H, MINIMAP_PAD, MINIMAP_W, MinimapTransform, computeMinimapTransform, panForMapPoint, worldToMap } from './minimap';
 import { Language, connectionHint, diagnosticMessage, setLanguage, systemLanguage, t, t as translate } from './i18n';
 import { WORKBENCH_CSS } from './workbench-css';
 import { tokenizeLine, tableLineRange } from './dbml-highlight';
@@ -99,7 +100,7 @@ const ACTION_ICON: Partial<Record<ActionId, IconName>> = {
   NewFile: 'FilePlus', SaveFile: 'Save', ExportDbml: 'FileDown', ImportSqlDdl: 'FileInput', ConnectDatabase: 'Database',
   Undo: 'Undo2', Redo: 'Redo2', FormatDocument: 'WandSparkles', ShowFiles: 'Folder', ShowSchema: 'Table2',
   ShowProblems: 'TriangleAlert', ToggleTheme: 'SunMoon', ToggleEditor: 'Braces', ToggleSidebar: 'PanelLeft',
-  ToggleInspector: 'PanelRight', ToggleLegend: 'Info', ToolSelect: 'MousePointer2', ToolHand: 'Hand', FitView: 'Scan',
+  ToggleInspector: 'PanelRight', ToggleLegend: 'Info', ToggleMinimap: 'Frame', ToolSelect: 'MousePointer2', ToolHand: 'Hand', FitView: 'Scan',
   Relayout: 'LayoutGrid', ZoomIn: 'ZoomIn', ZoomOut: 'ZoomOut', Deselect: 'SquareDashed', NewTable: 'SquarePlus',
   NewEnum: 'List', DeleteSelection: 'Trash', RenameSelected: 'Pencil', GroupSelection: 'Group', UngroupSelection: 'Group',
   ExportSqlPostgres: 'Database', ExportSqlMysql: 'Database', ExportSqlSqlite: 'Database', ExportSqlSqlServer: 'Database',
@@ -138,6 +139,7 @@ interface Prefs {
   inspector: boolean;
   sidebar: boolean;
   legend: boolean;
+  minimap: boolean;
 }
 
 function loadPrefs(): Prefs {
@@ -150,6 +152,7 @@ function loadPrefs(): Prefs {
     inspector: true,
     sidebar: true,
     legend: false,
+    minimap: true,
   };
   try {
     const { glass: _legacyGlass, glassLevel: _legacyLevel, translucent_cards: _legacyCards, ...saved } = JSON.parse(localStorage.getItem('dbmodeling.prefs') || '{}');
@@ -251,6 +254,9 @@ export class Workbench {
   private focusMode = false;
   private focusDepth: 1 | 2 = 1;
   private highlightedColumn: [string, string] | null = null;
+  private minimapXform: MinimapTransform | null = null;
+  private minimapVpRect: { x: number; y: number; w: number; h: number } | null = null;
+  private minimapDrag: { grabX: number; grabY: number } | null = null;
   private connectEngine: DbEngine = 'postgres';
   private importDialect: ImportDialect = 'postgres';
   private focusCol: [string, string] | null = null;
@@ -355,6 +361,7 @@ export class Workbench {
           </div>
           <div class="island tools ui" id="tools" role="toolbar" aria-label="${t('Ferramentas')}"></div>
           <div class="island zoomi ui" id="zoomi"></div>
+          <div class="minimap ui" id="minimap" role="region" aria-label="${t('Minimapa')}"></div>
           <div class="legend ui" id="legend"></div>
         </div>
         <button type="button" class="panel-resize" data-resize="right"></button>
@@ -366,7 +373,7 @@ export class Workbench {
     this.root.appendChild(this.wb);
     for (const id of [
       'titlebar', 'rail-left', 'sidebar', 'editor', 'surface', 'world', 'marquee', 'empty', 'tools', 'zoomi',
-      'legend', 'inspector', 'status', 'toast', 'live', 'code', 'ed-head', 'ebd', 'ebd-in',
+      'minimap', 'legend', 'inspector', 'status', 'toast', 'live', 'code', 'ed-head', 'ebd', 'ebd-in',
     ]) {
       this.els[id] = this.wb.querySelector('#' + id) as HTMLElement;
     }
@@ -1252,6 +1259,7 @@ export class Workbench {
   private applyCamera(): void {
     this.els['world'].style.transform = `translate(${this.pan.x}px, ${this.pan.y}px) scale(${this.zoom})`;
     this.els['surface'].style.backgroundPosition = `${this.pan.x}px ${this.pan.y}px`;
+    this.renderMinimap();
   }
 
   private renderAll(mask: number = Dirty.All): void {
@@ -1653,7 +1661,90 @@ export class Workbench {
       <span class="zsep"></span>
       <button class="zbtn" data-act="FitView" title="${t("Ajustar à tela · Shift+1")}">${ICON('Scan', 13)}</button>
       <span class="zsep"></span>
+      <button class="zbtn ${this.prefs.minimap && this.schema.tables.length > 0 ? 'acc' : ''}" data-act="ToggleMinimap" title="${t("Minimapa · M")}">${ICON('Frame', 13)}</button>
       <button class="zbtn ${this.prefs.legend ? 'acc' : ''}" data-act="ToggleLegend" title="${t("Legenda · Ctrl+Shift+L")}">${ICON('Info', 13)}</button>`;
+    this.renderMinimap();
+  }
+
+  private renderMinimap(): void {
+    const el = this.els['minimap'];
+    if (!el) return;
+    const visible = this.prefs.minimap && this.schema.tables.length > 0 && !!this.scene;
+    el.style.display = visible ? 'block' : 'none';
+    const leg = this.els['legend'];
+    if (leg) leg.style.bottom = visible ? '202px' : '56px';
+    if (!visible || !this.scene) {
+      this.minimapXform = null;
+      this.minimapVpRect = null;
+      return;
+    }
+    const g = getGlass(this.prefs.mode, 1, this.prefs.translucent);
+    const dark = this.prefs.mode === 'dark';
+    const r = this.els['surface'].getBoundingClientRect();
+    const vw = Math.max(1, r.width || this.viewport?.x || 800);
+    const vh = Math.max(1, r.height || this.viewport?.y || 600);
+    const vpX = -this.pan.x / this.zoom;
+    const vpY = -this.pan.y / this.zoom;
+    const vpW = vw / this.zoom;
+    const vpH = vh / this.zoom;
+    let minX = vpX, minY = vpY, maxX = vpX + vpW, maxY = vpY + vpH;
+    for (const tv of this.scene.tables) {
+      const p = this.positions[tv.name];
+      if (!p) continue;
+      minX = Math.min(minX, p.x);
+      minY = Math.min(minY, p.y);
+      maxX = Math.max(maxX, p.x + CARD_W);
+      maxY = Math.max(maxY, p.y + tv.h);
+    }
+    for (const ev of this.scene.enums || []) {
+      const p = this.positions[`enum:${ev.name}`] || ev;
+      minX = Math.min(minX, p.x);
+      minY = Math.min(minY, p.y);
+      maxX = Math.max(maxX, p.x + ev.w);
+      maxY = Math.max(maxY, p.y + ev.h);
+    }
+    const margin = 40;
+    const xf = computeMinimapTransform(minX - margin, minY - margin, maxX + margin, maxY + margin, MINIMAP_W, MINIMAP_H, MINIMAP_PAD);
+    this.minimapXform = xf;
+    const sel = new Set(this.selection);
+    let svg = '';
+    for (const gr of canvasGroups(this.scene.groups, this.schema, this.positions)) {
+      const a = worldToMap(xf, gr.x, gr.y);
+      const b = worldToMap(xf, gr.x + gr.w, gr.y + gr.h);
+      svg += `<rect x="${a.x.toFixed(1)}" y="${a.y.toFixed(1)}" width="${Math.max(2, b.x - a.x).toFixed(1)}" height="${Math.max(2, b.y - a.y).toFixed(1)}" rx="3" fill="${hexWithAlpha(gr.color, dark ? 0.14 : 0.16)}" stroke="${hexWithAlpha(gr.color, 0.35)}" stroke-width="1"/>`;
+    }
+    for (const ev of this.scene.enums || []) {
+      const p = this.positions[`enum:${ev.name}`] || ev;
+      const a = worldToMap(xf, p.x, p.y);
+      const b = worldToMap(xf, p.x + ev.w, p.y + ev.h);
+      svg += `<rect x="${a.x.toFixed(1)}" y="${a.y.toFixed(1)}" width="${Math.max(3, b.x - a.x).toFixed(1)}" height="${Math.max(3, b.y - a.y).toFixed(1)}" rx="2" fill="${g.textFaint}" fill-opacity="0.45"/>`;
+    }
+    for (const tv of this.scene.tables) {
+      const p = this.positions[tv.name];
+      if (!p) continue;
+      const a = worldToMap(xf, p.x, p.y);
+      const b = worldToMap(xf, p.x + CARD_W, p.y + tv.h);
+      const isSel = sel.has(tv.name);
+      const fill = isSel ? g.accent : (tv.tint || g.textMuted);
+      svg += `<rect x="${a.x.toFixed(1)}" y="${a.y.toFixed(1)}" width="${Math.max(3, b.x - a.x).toFixed(1)}" height="${Math.max(3, b.y - a.y).toFixed(1)}" rx="2" fill="${fill}" fill-opacity="${isSel ? 1 : 0.75}"/>`;
+    }
+    const va = worldToMap(xf, vpX, vpY);
+    const vb = worldToMap(xf, vpX + vpW, vpY + vpH);
+    const vr = { x: va.x, y: va.y, w: Math.max(8, vb.x - va.x), h: Math.max(6, vb.y - va.y) };
+    this.minimapVpRect = vr;
+    svg += `<rect x="${vr.x.toFixed(1)}" y="${vr.y.toFixed(1)}" width="${vr.w.toFixed(1)}" height="${vr.h.toFixed(1)}" rx="3" fill="${hexWithAlpha(g.accent, 0.14)}" stroke="${g.accent}" stroke-width="1.5"/>`;
+    el.innerHTML = `<svg viewBox="0 0 ${MINIMAP_W} ${MINIMAP_H}" aria-hidden="true">${svg}</svg>`;
+  }
+
+  private panFromMinimap(clientX: number, clientY: number, grabX: number, grabY: number): void {
+    const el = this.els['minimap'];
+    if (!el || !this.minimapXform) return;
+    const mr = el.getBoundingClientRect();
+    const mx = ((clientX - mr.left) / Math.max(1, mr.width)) * MINIMAP_W - grabX;
+    const my = ((clientY - mr.top) / Math.max(1, mr.height)) * MINIMAP_H - grabY;
+    const sr = this.els['surface'].getBoundingClientRect();
+    this.pan = panForMapPoint(this.minimapXform, mx, my, this.zoom, sr.width || 800, sr.height || 600);
+    this.applyCamera();
   }
 
   private renderLegend(): void {
@@ -2315,6 +2406,7 @@ export class Workbench {
         return;
       case 'ToggleInspector': this.prefs.inspector = !this.prefs.inspector; break;
       case 'ToggleLegend': this.prefs.legend = !this.prefs.legend; break;
+      case 'ToggleMinimap': this.prefs.minimap = !this.prefs.minimap; break;
       case 'FitView': this.glide(() => this.fit()); return;
       case 'Relayout': this.relayout(true); return;
       case 'ZoomIn': case 'ZoomOut': {
@@ -3270,6 +3362,32 @@ export class Workbench {
     });
     const surf = this.els['surface'];
     surf.addEventListener('mousedown', (e) => this.onDown(e));
+    const mm = this.els['minimap'];
+    mm.addEventListener('wheel', (e) => { e.stopPropagation(); e.preventDefault(); }, { passive: false });
+    mm.addEventListener('mousedown', (e) => {
+      if (e.button !== 0 || !this.minimapXform || !this.minimapVpRect) return;
+      e.stopPropagation();
+      e.preventDefault();
+      this.stopTween();
+      const mr = mm.getBoundingClientRect();
+      const mx = ((e.clientX - mr.left) / Math.max(1, mr.width)) * MINIMAP_W;
+      const my = ((e.clientY - mr.top) / Math.max(1, mr.height)) * MINIMAP_H;
+      const vr = this.minimapVpRect;
+      const inside = mx >= vr.x && mx <= vr.x + vr.w && my >= vr.y && my <= vr.y + vr.h;
+      const grabX = inside ? mx - (vr.x + vr.w * 0.5) : 0;
+      const grabY = inside ? my - (vr.y + vr.h * 0.5) : 0;
+      this.minimapDrag = { grabX, grabY };
+      if (!inside) this.panFromMinimap(e.clientX, e.clientY, 0, 0);
+    });
+    window.addEventListener('mousemove', (e) => {
+      if (!this.minimapDrag) return;
+      this.panFromMinimap(e.clientX, e.clientY, this.minimapDrag.grabX, this.minimapDrag.grabY);
+    }, { signal: this.abort.signal });
+    window.addEventListener('mouseup', () => {
+      if (!this.minimapDrag) return;
+      this.minimapDrag = null;
+      this.queueSaveLayout();
+    }, { signal: this.abort.signal });
     surf.addEventListener('contextmenu', (e) => {
       const hit = (e.target as Element).closest('[data-edge]') as HTMLElement | null;
       if (!hit) return;

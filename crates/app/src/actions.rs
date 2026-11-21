@@ -32,6 +32,7 @@ actions!(
         ToggleSidebar,
         ToggleInspector,
         ToggleLegend,
+        ToggleMinimap,
         FitView,
         Relayout,
         ZoomIn,
@@ -177,6 +178,7 @@ pub fn catalog() -> Vec<Entry> {
         e("ctrl-b", ToggleSidebar, "Exibir", "Alternar painel lateral"),
         e("ctrl-i", ToggleInspector, "Exibir", "Alternar inspector"),
         e("ctrl-shift-l", ToggleLegend, "Exibir", "Alternar legenda"),
+        e("m", ToggleMinimap, "Canvas", "Alternar minimapa"),
         e(
             "ctrl-alt-0",
             ResetPanels,

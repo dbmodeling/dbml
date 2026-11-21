@@ -4451,6 +4451,10 @@ impl Shell {
         self.with_diagram(cx, |d| d.legend_open = !d.legend_open);
     }
 
+    fn toggle_minimap(&mut self, _: &ToggleMinimap, _: &mut Window, cx: &mut Context<Self>) {
+        self.with_diagram(cx, |d| d.minimap_open = !d.minimap_open);
+    }
+
     fn fit(&mut self, _: &FitView, _: &mut Window, cx: &mut Context<Self>) {
         self.with_diagram(cx, super::canvas::Diagram::fit);
     }
@@ -4686,6 +4690,7 @@ pub fn register_global_actions(win: AnyWindowHandle, shell: &Entity<Shell>, cx: 
         ToggleSidebar => toggle_sidebar,
         ToggleInspector => toggle_inspector,
         ToggleLegend => toggle_legend,
+        ToggleMinimap => toggle_minimap,
         FitView => fit,
         Relayout => relayout,
         ZoomIn => zoom_in,
@@ -5000,6 +5005,7 @@ impl Render for Shell {
             .on_action(cx.listener(Self::toggle_sidebar))
             .on_action(cx.listener(Self::toggle_inspector))
             .on_action(cx.listener(Self::toggle_legend))
+            .on_action(cx.listener(Self::toggle_minimap))
             .on_action(cx.listener(Self::fit))
             .on_action(cx.listener(Self::relayout))
             .on_action(cx.listener(Self::zoom_in))
@@ -5157,6 +5163,7 @@ mod tests {
             "Self::open_quick_search",
             "Self::toggle_focus_mode",
             "Self::cycle_focus_depth",
+            "Self::toggle_minimap",
             "Self::export_png",
             "Self::export_jpeg",
             "Self::export_svg",

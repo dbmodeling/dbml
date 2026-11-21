@@ -21,6 +21,7 @@ export type ActionId =
   | 'ToggleSidebar'
   | 'ToggleInspector'
   | 'ToggleLegend'
+  | 'ToggleMinimap'
   | 'FitView'
   | 'Relayout'
   | 'ZoomIn'
@@ -129,6 +130,7 @@ export function catalog(): ActionEntry[] {
     e('ctrl-b', ['Ctrl', 'B'], 'ToggleSidebar', 'Exibir', 'Alternar barra lateral'),
     e('ctrl-i', ['Ctrl', 'I'], 'ToggleInspector', 'Exibir', 'Alternar inspetor'),
     e('ctrl-shift-l', ['Ctrl', 'Shift', 'L'], 'ToggleLegend', 'Exibir', 'Alternar legenda'),
+    e('m', ['M'], 'ToggleMinimap', 'Canvas', 'Alternar minimapa'),
     e('v', ['V'], 'ToolSelect', 'Canvas', 'Ferramenta Selecionar'),
     e('h', ['H'], 'ToolHand', 'Canvas', 'Ferramenta Mão (mover a vista)'),
     e('shift-1', ['Shift', '1'], 'FitView', 'Canvas', 'Ajustar à tela'),
