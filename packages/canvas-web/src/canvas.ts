@@ -4,7 +4,7 @@
  * em Canvas 2D foi substituída por `workbench.ts`.
  */
 
-import { HostTransport } from './types';
+import { HostTransport, WasmApi } from './types';
 import { Workbench, mountWorkbench } from './workbench';
 
 const NOOP_TRANSPORT: HostTransport = {
@@ -16,7 +16,12 @@ const NOOP_TRANSPORT: HostTransport = {
 export class DbModelingCanvas {
   public readonly workbench: Workbench;
 
-  constructor(container: HTMLElement, transport: HostTransport = NOOP_TRANSPORT, wasm?: any) {
+  constructor(container: HTMLElement, transport: HostTransport = NOOP_TRANSPORT, wasm?: WasmApi) {
     this.workbench = mountWorkbench(container, transport, wasm);
+  }
+
+  /** Desmonta o workbench (listeners, timers, DOM). Quem criou o transporte chama `transport.close()`. */
+  public destroy(): void {
+    this.workbench.destroy();
   }
 }

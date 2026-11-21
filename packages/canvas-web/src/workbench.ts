@@ -12,6 +12,9 @@ import {
   Schema,
   SceneGeometry,
   SidecarLayout,
+  ConnectionState,
+  IntrospectRequest,
+  WasmApi,
   EdgeStyle,
   edgeKey,
   TextPatch,
@@ -44,7 +47,7 @@ import { curvedEdge, edgeDrawing } from './edge-path';
 import { MOTION, actSelector, cssQ, easeOut, lerp, noMotion } from './motion';
 import { exportToMermaid, exportToSvg, exportSvgStringToRasterBlob } from './export';
 import { canvasGridStep, canvasGroups } from './scene-style';
-import { ConnectDbModel, DB_ENGINES, DbEngine, buildRequest } from './connect-db';
+import { ConnectDbModel, DB_ENGINES, DbEngine, INTROSPECT_TIMEOUT_MS, IntrospectGuard, buildRequest } from './connect-db';
 import { IMPORT_DIALECTS, ImportDialect, ImportSqlModel, ImportSqlResult } from './import-sql';
 
 type Pt = { x: number; y: number };
@@ -60,6 +63,13 @@ type Drag =
 
 const esc = (s: string): string =>
   String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+/** Trap do Wasm (`panic = "abort"` vira `RuntimeError: unreachable`): a instância não é mais confiável. */
+export function isFatalWasmError(e: unknown): boolean {
+  if (typeof WebAssembly !== 'undefined' && e instanceof WebAssembly.RuntimeError) return true;
+  const message = e instanceof Error ? e.message : '';
+  return /^(unreachable|memory access out of bounds|recursive use of an object)/i.test(message);
+}
+const errorMessage = (e: unknown): string => (e instanceof Error ? e.message : String(e));
 const ICON = (n: IconName, s = 16, c = 'currentColor'): string => iconSvg(n, s, c);
 const IDENT = /^[\p{L}\p{N}_]+$/u;
 const UI_STEPS = [1, 1.15, 1.3];
@@ -140,7 +150,7 @@ export class Workbench {
   private root: HTMLElement;
   private wb!: HTMLElement;
   private transport: HostTransport;
-  private wasm: any;
+  private wasm: WasmApi | undefined;
 
   private source = '';
   private savedSource = '';
@@ -150,6 +160,7 @@ export class Workbench {
   private patchQueue: Promise<void> = Promise.resolve();
   private patchError: Error | null = null;
   private autosave = true;
+  private connection: ConnectionState = 'online';
   private autosaveTimer?: number;
   private title = 'example.dbml';
   private files: WorkspaceFileEntry[] = [];
@@ -221,23 +232,40 @@ export class Workbench {
   private menuSub = 'Arquivo';
   private saveTimer: number | null = null;
   private raf: number | null = null;
+  /** Cancela todos os listeners globais (window) no `destroy()`. */
+  private readonly abort = new AbortController();
+  private destroyed = false;
+  /** Algo além da câmera mudou desde o último quadro. */
+  private fullDirty = false;
+  private announcedSelection = '';
+  /** O Wasm sofreu um trap: nenhuma outra chamada é feita até recarregar a página. */
+  private engineFailed = false;
+  private styleEl: HTMLStyleElement | null = null;
+  private resizeObserver: ResizeObserver | null = null;
 
   private els: Record<string, HTMLElement> = {};
 
-  constructor(root: HTMLElement, transport: HostTransport, wasm?: any) {
+  constructor(root: HTMLElement, transport: HostTransport, wasm?: WasmApi) {
     setLanguage(this.prefs.lang);
     this.root = root;
     this.transport = transport;
-    this.wasm = wasm || (window as any).DbModelingParser;
+    this.wasm = wasm || (window as unknown as { DbModelingParser?: WasmApi }).DbModelingParser;
     this.build();
     this.bind();
-    transport.onDocumentUpdated((src, layout, meta) => this.setDocument(src, layout, meta));
+    transport.onDocumentUpdated((src, layout, meta) => { if (!this.destroyed) this.setDocument(src, layout, meta); });
     // edição fora do app (outro editor, git checkout): a CLI avisa via `external_change`
     transport.onFileChangedExternally?.((src, documentId) => {
+      if (this.destroyed) return;
       if (documentId && documentId !== this.documentId) return;
       this.setDocument(src, undefined, { saved: true, documentId });
     });
+    transport.onConnectionChange?.((state) => {
+      if (this.destroyed) return;
+      this.connection = state;
+      this.renderStatus();
+    });
     transport.onWorkspaceFilesUpdated?.((files, title) => {
+      if (this.destroyed) return;
       this.files = files;
       if (title) this.title = title;
       this.renderChrome();
@@ -250,20 +278,21 @@ export class Workbench {
     const style = document.createElement('style');
     style.textContent = WORKBENCH_CSS;
     document.head.appendChild(style);
+    this.styleEl = style;
     this.root.innerHTML = '';
     this.wb = document.createElement('div');
     this.wb.className = 'wb';
     this.wb.innerHTML = `
-      <div class="titlebar ui" id="titlebar"></div>
+      <div class="titlebar ui" id="titlebar" role="toolbar" aria-label="${t('Barra de título')}"></div>
       <div class="main">
-        <div class="rail left ui" id="rail-left"></div>
-        <div class="sidebar ui" id="sidebar"></div>
-        <div class="editor ui" id="editor">
+        <div class="rail left ui" id="rail-left" role="toolbar" aria-orientation="vertical" aria-label="${t('Painéis')}"></div>
+        <div class="sidebar ui" id="sidebar" role="region" aria-label="${t('Painel lateral')}"></div>
+        <div class="editor ui" id="editor" role="region" aria-label="${t('Editor DBML')}">
           <div class="eh" id="ed-head"></div>
           <div class="ebody"><div class="ebd" id="ebd"><div class="ebd-in" id="ebd-in"></div></div><textarea class="code" id="code" aria-label="DBML" spellcheck="false" wrap="off"></textarea></div>
         </div>
         <button type="button" class="panel-resize" data-resize="left"></button>
-        <div class="surface" id="surface" tabindex="0">
+        <div class="surface" id="surface" tabindex="0" role="region" aria-label="${t('Diagrama')}">
           <div class="world" id="world"></div>
           <div class="marquee" id="marquee"></div>
           <div class="empty" id="empty">
@@ -280,19 +309,20 @@ export class Workbench {
               </div>
             </div>
           </div>
-          <div class="island tools ui" id="tools"></div>
+          <div class="island tools ui" id="tools" role="toolbar" aria-label="${t('Ferramentas')}"></div>
           <div class="island zoomi ui" id="zoomi"></div>
           <div class="legend ui" id="legend"></div>
         </div>
         <button type="button" class="panel-resize" data-resize="right"></button>
-        <div class="inspector ui" id="inspector"></div>
+        <div class="inspector ui" id="inspector" role="region" aria-label="${t('Inspetor')}"></div>
       </div>
       <div class="status ui" id="status"></div>
-      <div class="toast" id="toast" role="status"></div>`;
+      <div class="toast" id="toast" role="status"></div>
+      <div class="sr-only" id="live" role="status" aria-live="polite" aria-atomic="true"></div>`;
     this.root.appendChild(this.wb);
     for (const id of [
       'titlebar', 'rail-left', 'sidebar', 'editor', 'surface', 'world', 'marquee', 'empty', 'tools', 'zoomi',
-      'legend', 'inspector', 'status', 'toast', 'code', 'ed-head', 'ebd', 'ebd-in',
+      'legend', 'inspector', 'status', 'toast', 'live', 'code', 'ed-head', 'ebd', 'ebd-in',
     ]) {
       this.els[id] = this.wb.querySelector('#' + id) as HTMLElement;
     }
@@ -459,13 +489,25 @@ export class Workbench {
     this.renderAll();
   }
 
+  /** Registra a falha de uma chamada ao Wasm; se for fatal, avisa o usuário uma única vez. */
+  private wasmFailed(context: string, e: unknown): boolean {
+    console.error(`Error in ${context}:`, e);
+    if (!isFatalWasmError(e)) return false;
+    if (!this.engineFailed) {
+      this.engineFailed = true;
+      this.toast(t('O motor de análise falhou. Exporte o DBML e recarregue a página para continuar.'));
+      this.renderStatus();
+    }
+    return true;
+  }
+
   private reanalyze(): void {
-    if (!this.wasm) return;
+    if (!this.wasm || this.engineFailed) return;
     try {
       const r = this.wasm.parse_and_analyze(this.source);
       const hasError = (r.diagnostics as Diagnostic[]).some((d) => d.severity === 'error');
       this.diags = r.diagnostics;
-      (this.transport as any).sendDiagnostics?.(this.diags);
+      this.transport.sendDiagnostics?.(this.diags);
       this.enums = r.enums || [];
       // mantém o último esquema válido durante a digitação para não piscar o Empty State
       if (hasError && r.schema.tables.length === 0 && this.lastValid) {
@@ -475,14 +517,14 @@ export class Workbench {
         if (!hasError || r.schema.tables.length > 0) this.lastValid = r.schema;
       }
     } catch (e) {
-      console.error('Error analyzing DBML via Wasm:', e);
+      this.wasmFailed('analyzing DBML via Wasm', e);
     }
     this.selection = this.selection.filter((n) => this.schema.tables.some((t) => qualifiedTableName(t) === n));
     this.computeScene();
   }
 
   private computeScene(): void {
-    if (!this.wasm) return;
+    if (!this.wasm || this.engineFailed) return;
     const known: Record<string, Pt> = {};
     for (const t of this.schema.tables) {
       const qname = qualifiedTableName(t);
@@ -499,7 +541,7 @@ export class Workbench {
         if (!this.positions[k]) this.positions[k] = this.scene!.positions[k];
       }
     } catch (e) {
-      console.error('Error in compute_scene:', e);
+      this.wasmFailed('compute_scene', e);
     }
     this.pendingNew = null;
   }
@@ -685,7 +727,7 @@ export class Workbench {
   }
 
   private dispatch(cmd: Command): TextPatch | null {
-    if (!this.wasm) return null;
+    if (!this.wasm || this.engineFailed) return null;
     try {
       const before = this.captureSnapshot();
       const patch: TextPatch = this.wasm.apply_command(this.source, cmd);
@@ -734,14 +776,14 @@ export class Workbench {
       if (patch.should_relayout) this.relayout(false, false);
       this.scheduleRender();
       return patch;
-    } catch (e: any) {
-      this.toast(String(e?.message || e));
+    } catch (e) {
+      if (!this.wasmFailed('apply_command', e)) this.toast(errorMessage(e));
       return null;
     }
   }
 
   private relayout(fit = true, recordHistory = true): void {
-    if (!this.wasm) return;
+    if (!this.wasm || this.engineFailed) return;
     try {
       if (recordHistory) this.pushHistory();
       const r = this.wasm.compute_layout(this.source, {});
@@ -752,7 +794,7 @@ export class Workbench {
       });
       this.queueSaveLayout();
     } catch (e) {
-      console.error('Error in auto-layout:', e);
+      this.wasmFailed('auto-layout', e);
     }
   }
 
@@ -1006,12 +1048,33 @@ export class Workbench {
 
   // ───────────────────────── renderização ─────────────────────────
 
+  /** Pedido de render completo (cromo + mundo); vence qualquer pedido só de câmera do mesmo quadro. */
   private scheduleRender(): void {
+    if (this.destroyed) return;
+    this.fullDirty = true;
+    this.requestFrame();
+  }
+
+  /** Pan: muda só o transform do mundo e o fundo em grade, sem refazer o DOM (#108). */
+  private scheduleCamera(): void {
+    if (this.destroyed) return;
+    this.requestFrame();
+  }
+
+  private requestFrame(): void {
     if (this.raf !== null) return;
     this.raf = requestAnimationFrame(() => {
       this.raf = null;
-      this.renderAll();
+      const full = this.fullDirty;
+      this.fullDirty = false;
+      if (full) this.renderAll();
+      else this.applyCamera();
     });
+  }
+
+  private applyCamera(): void {
+    this.els['world'].style.transform = `translate(${this.pan.x}px, ${this.pan.y}px) scale(${this.zoom})`;
+    this.els['surface'].style.backgroundPosition = `${this.pan.x}px ${this.pan.y}px`;
   }
 
   private renderAll(): void {
@@ -1092,7 +1155,7 @@ export class Workbench {
   private renderWorld(): void {
     const sc = this.scene;
     const w = this.els['world'];
-    w.style.transform = `translate(${this.pan.x}px, ${this.pan.y}px) scale(${this.zoom})`;
+    this.applyCamera();
     // grade de pontos adaptativa (24px no zoom 100%)
     const g = getGlass(this.prefs.mode, 1, this.prefs.translucent);
     const dark = this.prefs.mode === 'dark';
@@ -1100,7 +1163,6 @@ export class Workbench {
     const s = this.els['surface'];
     s.style.backgroundImage = `radial-gradient(${g.grid} 1px, transparent 1.2px)`;
     s.style.backgroundSize = `${step}px ${step}px`;
-    s.style.backgroundPosition = `${this.pan.x}px ${this.pan.y}px`;
     // cursor da ação em curso: vale sobre cartões e linhas também (CSS `data-cursor`)
     const k = this.drag?.kind;
     const cur = k === 'marquee' || k === 'link' ? 'crosshair'
@@ -1150,11 +1212,11 @@ export class Workbench {
         svg += `<path d="M ${p.x + CARD_W} ${ay} L ${d.now.x} ${d.now.y}" stroke="${g.accent}" stroke-width="2" stroke-dasharray="6 4" fill="none"/><circle cx="${d.now.x}" cy="${d.now.y}" r="5" fill="${g.accent}"/>`;
       }
     }
-    let html = `<svg class="edges">${svg}</svg>`;
+    let html = `<svg class="edges" aria-hidden="true">${svg}</svg>`;
     // molduras de grupo
     for (const gr of canvasGroups(sc.groups, this.schema, this.positions)) {
       const c = gr.color;
-      html += `<div class="group" style="left:${gr.x}px;top:${gr.y}px;width:${gr.w}px;height:${gr.h}px;border-color:${hexWithAlpha(c, dark ? 0.18 : 0.22)};background:${hexWithAlpha(c, dark ? 0.06 : 0.07)}">
+      html += `<div class="group" role="group" aria-label="${esc(translate('Grupo {}', gr.name))}" style="left:${gr.x}px;top:${gr.y}px;width:${gr.w}px;height:${gr.h}px;border-color:${hexWithAlpha(c, dark ? 0.18 : 0.22)};background:${hexWithAlpha(c, dark ? 0.06 : 0.07)}">
         <div class="gl" data-group="${esc(gr.name)}" style="color:${c}">${ICON('Layers', 13)}${esc(gr.name)}<span class="gpill" style="background:${hexWithAlpha(c, 0.14)}">${gr.count}</span></div></div>`;
     }
     // cartões
@@ -1186,16 +1248,18 @@ export class Workbench {
             c.not_null ? '<span class="badge">NN</span>' : '',
             c.unique ? '<span class="badge">UQ</span>' : '',
           ].join('');
-          return `<div class="row" data-col="${esc(c.name)}" data-table="${esc(qname)}"><div class="rail14">${ic}</div>
+          const rowLabel = [`${c.name}: ${c.ty}`, c.pk ? translate('chave primária') : '', isFk ? translate('chave estrangeira') : '', c.not_null ? translate('obrigatória') : '', c.unique ? translate('única') : ''].filter(Boolean).join(', ');
+          return `<div class="row" role="listitem" aria-label="${esc(rowLabel)}" data-col="${esc(c.name)}" data-table="${esc(qname)}"><div class="rail14">${ic}</div>
             <div class="cn ${c.pk ? 'pk' : ''}">${esc(c.name)}</div>${badges}<div class="ty">${esc(c.ty)}</div>
             <div class="port" data-port="1" data-table="${esc(qname)}" data-col="${esc(c.name)}"></div></div>`;
         })
         .join('');
       const schemaBadge = t.schema ? `<span class="sch">${esc(t.schema)}</span>` : '';
-      html += `<div class="card ${sel.has(qname) ? 'sel' : ''}" data-table="${esc(qname)}" style="left:${p.x}px;top:${p.y}px;height:${cardH(t.columns.length)}px">
+      const cardLabel = translate(t.columns.length === 1 ? 'Tabela {}, 1 coluna' : 'Tabela {}, {} colunas', qname, t.columns.length) + (sel.has(qname) ? `, ${translate('selecionada')}` : '');
+      html += `<div class="card ${sel.has(qname) ? 'sel' : ''}" role="group" tabindex="0" aria-label="${esc(cardLabel)}" data-table="${esc(qname)}" style="left:${p.x}px;top:${p.y}px;height:${cardH(t.columns.length)}px">
         <div class="head"><span style="color:${tint || g.accent};display:flex">${ICON('Table2', 14)}</span>
         <div class="nm">${esc(t.name)}</div>${schemaBadge}<div class="cnt">${t.columns.length}</div></div>
-        <div class="rows">${rows}</div>
+        <div class="rows" role="list">${rows}</div>
         <div class="plus" data-addcol="${esc(qname)}" title="${translate("Adicionar coluna")}">${ICON('Plus', 14)}</div></div>`;
     }
     // enums
@@ -1204,14 +1268,23 @@ export class Workbench {
       const on = this.selectedEnum === ev.name;
       const referencedBySelected = !on && ev.referenced_by.some((tb) => sel.has(tb));
       const valRows = ev.values.length
-        ? ev.values.map((v) => `<div class="ev"><span class="ev-ic">${ICON('Dot', 12)}</span>${esc(v)}</div>`).join('')
-        : `<div class="ev" style="color:var(--faint)">${translate("(vazio)")}</div>`;
-      html += `<div class="card enum-card ${on ? 'sel' : ''}" data-enum="${esc(ev.name)}" style="left:${p.x}px;top:${p.y}px;${referencedBySelected ? 'border-color:var(--accent);' : ''}">
+        ? ev.values.map((v) => `<div class="ev" role="listitem"><span class="ev-ic">${ICON('Dot', 12)}</span>${esc(v)}</div>`).join('')
+        : `<div class="ev" role="listitem" style="color:var(--faint)">${translate("(vazio)")}</div>`;
+      const enumLabel = translate(ev.values.length === 1 ? 'Enum {}, 1 valor' : 'Enum {}, {} valores', ev.name, ev.values.length) + (on ? `, ${translate('selecionada')}` : '');
+      html += `<div class="card enum-card ${on ? 'sel' : ''}" role="group" tabindex="0" aria-label="${esc(enumLabel)}" data-enum="${esc(ev.name)}" style="left:${p.x}px;top:${p.y}px;${referencedBySelected ? 'border-color:var(--accent);' : ''}">
         <div class="head"><span style="color:var(--accent);display:flex">${ICON('List', 14)}</span>
         <div class="nm">${esc(ev.name)}</div><span class="tag">ENUM</span></div>
-        <div class="rows">${valRows}</div></div>`;
+        <div class="rows" role="list">${valRows}</div></div>`;
     }
+    const focused = document.activeElement instanceof HTMLElement && w.contains(document.activeElement)
+      ? document.activeElement.closest<HTMLElement>('.card')
+      : null;
+    const focusKey = focused?.dataset.table !== undefined
+      ? `[data-table="${cssQ(focused.dataset.table)}"]`
+      : focused?.dataset.enum !== undefined ? `[data-enum="${cssQ(focused.dataset.enum)}"]` : null;
     w.innerHTML = html;
+    if (focusKey) w.querySelector<HTMLElement>(`.card${focusKey}`)?.focus({ preventScroll: true });
+    this.announceSelection();
     // cartões excluídos somem aos poucos (clones fora do fluxo de eventos)
     const now = performance.now();
     this.ghosts = this.ghosts.filter((gh) => now - gh.t0 < MOTION.base);
@@ -1222,6 +1295,23 @@ export class Workbench {
     }
     this.applyFx();
     this.drawMarquee();
+  }
+
+  /** Texto para leitores de tela (região `aria-live` polida); só repete se o texto mudar. */
+  private announce(msg: string): void {
+    const live = this.els['live'];
+    if (live && live.textContent !== msg) live.textContent = msg;
+  }
+
+  private announceSelection(): void {
+    const names = [...this.selection, ...(this.selectedEnum ? [this.selectedEnum] : [])];
+    const signature = names.join('\u0000');
+    if (signature === this.announcedSelection) return;
+    this.announcedSelection = signature;
+    if (!names.length) return;
+    this.announce(names.length === 1
+      ? translate('{} selecionada', names[0])
+      : translate('{} itens selecionados', names.length));
   }
 
   /** Só o retângulo: no arrasto do marquee não refaz o mundo (custava ~70ms/evento com 150 tabelas). */
@@ -1368,6 +1458,19 @@ export class Workbench {
     return translate("Clique em uma tabela para inspecionar · arraste o fundo para selecionar · role para mover · Ctrl+role para zoom");
   }
 
+  private engineHtml(): string {
+    if (!this.engineFailed) return '';
+    return `<span class="stat" role="status" data-engine-failed style="color:var(--danger)">${ICON('CircleX', 12)}${esc(t('Motor de análise parado. Recarregue a página.'))}</span>`;
+  }
+
+  /** Só aparece fora do estado `online`: edições feitas sem canal com o servidor não são gravadas. */
+  private connectionHtml(): string {
+    if (this.connection === 'online') return '';
+    const offline = this.connection === 'offline';
+    const label = offline ? t('Sem conexão com o servidor. Edições não serão salvas.') : t('Reconectando ao servidor…');
+    return `<span class="stat conn" role="status" data-conn="${this.connection}" style="color:var(--${offline ? 'danger' : 'warning'})">${ICON(offline ? 'CircleX' : 'TriangleAlert', 12)}${esc(label)}</span>`;
+  }
+
   private renderStatus(): void {
     const errs = this.errorCount();
     const dark = this.prefs.mode === 'dark';
@@ -1376,6 +1479,7 @@ export class Workbench {
     this.els['status'].innerHTML = `
       <span class="stat" data-act="ShowProblems" title="${t("Problemas")}" style="color:${errs ? 'var(--danger)' : problems ? 'var(--warning)' : 'var(--ok)'}">${ICON(problems ? 'CircleX' : 'CircleCheck', 12)}${probTxt}</span>
       <span class="cnts">${ICON('Table2', 12)}${t('{} tabelas · {} relações', this.schema.tables.length, this.schema.refs.length)}</span>
+      ${this.connectionHtml()}${this.engineHtml()}
       <span class="hint">${esc(this.hint())}</span>
       <span>${Math.round(this.zoom * 100)}%</span><span>DBML</span><span>v0.1.4</span>
       <span class="theme" data-act="ToggleTheme" title="${t("Alternar tema · Ctrl+T")}">${ICON(dark ? 'Moon' : 'Sun', 12)}${t(dark ? 'Escuro' : 'Claro')}</span>`;
@@ -1638,7 +1742,7 @@ export class Workbench {
           <div class="ident">
             <div class="tile" style="background:${hexWithAlpha(g.accent, 0.16)}"><span style="color:var(--accent);display:flex">${ICON('List', 15)}</span></div>
             <div class="id-col">
-              <input class="fld big" id="insp-name" data-edit="enum" data-enum="${esc(ev.name)}" data-orig="${esc(ev.name)}" value="${esc(ev.name)}">
+              <input class="fld big" id="insp-name" aria-label="${translate('Nome do enum')}" data-edit="enum" data-enum="${esc(ev.name)}" data-orig="${esc(ev.name)}" value="${esc(ev.name)}">
               <span class="isub">${translate('Enum · {} valores · F2 para renomear', ev.values.length)}</span>
             </div>
           </div>
@@ -1733,7 +1837,7 @@ export class Workbench {
         const icCol = c.pk ? 'var(--accent)' : isFk ? 'var(--link)' : 'var(--faint)';
         const marks = [c.not_null && 'NN', c.unique && 'UQ'].filter(Boolean).join(' ');
         const nameCell = open
-          ? `<input class="fld bare nmf" ${dt('colname', c.name, c.name, '')}>`
+          ? `<input class="fld bare nmf" aria-label="${translate('Nome da coluna')}" ${dt('colname', c.name, c.name, '')}>`
           : `<span class="cnm">${esc(c.name)}</span>`;
         const flags = (
           [
@@ -1751,7 +1855,7 @@ export class Workbench {
         const body = open
           ? `<div class="col-body">
               <span class="clbl">${translate("Tipo")}</span>
-              <div class="tywrap"><input class="fld tyf" ${dt('coltype', c.name, c.ty, '')}><span class="chev">${ICON('ChevronDown', 11)}</span></div>
+              <div class="tywrap"><input class="fld tyf" aria-label="${translate('Tipo')}" ${dt('coltype', c.name, c.ty, '')}><span class="chev">${ICON('ChevronDown', 11)}</span></div>
               <span class="clbl">Flags</span>
               <div class="flags">${flags}</div>
               <span class="clbl">${translate("Padrão")}</span>
@@ -1764,7 +1868,7 @@ export class Workbench {
             </div>`
           : '';
         return `<div class="colcard ${open ? 'open' : ''}">
-          <div class="col-top" role="button" tabindex="0" aria-expanded="${open}" data-act="toggle-col" data-col="${esc(c.name)}">
+          <div class="col-top" ${open ? 'role="group"' : 'role="button" aria-expanded="false"'} tabindex="0" data-act="toggle-col" data-col="${esc(c.name)}">
             <span style="color:var(--faint);display:flex">${ICON('GripVertical', 12)}</span>
             <span style="width:14px;display:flex;justify-content:center;color:${icCol};flex:none">${ICON(icName, 12)}</span>
             ${nameCell}
@@ -1836,7 +1940,7 @@ export class Workbench {
       <div class="ident">
         <div class="tile" style="background:${hexWithAlpha(tileCol, 0.16)}"><span style="color:${tileCol};display:flex">${ICON('Table2', 15)}</span></div>
         <div class="id-col">
-          <input class="fld big" id="insp-name" data-edit="table" data-table="${esc(tq)}" data-orig="${esc(tq)}" value="${esc(tq)}">
+          <input class="fld big" id="insp-name" aria-label="${translate('Nome da tabela')}" data-edit="table" data-table="${esc(tq)}" data-orig="${esc(tq)}" value="${esc(tq)}">
           <span class="isub">${translate('Tabela · {} · F2 para renomear', grp ? esc(grp.name) : translate('sem grupo'))}</span>
         </div>
       </div>
@@ -1892,7 +1996,7 @@ export class Workbench {
     const ta = this.els['code'] as HTMLTextAreaElement;
     const line = ta.value.slice(0, ta.selectionStart).split('\n').length - 1;
     try {
-      const patch: TextPatch = this.wasm.swap_dbml_lines(this.source, line, up);
+      const patch: TextPatch = this.wasm!.swap_dbml_lines(this.source, line, up);
       if (patch.updated_source && patch.updated_source !== this.source) {
         this.pushHistory();
         this.applyPatch(patch);
@@ -2037,7 +2141,7 @@ export class Workbench {
         return;
       }
       case 'FormatDocument': {
-        const f = this.wasm.format_dbml(this.source);
+        const f = this.wasm!.format_dbml(this.source);
         if (f !== this.source) {
           this.pushHistory();
           this.applyPatch(this.fullReplace(f));
@@ -2412,32 +2516,46 @@ export class Workbench {
         model.trustCert
       );
 
-    const test = async () => {
-      if (model.status === 'connecting' || !this.transport.testConnection) return;
-      const req = readRequest();
+    let guard: IntrospectGuard | null = null;
+    /** Chamada de rede com prazo e cancelamento; o modal pode ter sido fechado no meio. */
+    const run = async <T>(
+      dialect: IntrospectRequest['dialect'],
+      call: (signal: AbortSignal) => Promise<T>,
+      done: (result: T) => void
+    ) => {
+      if (model.status === 'connecting') return;
       model.start();
       syncView();
+      const g = (guard = new IntrospectGuard());
       try {
-        const r = await this.transport.testConnection(req);
-        model.finishTest(r.server, r.schemas);
+        done(await g.race(call(g.signal)));
       } catch (e) {
-        model.fail(connectionHint(e instanceof Error ? e.message : String(e), req.dialect === 'sqlite'));
+        if (g.cancelled) model.cancel();
+        else if (g.timedOut) model.fail(translate('A conexão demorou mais de {} s e foi cancelada. Confira o host e a porta.', INTROSPECT_TIMEOUT_MS / 1000));
+        else model.fail(connectionHint(e instanceof Error ? e.message : String(e), dialect === 'sqlite'));
+      } finally {
+        g.dispose();
+        if (guard === g) guard = null;
       }
       if (bg.isConnected) syncView();
     };
 
-    const connect = async () => {
-      if (model.status === 'connecting') return;
+    const test = () => {
+      const testConnection = this.transport.testConnection?.bind(this.transport);
+      if (!testConnection) return;
       const req = readRequest();
-      model.start();
-      syncView();
-      try {
-        model.finish(await introspect(req));
-      } catch (e) {
-        model.fail(connectionHint(e instanceof Error ? e.message : String(e), req.dialect === 'sqlite'));
-      }
-      // o modal pode ter sido fechado durante a conexão
-      if (bg.isConnected) syncView();
+      return run(req.dialect, (signal) => testConnection(req, signal), (r) => model.finishTest(r.server, r.schemas));
+    };
+
+    const connect = () => {
+      const req = readRequest();
+      return run(req.dialect, (signal) => introspect(req, signal), (r) => model.finish(r));
+    };
+
+    /** Durante a conexão, Cancelar/Esc/X só abortam a chamada; fora dela, fecham o modal. */
+    const dismiss = () => {
+      if (guard) { guard.cancel(); return; }
+      this.closeModal();
     };
 
     const applyMode = (mode: 'insert' | 'replace') => {
@@ -2464,14 +2582,14 @@ export class Workbench {
     connectBtn.addEventListener('click', () => void connect());
     replaceBtn.addEventListener('click', () => applyMode('replace'));
     insertBtn.addEventListener('click', () => applyMode('insert'));
-    $<HTMLButtonElement>('#db-cancel').addEventListener('click', () => this.closeModal());
-    $<HTMLButtonElement>('#db-x').addEventListener('click', () => this.closeModal());
+    $<HTMLButtonElement>('#db-cancel').addEventListener('click', dismiss);
+    $<HTMLButtonElement>('#db-x').addEventListener('click', dismiss);
 
     const modalEl = bg.querySelector('.modal') as HTMLElement;
     modalEl.addEventListener('keydown', (e) => {
       if (e.key === 'Escape') {
         e.preventDefault();
-        this.closeModal();
+        dismiss();
       } else if (e.key === 'Enter' && (e.target as HTMLElement).tagName === 'INPUT') {
         e.preventDefault();
         void connect();
@@ -2793,10 +2911,12 @@ export class Workbench {
       menu.style.left = `${Math.min(e.clientX, window.innerWidth - menu.offsetWidth - 8)}px`;
       menu.style.top = `${Math.min(e.clientY, window.innerHeight - menu.offsetHeight - 8)}px`;
     });
-    window.addEventListener('mousemove', (e) => this.onMove(e));
-    window.addEventListener('mouseup', () => this.onUp());
+    const { signal } = this.abort;
+    window.addEventListener('mousemove', (e) => this.onMove(e), { signal });
+    window.addEventListener('mouseup', () => this.onUp(), { signal });
     surf.addEventListener('wheel', (e) => this.onWheel(e), { passive: false });
-    new ResizeObserver(() => this.scheduleRender()).observe(surf);
+    this.resizeObserver = new ResizeObserver(() => this.scheduleRender());
+    this.resizeObserver.observe(surf);
     for (const handle of wb.querySelectorAll<HTMLButtonElement>('[data-resize]')) {
       const isLeft = handle.dataset.resize === 'left';
       const panel = () => this.els[isLeft ? (this.editorOpen ? 'editor' : 'sidebar') : 'inspector'];
@@ -2824,16 +2944,16 @@ export class Workbench {
         resize(el, el.getBoundingClientRect().width + (grow ? 24 : -24));
       });
     }
-    window.addEventListener('keydown', (e) => this.onKey(e));
+    window.addEventListener('keydown', (e) => this.onKey(e), { signal });
     window.addEventListener('beforeunload', (e) => {
       if (this.isDirty()) {
         e.preventDefault();
         e.returnValue = '';
       }
-    });
+    }, { signal });
     window.addEventListener('keyup', (e) => {
       if (e.code === 'Space') { this.space = false; this.scheduleRender(); }
-    });
+    }, { signal });
     // editor DBML
     const ta = this.els['code'] as HTMLTextAreaElement;
     ta.addEventListener('input', () => {
@@ -3325,6 +3445,8 @@ export class Workbench {
     if (d.kind === 'pan') {
       this.pan = { x: this.pan.x + e.clientX - d.lx, y: this.pan.y + e.clientY - d.ly };
       d.lx = e.clientX; d.ly = e.clientY;
+      this.scheduleCamera();
+      return;
     } else if (d.kind === 'edge') {
       const dx = wp.x - d.last.x, dy = wp.y - d.last.y;
       d.last = wp;
@@ -3364,9 +3486,10 @@ export class Workbench {
 
   /** Recalcula rotas ortogonais com as posições atuais (Wasm: `layout::route`). */
   private recomputeEdges(): void {
+    if (this.engineFailed) return;
     try {
-      this.scene = this.wasm.compute_scene(this.source, this.positions);
-    } catch { /* mantém a cena anterior */ }
+      this.scene = this.wasm!.compute_scene(this.source, this.positions);
+    } catch (e) { this.wasmFailed('compute_scene (arrasto)', e); /* mantém a cena anterior */ }
   }
 
   private onUp(): void {
@@ -3429,14 +3552,58 @@ export class Workbench {
       // pinça do touchpad chega como Ctrl+roda com delta pequeno: precisa de ganho maior que a roda do mouse
       const gain = Math.abs(e.deltaY) < 50 && e.deltaMode === 0 ? 0.01 : 0.0025;
       this.zoomAt(e.clientX - r.left, e.clientY - r.top, Math.min(Math.max(1 - e.deltaY * gain, 0.5), 2));
-    } else if (e.shiftKey && e.deltaX === 0) {
-      this.pan.x -= e.deltaY;
     } else {
-      this.pan.x -= e.deltaX;
-      this.pan.y -= e.deltaY;
+      if (e.shiftKey && e.deltaX === 0) {
+        this.pan.x -= e.deltaY;
+      } else {
+        this.pan.x -= e.deltaX;
+        this.pan.y -= e.deltaY;
+      }
+      this.queueSaveLayout();
+      this.scheduleCamera();
+      return;
     }
     this.queueSaveLayout();
     this.scheduleRender();
+  }
+
+  /** Teclado no cartão focado: Enter seleciona; setas movem (Shift = 1px, senão 8px). */
+  private cardKey(card: HTMLElement, e: KeyboardEvent): boolean {
+    const table = card.dataset.table;
+    const enumName = card.dataset.enum;
+    if (e.key === 'Enter' && table !== undefined) {
+      this.selection = [table];
+      this.selectedEnum = null;
+      this.selectedRef = null;
+      this.top = table;
+      this.scheduleRender();
+      return true;
+    }
+    const arrows: Record<string, Pt> = {
+      ArrowLeft: { x: -1, y: 0 }, ArrowRight: { x: 1, y: 0 }, ArrowUp: { x: 0, y: -1 }, ArrowDown: { x: 0, y: 1 },
+    };
+    const dir = arrows[e.key];
+    if (!dir || (table === undefined && enumName === undefined)) return false;
+    const step = e.shiftKey ? 1 : 8;
+    const keys = table !== undefined
+      ? (this.selection.includes(table) ? this.selection : [table])
+      : [`enum:${enumName}`];
+    if (table !== undefined && !this.selection.includes(table)) {
+      this.selection = [table];
+      this.selectedEnum = null;
+      this.selectedRef = null;
+    }
+    this.pushHistory();
+    for (const k of keys) {
+      const p = this.positions[k];
+      if (p) { p.x += dir.x * step; p.y += dir.y * step; }
+    }
+    this.recomputeEdges();
+    this.queueSaveLayout();
+    this.scheduleRender();
+    const p = this.positions[keys[0]];
+    if (p) this.announce(translate('{} movida para x {}, y {}', keys.length > 1 ? translate('{} itens', keys.length) : keys[0].replace(/^enum:/, ''), Math.round(p.x), Math.round(p.y)));
+    return true;
   }
 
   private keyOf(e: KeyboardEvent): string {
@@ -3470,6 +3637,13 @@ export class Workbench {
       e.preventDefault();
       return;
     }
+    const focusedCard = !typing && !e.ctrlKey && !e.metaKey && !e.altKey && !this.shortcutsOpen
+      ? ae?.closest<HTMLElement>('.card') ?? null
+      : null;
+    if (focusedCard && this.cardKey(focusedCard, e)) {
+      e.preventDefault();
+      return;
+    }
     const key = this.keyOf(e);
     const entry = catalog().find((a) => a.key === key || (a.id === 'DeleteSelection' && key === 'delete'));
     if (!entry || !entry.key) {
@@ -3490,12 +3664,35 @@ export class Workbench {
 
   // rastreia posição do mouse para soltar relações sobre colunas
   public attachMouseTracking(): void {
-    window.addEventListener('mousemove', (e) => { this.lastMouse = { x: e.clientX, y: e.clientY }; });
+    window.addEventListener('mousemove', (e) => { this.lastMouse = { x: e.clientX, y: e.clientY }; }, { signal: this.abort.signal });
+  }
+
+  /**
+   * Desmonta o workbench: remove os listeners globais, cancela timers e
+   * animações, solta o ResizeObserver, tira o `<style>` e esvazia o `root`.
+   * O transporte não é fechado aqui (quem o criou chama `transport.close()`).
+   */
+  public destroy(): void {
+    if (this.destroyed) return;
+    this.destroyed = true;
+    this.abort.abort();
+    this.resizeObserver?.disconnect();
+    this.resizeObserver = null;
+    this.stopTween();
+    if (this.raf !== null) cancelAnimationFrame(this.raf);
+    this.raf = null;
+    for (const timer of [this.autosaveTimer, this.saveTimer, this.sessionTimer, this.toastTimer]) {
+      if (timer) window.clearTimeout(timer);
+    }
+    this.saveTimer = this.sessionTimer = null;
+    this.styleEl?.remove();
+    this.styleEl = null;
+    this.root.innerHTML = '';
   }
 }
 
 /** Monta o Workbench em `root` e inicia o rastreamento de mouse. */
-export function mountWorkbench(root: HTMLElement, transport: HostTransport, wasm?: any): Workbench {
+export function mountWorkbench(root: HTMLElement, transport: HostTransport, wasm?: WasmApi): Workbench {
   const wb = new Workbench(root, transport, wasm);
   wb.attachMouseTracking();
   return wb;

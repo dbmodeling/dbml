@@ -292,12 +292,15 @@ export interface DocumentMetadata {
   autosave?: boolean;
 }
 
+/** `connecting`: tentando (re)conectar; `online`: canal aberto; `offline`: caiu, aguardando nova tentativa. */
+export type ConnectionState = 'connecting' | 'online' | 'offline';
+
 export interface HostTransport {
   checkDatabaseSupport?(): Promise<void>;
   /** Só confere as credenciais e lista os schemas (sem ler tabelas). */
-  testConnection?(req: IntrospectRequest): Promise<TestConnectionResult>;
+  testConnection?(req: IntrospectRequest, signal?: AbortSignal): Promise<TestConnectionResult>;
   /** Lê o catálogo de um banco (somente leitura) e devolve DBML; ausente quando o host não suporta. */
-  introspect?(req: IntrospectRequest): Promise<IntrospectResult>;
+  introspect?(req: IntrospectRequest, signal?: AbortSignal): Promise<IntrospectResult>;
   sendPatch(patch: TextPatch): Promise<void>;
   saveDocument?(source: string, documentId?: string): Promise<void>;
   saveLayout(layout: SidecarLayout, documentId?: string): Promise<void>;
@@ -318,4 +321,23 @@ export interface HostTransport {
   ): void;
   onFileChangedExternally?(callback: (newSource: string, documentId?: string) => void): void;
   onError?(callback: (diagnostics: Diagnostic[]) => void): void;
+  /** Estado do canal com o host; só transportes que podem cair (WebSocket) o emitem. */
+  onConnectionChange?(callback: (state: ConnectionState) => void): void;
+  /** Libera sockets, timers e listeners do transporte; ele não deve ser usado depois. */
+  close?(): void;
+  /** Publica os diagnósticos do Wasm no host (ex.: aba Problems do VS Code). */
+  sendDiagnostics?(diagnostics: Diagnostic[]): void;
+}
+
+/** Superfície do módulo Wasm (`crates/dbml-wasm`) usada pelo workbench. */
+export interface WasmApi {
+  parse_and_analyze(source: string): { schema: Schema; diagnostics: Diagnostic[]; enums?: string[] };
+  compute_scene(source: string, positions: Record<string, NodeCoordinate>): SceneGeometry;
+  compute_layout(source: string, options: object): { positions: Record<string, NodeCoordinate> };
+  apply_command(source: string, command: Command): TextPatch;
+  swap_dbml_lines(source: string, line: number, up: boolean): TextPatch;
+  format_dbml(source: string): string;
+  export_sql_ddl?(source: string, dialect: string): string;
+  import_sql_ddl?(sql: string, dialect: string): unknown;
+  import_conflicts?(source: string, dbml: string): string[];
 }

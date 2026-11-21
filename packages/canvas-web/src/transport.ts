@@ -13,6 +13,7 @@ import {
   SessionSnapshot,
   IntrospectRequest,
   IntrospectResult,
+  ConnectionState,
   TestConnectionResult,
 } from './types';
 
@@ -39,6 +40,7 @@ function getVsCodeApi(): ReturnType<typeof acquireVsCodeApi> {
 /** Transporte para execução dentro da Webview do VS Code */
 export class VsCodeTransport implements HostTransport {
   private vscode: ReturnType<typeof acquireVsCodeApi>;
+  private readonly abort = new AbortController();
   private updateCallback?: (
     source: string,
     layout?: SidecarLayout,
@@ -131,26 +133,45 @@ export class VsCodeTransport implements HostTransport {
           break;
         }
       }
-    });
+    }, { signal: this.abort.signal });
+  }
+
+  /** Remove o listener de mensagens e rejeita o que ainda aguarda resposta do host. */
+  public close(): void {
+    if (this.abort.signal.aborted) return;
+    this.abort.abort();
+    const error = new Error('Connection closed');
+    for (const p of this.pending.values()) p.reject(error);
+    for (const p of this.pendingIntrospect.values()) p.reject(error);
+    for (const p of this.pendingTest.values()) p.reject(error);
+    this.pending.clear();
+    this.pendingIntrospect.clear();
+    this.pendingTest.clear();
   }
 
   public checkDatabaseSupport(): Promise<void> {
     return this.request('check_cli');
   }
 
-  public testConnection(req: IntrospectRequest): Promise<TestConnectionResult> {
+  public testConnection(req: IntrospectRequest, signal?: AbortSignal): Promise<TestConnectionResult> {
     const id = ++this.introspectSeq;
     return new Promise((resolve, reject) => {
       this.pendingTest.set(id, { resolve, reject });
+      signal?.addEventListener('abort', () => {
+        if (this.pendingTest.delete(id)) reject(new Error('Introspection cancelled'));
+      }, { once: true });
       this.vscode.postMessage({ command: 'test_connection', id, request: req });
     });
   }
 
   /** O host da extensão executa `dbml import --url` (a Webview não abre sockets). */
-  public introspect(req: IntrospectRequest): Promise<IntrospectResult> {
+  public introspect(req: IntrospectRequest, signal?: AbortSignal): Promise<IntrospectResult> {
     const id = ++this.introspectSeq;
     return new Promise((resolve, reject) => {
       this.pendingIntrospect.set(id, { resolve, reject });
+      signal?.addEventListener('abort', () => {
+        if (this.pendingIntrospect.delete(id)) reject(new Error('Introspection cancelled'));
+      }, { once: true });
       this.vscode.postMessage({ command: 'introspect', id, request: req });
     });
   }
@@ -229,6 +250,18 @@ export class VsCodeTransport implements HostTransport {
   }
 }
 
+export const RECONNECT_BASE_MS = 1000;
+export const RECONNECT_MAX_MS = 30000;
+
+/**
+ * Espera antes da próxima tentativa de reconexão: backoff exponencial com
+ * jitter ("equal jitter": metade fixa + metade aleatória), limitado a 30 s.
+ */
+export function reconnectDelay(attempt: number, random: () => number = Math.random): number {
+  const ceiling = Math.min(RECONNECT_MAX_MS, RECONNECT_BASE_MS * 2 ** Math.max(0, attempt));
+  return Math.round(ceiling / 2 + (random() * ceiling) / 2);
+}
+
 /** Transporte para execução dentro do navegador conectado ao servidor Axum CLI */
 export class WebSocketTransport implements HostTransport {
   private ws: WebSocket | null = null;
@@ -239,7 +272,14 @@ export class WebSocketTransport implements HostTransport {
     meta?: DocumentMetadata
   ) => void;
   private externalChangeCallback?: (newSource: string, documentId?: string) => void;
+  private connectionState: ConnectionState = 'connecting';
+  private connectionCallback?: (state: ConnectionState) => void;
   private reconnectTimer: number | null = null;
+  private reconnectAttempts = 0;
+  private closed = false;
+  private readonly abort = new AbortController();
+  /** Aba oculta: nenhuma tentativa agendada até `visibilitychange`. */
+  private waitingVisible = false;
   private requestSeq = 0;
   private pending = new Map<number, { resolve: () => void; reject: (e: Error) => void }>();
   private request(type: string, payload: unknown): Promise<void> {
@@ -255,12 +295,68 @@ export class WebSocketTransport implements HostTransport {
 
   constructor(url = `ws://${window.location.host}/ws`) {
     this.url = url;
+    document.addEventListener('visibilitychange', () => this.onVisibility(), { signal: this.abort.signal });
     this.connect();
   }
 
+  /** Encerra o socket e impede novas reconexões (idempotente). */
+  public close(): void {
+    if (this.closed) return;
+    this.closed = true;
+    this.abort.abort();
+    if (this.reconnectTimer !== null) window.clearTimeout(this.reconnectTimer);
+    this.reconnectTimer = null;
+    const ws = this.ws;
+    this.ws = null;
+    if (ws) {
+      ws.onopen = ws.onmessage = ws.onclose = null;
+      ws.close();
+    }
+    for (const p of this.pending.values()) p.reject(new Error('Connection closed'));
+    this.pending.clear();
+    this.connectionCallback = undefined;
+  }
+
+  private onVisibility(): void {
+    if (this.closed || document.hidden || !this.waitingVisible) return;
+    this.waitingVisible = false;
+    this.reconnectAttempts = 0;
+    this.connect();
+  }
+
+  private scheduleReconnect(): void {
+    if (this.closed || this.reconnectTimer !== null) return;
+    if (document.hidden) {
+      this.waitingVisible = true;
+      return;
+    }
+    const delay = reconnectDelay(this.reconnectAttempts++);
+    this.reconnectTimer = window.setTimeout(() => {
+      this.reconnectTimer = null;
+      this.connect();
+    }, delay);
+  }
+
+  private setConnectionState(state: ConnectionState): void {
+    if (state === this.connectionState) return;
+    this.connectionState = state;
+    this.connectionCallback?.(state);
+  }
+
+  public onConnectionChange(callback: (state: ConnectionState) => void): void {
+    this.connectionCallback = callback;
+    callback(this.connectionState);
+  }
+
   private connect(): void {
+    this.setConnectionState('connecting');
     try {
       this.ws = new WebSocket(this.url);
+
+      this.ws.onopen = () => {
+        this.reconnectAttempts = 0;
+        this.setConnectionState('online');
+      };
 
       this.ws.onmessage = (event) => {
         try {
@@ -292,15 +388,13 @@ export class WebSocketTransport implements HostTransport {
       this.ws.onclose = () => {
         for (const p of this.pending.values()) p.reject(new Error('Connection lost; reconnect and save again'));
         this.pending.clear();
-        if (!this.reconnectTimer) {
-          this.reconnectTimer = window.setTimeout(() => {
-            this.reconnectTimer = null;
-            this.connect();
-          }, 2000);
-        }
+        this.setConnectionState('offline');
+        this.scheduleReconnect();
       };
     } catch (e) {
       console.warn('Falha ao conectar WebSocket:', e);
+      this.setConnectionState('offline');
+      this.scheduleReconnect();
     }
   }
 
@@ -313,8 +407,9 @@ export class WebSocketTransport implements HostTransport {
     return this.request('save_document', { expected_source, expected_file });
   }
 
-  public async testConnection(req: IntrospectRequest): Promise<TestConnectionResult> {
+  public async testConnection(req: IntrospectRequest, signal?: AbortSignal): Promise<TestConnectionResult> {
     const res = await fetch('/api/introspect/test', {
+      signal,
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(req),
@@ -325,8 +420,9 @@ export class WebSocketTransport implements HostTransport {
   }
 
   /** POST no servidor local (`dbml run`), que conecta ao banco; a senha só vai no corpo. */
-  public async introspect(req: IntrospectRequest): Promise<IntrospectResult> {
+  public async introspect(req: IntrospectRequest, signal?: AbortSignal): Promise<IntrospectResult> {
     const res = await fetch('/api/introspect', {
+      signal,
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(req),
