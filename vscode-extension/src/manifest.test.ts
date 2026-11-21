@@ -28,6 +28,13 @@ describe('manifesto da extensão', () => {
     expect(item?.when).toContain('.dbml');
   });
 
+  it('tem metadados de repositório e o empacotamento não suprime o aviso do vsce', () => {
+    expect(manifest.repository.url).toBe('https://github.com/dbmodeling/dbml.git');
+    expect(manifest.bugs.url).toMatch(/^https:\/\/github\.com\/dbmodeling\/dbml\/issues/);
+    expect(manifest.homepage).toMatch(/^https:\/\/github\.com\/dbmodeling\/dbml/);
+    expect(manifest.scripts.package).not.toContain('--allow-missing-repository');
+  });
+
   it('a versão mínima do VS Code suporta eventos de ativação implícitos (>= 1.74)', () => {
     const [major, minor] = String(manifest.engines.vscode).replace(/^[^\d]*/, '').split('.').map(Number);
     expect(major > 1 || minor >= 74).toBe(true);

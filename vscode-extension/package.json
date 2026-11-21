@@ -9,8 +9,13 @@
   "icon": "media/icon.png",
   "repository": {
     "type": "git",
-    "url": "https://github.com/brenoLucasN/db_modeling.git"
+    "url": "https://github.com/dbmodeling/dbml.git",
+    "directory": "vscode-extension"
   },
+  "bugs": {
+    "url": "https://github.com/dbmodeling/dbml/issues"
+  },
+  "homepage": "https://github.com/dbmodeling/dbml#readme",
   "engines": {
     "vscode": "^1.85.0"
   },
@@ -160,7 +165,7 @@
     "build": "node esbuild.js --production",
     "watch": "node esbuild.js --watch",
     "compile": "tsc -p ./ --noEmit",
-    "package": "npx -y @vscode/vsce package --no-dependencies --allow-missing-repository",
+    "package": "npx -y @vscode/vsce package --no-dependencies",
     "test": "vitest run"
   },
   "devDependencies": {
