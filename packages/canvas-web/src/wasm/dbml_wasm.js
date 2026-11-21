@@ -1,6 +1,97 @@
 /* @ts-self-types="./dbml_wasm.d.ts" */
 
 /**
+ * Sessão Wasm: analisa o DBML uma vez por versão de texto e roteia arestas sem reparse.
+ *
+ * O JS deve chamar `free()` quando descartar a sessão (`Workbench.destroy()`).
+ */
+export class Session {
+    __destroy_into_raw() {
+        const ptr = this.__wbg_ptr;
+        this.__wbg_ptr = 0;
+        SessionFinalization.unregister(this);
+        return ptr;
+    }
+    free() {
+        const ptr = this.__destroy_into_raw();
+        wasm.__wbg_session_free(ptr, 0);
+    }
+    /**
+     * Número de análises completas feitas por esta sessão (diagnóstico/testes).
+     * @returns {number}
+     */
+    get analysis_count() {
+        const ret = wasm.session_analysis_count(this.__wbg_ptr);
+        return ret >>> 0;
+    }
+    /**
+     * Mesmo retorno de `parse_and_analyze(source)`; reanalisa só se `source` mudou.
+     *
+     * # Errors
+     *
+     * Returns a [`JsValue`] error if JSON serialization fails.
+     * @param {string} source
+     * @returns {any}
+     */
+    analyze(source) {
+        const ptr0 = passStringToWasm0(source, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.session_analyze(this.__wbg_ptr, ptr0, len0);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return takeFromExternrefTable0(ret[0]);
+    }
+    /**
+     * Mesmo retorno de `compute_scene(source, positions)`, reaproveitando a análise da versão.
+     *
+     * # Errors
+     *
+     * Returns a [`JsValue`] error if JSON serialization fails.
+     * @param {string} source
+     * @param {any} positions_js
+     * @returns {any}
+     */
+    compute_scene(source, positions_js) {
+        const ptr0 = passStringToWasm0(source, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.session_compute_scene(this.__wbg_ptr, ptr0, len0, positions_js);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return takeFromExternrefTable0(ret[0]);
+    }
+    /**
+     * Cria uma sessão vazia.
+     */
+    constructor() {
+        const ret = wasm.session_new();
+        this.__wbg_ptr = ret;
+        SessionFinalization.register(this, this.__wbg_ptr, this);
+        return this;
+    }
+    /**
+     * Arestas roteadas (`RoutedEdge[]`) para `positions`, sem reanalisar. Barato o bastante
+     * para rodar a cada quadro do arrasto. Exige `analyze`/`compute_scene` prévio.
+     *
+     * # Errors
+     *
+     * Returns a [`JsValue`] error if there is no analysed document yet, `positions_js` is not
+     * a `{name: {x, y}}` object, or JSON serialization fails.
+     * @param {any} positions_js
+     * @returns {any}
+     */
+    route_edges(positions_js) {
+        const ret = wasm.session_route_edges(this.__wbg_ptr, positions_js);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return takeFromExternrefTable0(ret[0]);
+    }
+}
+if (Symbol.dispose) Session.prototype[Symbol.dispose] = Session.prototype.free;
+
+/**
  * Aplica um comando semântico e gera o patch textual mínimo com metadados de UI.
  *
  * # Errors
@@ -439,6 +530,10 @@ function __wbg_get_imports() {
         "./dbml_wasm_bg.js": import0,
     };
 }
+
+const SessionFinalization = (typeof FinalizationRegistry === 'undefined')
+    ? { register: () => {}, unregister: () => {} }
+    : new FinalizationRegistry(ptr => wasm.__wbg_session_free(ptr, 1));
 
 function addToExternrefTable0(obj) {
     const idx = wasm.__externref_table_alloc();

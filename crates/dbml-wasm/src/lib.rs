@@ -4,6 +4,7 @@
 //! analysis, minimal text patcher, clustered auto-layout, and orthogonal routing).
 
 pub mod line_index;
+pub mod session;
 pub mod types;
 
 use line_index::LineIndex;
@@ -42,11 +43,17 @@ pub fn group_color(schema: &Schema, group: &str) -> String {
 /// Extrai nomes de `Enum` definidos no código DBML (idêntico a `crates/app/src/shell/mod.rs`).
 #[must_use]
 pub fn extract_enums_from_dbml(text: &str) -> Vec<String> {
-    let mut seen = std::collections::HashSet::new();
-    dbml_analysis::analyze(text)
+    enum_names(&dbml_analysis::analyze(text))
+}
+
+/// Nomes de `Enum` do `schema`, sem repetição e na ordem de declaração.
+fn enum_names(schema: &Schema) -> Vec<String> {
+    let mut seen = HashSet::new();
+    schema
         .enums
-        .into_iter()
-        .filter_map(|e| seen.insert(e.name.clone()).then_some(e.name))
+        .iter()
+        .filter(|e| seen.insert(e.name.as_str()))
+        .map(|e| e.name.clone())
         .collect()
 }
 
@@ -254,6 +261,140 @@ pub fn build_rounded_svg_path(pts: &[layout::Pos]) -> String {
         let _ = write!(d, " L {:.2} {:.2}", last.x, last.y);
     }
     d
+}
+
+/// Roteia ortogonalmente todas as arestas (`Ref`) do `schema` para as `pos` dadas, desviando dos
+/// cartões das demais tabelas. Tabela sem posição em `pos` cai na origem (nunca indexa o mapa:
+/// com `panic = "abort"` um acesso inválido derrubaria o módulo Wasm).
+///
+/// Não reanalisa nada nem calcula layout/grupos/enums: é a parte barata, chamada a cada quadro
+/// durante o arrasto (ver `Session::route_edges`).
+#[must_use]
+#[expect(
+    clippy::implicit_hasher,
+    reason = "Concrete HashMap<String, NodeCoordinate> keeps callers ergonomic without turbofish"
+)]
+pub fn route_edges_internal(
+    schema: &Schema,
+    pos: &HashMap<String, NodeCoordinate>,
+) -> Vec<RoutedEdge> {
+    let origin = NodeCoordinate { x: 0.0, y: 0.0 };
+    // retângulos calculados uma única vez; cada aresta filtra os seus dois extremos
+    let table_rects: Vec<(String, layout::Rect)> = schema
+        .tables
+        .iter()
+        .map(|t| {
+            let q = t.qualified_name();
+            let p = pos.get(&q).copied().unwrap_or(origin);
+            let rect = layout::Rect {
+                x: p.x,
+                y: p.y,
+                w: CARD_W,
+                h: card_h(t.columns.len()),
+            };
+            (q, rect)
+        })
+        .collect();
+    let mut edges = Vec::new();
+    for r in &schema.refs {
+        let from_q = r.from.qualified_table();
+        let to_q = r.to.qualified_table();
+        let Some(ft) = schema.table(&from_q) else {
+            continue;
+        };
+        let Some(tt) = schema.table(&to_q) else {
+            continue;
+        };
+        let Some(fc) = ft.columns.iter().position(|c| c.name == r.from.column) else {
+            continue;
+        };
+        let Some(tc) = tt.columns.iter().position(|c| c.name == r.to.column) else {
+            continue;
+        };
+        let source_key = ft.qualified_name();
+        let target_key = tt.qualified_name();
+        let p_a = pos.get(&source_key).copied().unwrap_or(origin);
+        let p_b = pos.get(&target_key).copied().unwrap_or(origin);
+        let ay = p_a.y + HEADER_H + 4.0 + ROW_H * (fc as f32 + 0.5);
+        let by = p_b.y + HEADER_H + 4.0 + ROW_H * (tc as f32 + 0.5);
+
+        // Lado de saída/entrada: +1 borda direita, -1 esquerda
+        let (sa, sb) = if p_a.x + CARD_W < p_b.x {
+            (1.0, -1.0)
+        } else if p_b.x + CARD_W < p_a.x {
+            (-1.0, 1.0)
+        } else {
+            (1.0, 1.0)
+        };
+        let ax = if sa > 0.0 { p_a.x + CARD_W } else { p_a.x };
+        let bx = if sb > 0.0 { p_b.x + CARD_W } else { p_b.x };
+
+        let obstacles: Vec<layout::Rect> = table_rects
+            .iter()
+            .filter(|(q, _)| *q != source_key && *q != target_key)
+            .map(|(_, r)| *r)
+            .collect();
+
+        let route_pts = layout::route(
+            layout::Pos { x: ax, y: ay },
+            sa,
+            layout::Pos { x: bx, y: by },
+            sb,
+            &obstacles,
+            24.0,
+        );
+        let svg_path = build_rounded_svg_path(&route_pts);
+        let segs = layout::relation_segments(p_a.x, ay, p_b.x, by, &obstacles);
+        let auto_path = layout::segments_svg_path(&segs);
+        let m = &segs[segs.len() / 2];
+        let auto_mid = NodeCoordinate {
+            x: (m[0].x + 3.0 * m[1].x + 3.0 * m[2].x + m[3].x) / 8.0,
+            y: (m[0].y + 3.0 * m[1].y + 3.0 * m[2].y + m[3].y) / 8.0,
+        };
+        let points = route_pts
+            .into_iter()
+            .map(|p| NodeCoordinate { x: p.x, y: p.y })
+            .collect();
+
+        let (start_label, end_label, cardinality) = match r.kind {
+            schema::RefKind::ManyToOne => ("N", "1", "N:1"),
+            schema::RefKind::OneToMany => ("1", "N", "1:N"),
+            schema::RefKind::OneToOne => ("1", "1", "1:1"),
+            schema::RefKind::ManyToMany => ("N", "N", "N:N"),
+        };
+
+        edges.push(RoutedEdge {
+            from_table: source_key,
+            from_col: r.from.column.clone(),
+            to_table: target_key,
+            to_col: r.to.column.clone(),
+            kind: r.kind,
+            on_delete: r.on_delete,
+            on_update: r.on_update,
+            ax,
+            ay,
+            bx,
+            by,
+            sa,
+            sb,
+            points,
+            svg_path,
+            auto_path,
+            auto_mid,
+            start_label: start_label.to_string(),
+            start_label_pos: NodeCoordinate {
+                x: ax + sa * 10.0 - 4.0,
+                y: ay - 15.0,
+            },
+            end_label: end_label.to_string(),
+            end_label_pos: NodeCoordinate {
+                x: bx + sb * 10.0 - 4.0,
+                y: by - 15.0,
+            },
+            cardinality: cardinality.to_string(),
+        });
+    }
+    edges
 }
 
 /// Calcula toda a geometria da cena (posições, grupos, tabelas, arestas ortogonais roteadas).
@@ -482,119 +623,7 @@ pub fn compute_scene_internal(
         });
     }
 
-    // Arestas roteadas ortogonalmente com desvio de obstáculos
-    let mut edges = Vec::new();
-    for r in &schema.refs {
-        let from_q = r.from.qualified_table();
-        let to_q = r.to.qualified_table();
-        let Some(ft) = schema.table(&from_q) else {
-            continue;
-        };
-        let Some(tt) = schema.table(&to_q) else {
-            continue;
-        };
-        let Some(fc) = ft.columns.iter().position(|c| c.name == r.from.column) else {
-            continue;
-        };
-        let Some(tc) = tt.columns.iter().position(|c| c.name == r.to.column) else {
-            continue;
-        };
-        let source_key = ft.qualified_name();
-        let target_key = tt.qualified_name();
-        let origin = NodeCoordinate { x: 0.0, y: 0.0 };
-        let p_a = pos.get(&source_key).copied().unwrap_or(origin);
-        let p_b = pos.get(&target_key).copied().unwrap_or(origin);
-        let ay = p_a.y + HEADER_H + 4.0 + ROW_H * (fc as f32 + 0.5);
-        let by = p_b.y + HEADER_H + 4.0 + ROW_H * (tc as f32 + 0.5);
-
-        // Lado de saída/entrada: +1 borda direita, -1 esquerda
-        let (sa, sb) = if p_a.x + CARD_W < p_b.x {
-            (1.0, -1.0)
-        } else if p_b.x + CARD_W < p_a.x {
-            (-1.0, 1.0)
-        } else {
-            (1.0, 1.0)
-        };
-        let ax = if sa > 0.0 { p_a.x + CARD_W } else { p_a.x };
-        let bx = if sb > 0.0 { p_b.x + CARD_W } else { p_b.x };
-
-        let obstacles: Vec<layout::Rect> = schema
-            .tables
-            .iter()
-            .filter(|t| {
-                let tq = t.qualified_name();
-                tq != source_key && tq != target_key
-            })
-            .map(|t| {
-                let p = pos.get(&t.qualified_name()).copied().unwrap_or(origin);
-                layout::Rect {
-                    x: p.x,
-                    y: p.y,
-                    w: CARD_W,
-                    h: card_h(t.columns.len()),
-                }
-            })
-            .collect();
-
-        let route_pts = layout::route(
-            layout::Pos { x: ax, y: ay },
-            sa,
-            layout::Pos { x: bx, y: by },
-            sb,
-            &obstacles,
-            24.0,
-        );
-        let svg_path = build_rounded_svg_path(&route_pts);
-        let segs = layout::relation_segments(p_a.x, ay, p_b.x, by, &obstacles);
-        let auto_path = layout::segments_svg_path(&segs);
-        let m = &segs[segs.len() / 2];
-        let auto_mid = NodeCoordinate {
-            x: (m[0].x + 3.0 * m[1].x + 3.0 * m[2].x + m[3].x) / 8.0,
-            y: (m[0].y + 3.0 * m[1].y + 3.0 * m[2].y + m[3].y) / 8.0,
-        };
-        let points = route_pts
-            .into_iter()
-            .map(|p| NodeCoordinate { x: p.x, y: p.y })
-            .collect();
-
-        let (start_label, end_label, cardinality) = match r.kind {
-            schema::RefKind::ManyToOne => ("N", "1", "N:1"),
-            schema::RefKind::OneToMany => ("1", "N", "1:N"),
-            schema::RefKind::OneToOne => ("1", "1", "1:1"),
-            schema::RefKind::ManyToMany => ("N", "N", "N:N"),
-        };
-
-        edges.push(RoutedEdge {
-            from_table: source_key,
-            from_col: r.from.column.clone(),
-            to_table: target_key,
-            to_col: r.to.column.clone(),
-            kind: r.kind,
-            on_delete: r.on_delete,
-            on_update: r.on_update,
-            ax,
-            ay,
-            bx,
-            by,
-            sa,
-            sb,
-            points,
-            svg_path,
-            auto_path,
-            auto_mid,
-            start_label: start_label.to_string(),
-            start_label_pos: NodeCoordinate {
-                x: ax + sa * 10.0 - 4.0,
-                y: ay - 15.0,
-            },
-            end_label: end_label.to_string(),
-            end_label_pos: NodeCoordinate {
-                x: bx + sb * 10.0 - 4.0,
-                y: by - 15.0,
-            },
-            cardinality: cardinality.to_string(),
-        });
-    }
+    let edges = route_edges_internal(schema, &pos);
 
     SceneGeometry {
         positions: pos,

@@ -2,6 +2,50 @@
 /* eslint-disable */
 
 /**
+ * Sessão Wasm: analisa o DBML uma vez por versão de texto e roteia arestas sem reparse.
+ *
+ * O JS deve chamar `free()` quando descartar a sessão (`Workbench.destroy()`).
+ */
+export class Session {
+    free(): void;
+    [Symbol.dispose](): void;
+    /**
+     * Mesmo retorno de `parse_and_analyze(source)`; reanalisa só se `source` mudou.
+     *
+     * # Errors
+     *
+     * Returns a [`JsValue`] error if JSON serialization fails.
+     */
+    analyze(source: string): any;
+    /**
+     * Mesmo retorno de `compute_scene(source, positions)`, reaproveitando a análise da versão.
+     *
+     * # Errors
+     *
+     * Returns a [`JsValue`] error if JSON serialization fails.
+     */
+    compute_scene(source: string, positions_js: any): any;
+    /**
+     * Cria uma sessão vazia.
+     */
+    constructor();
+    /**
+     * Arestas roteadas (`RoutedEdge[]`) para `positions`, sem reanalisar. Barato o bastante
+     * para rodar a cada quadro do arrasto. Exige `analyze`/`compute_scene` prévio.
+     *
+     * # Errors
+     *
+     * Returns a [`JsValue`] error if there is no analysed document yet, `positions_js` is not
+     * a `{name: {x, y}}` object, or JSON serialization fails.
+     */
+    route_edges(positions_js: any): any;
+    /**
+     * Número de análises completas feitas por esta sessão (diagnóstico/testes).
+     */
+    readonly analysis_count: number;
+}
+
+/**
  * Aplica um comando semântico e gera o patch textual mínimo com metadados de UI.
  *
  * # Errors
@@ -82,6 +126,7 @@ export type InitInput = RequestInfo | URL | Response | BufferSource | WebAssembl
 
 export interface InitOutput {
     readonly memory: WebAssembly.Memory;
+    readonly __wbg_session_free: (a: number, b: number) => void;
     readonly apply_command: (a: number, b: number, c: any) => [number, number, number];
     readonly compute_layout: (a: number, b: number, c: any) => [number, number, number];
     readonly compute_scene: (a: number, b: number, c: any) => [number, number, number];
@@ -90,6 +135,11 @@ export interface InitOutput {
     readonly import_conflicts: (a: number, b: number, c: number, d: number) => [number, number];
     readonly import_sql_ddl: (a: number, b: number, c: number, d: number) => [number, number, number];
     readonly parse_and_analyze: (a: number, b: number) => [number, number, number];
+    readonly session_analysis_count: (a: number) => number;
+    readonly session_analyze: (a: number, b: number, c: number) => [number, number, number];
+    readonly session_compute_scene: (a: number, b: number, c: number, d: any) => [number, number, number];
+    readonly session_new: () => number;
+    readonly session_route_edges: (a: number, b: any) => [number, number, number];
     readonly swap_dbml_lines: (a: number, b: number, c: number, d: number) => [number, number, number];
     readonly __wbindgen_malloc: (a: number, b: number) => number;
     readonly __wbindgen_realloc: (a: number, b: number, c: number, d: number) => number;
