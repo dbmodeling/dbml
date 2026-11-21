@@ -82,9 +82,10 @@ codegen-units = 1
 strip = "symbols"
 panic = "abort"
 
-# Size-optimized release override for the WebAssembly bundle.
+# Speed-optimized release profile for WebAssembly (#117): measured +167 bytes vs opt-level="s"
+# while running 500-table scene/routing ~2.5-2.7x faster (see docs/11-benchmarks-wasm.md).
 [profile.release.package.dbml-wasm]
-opt-level = "s"
+opt-level = 3
 
 # Distribution profile with Fat LTO for maximum whole-program optimization.
 [profile.dist]
