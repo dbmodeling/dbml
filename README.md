@@ -8,7 +8,7 @@
 
 [Download](https://github.com/dbmodeling/dbml/releases) · [Highlights](#highlights) · [Installation](#installation--usage) · [Running & Building](#running--building) · [Contributing](#contributing)
 
-[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+[![License: PolyForm Noncommercial](https://img.shields.io/badge/License-PolyForm%20Noncommercial-blue.svg)](LICENSE)
 [![Built with Rust](https://img.shields.io/badge/Built%20with-Rust-orange.svg)](https://www.rust-lang.org/)
 
 </div>
@@ -115,4 +115,4 @@ Contributions are welcome! See [CONTRIBUTING.md](CONTRIBUTING.md) for the worksp
 
 Free code signing provided by [SignPath.io](https://about.signpath.io/), using a certificate by [SignPath Foundation](https://signpath.org/). DB Modeling runs locally with zero telemetry — see [SECURITY.md](SECURITY.md) for details.
 
-Licensed under the **[MIT License](LICENSE)**.
+Licensed under the **[PolyForm Noncommercial License 1.0.0](LICENSE)**: free to clone, use, modify and share for any noncommercial purpose. **Commercial use or selling is not permitted.** For commercial licensing, open an issue.

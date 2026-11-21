@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Utilitário para atualizar a versão unificada do projeto em Cargo.toml.
+# Utilitário para atualizar a versão unificada do projeto (Cargo.toml + package.json).
 set -euo pipefail
 
 if [ $# -ne 1 ]; then
@@ -24,6 +24,11 @@ echo "==> Atualizando versão no Cargo.toml raiz para $NEW_VERSION..."
 
 sed -i.bak -E "s/^(version = \")[^\"]+(\")/\1$NEW_VERSION\2/" Cargo.toml
 rm -f Cargo.toml.bak
+
+for pkg in vscode-extension/package.json packages/canvas-web/package.json; do
+    echo "==> Atualizando versão em $pkg..."
+    (cd "$(dirname "$pkg")" && npm version "$NEW_VERSION" --no-git-tag-version --allow-same-version >/dev/null)
+done
 
 echo "==> Formatando código e validando integridade (fmt + clippy + test)..."
 cargo fmt --all
