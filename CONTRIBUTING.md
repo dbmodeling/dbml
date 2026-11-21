@@ -94,21 +94,25 @@ main    ──▶ hotfix/<desc> ───PR (merge commit)─▶ main ──PR m
 
 ## Continuous Integration
 
-Each commit runs the full suite once before other work builds on it, and the gate is the pull request:
+How CI works ([`.github/workflows/ci.yml`](.github/workflows/ci.yml)), in five lines:
 
-| Event | What runs |
-| :--- | :--- |
-| Push to a work branch (no PR) | Nothing. Run the checks below locally. |
-| Draft PR | Light checks only (branch name, `cargo fmt`). |
-| PR into `develop` | Preflight first (branch name, paths, `cargo fmt`, script checks), then clippy + tests on Ubuntu, Windows and macOS and the Web job, only for the areas changed. |
-| Merge (push) into `develop` | Full suite, unfiltered. **This is the only run that saves the build cache.** |
-| PR `develop → main` | No re-run: the `gate` job requires the push run of the same commit on `develop` to have passed. |
-| PR `release/*`, `hotfix/*`, `dependabot/*` → `main` | Full suite. |
-| Every Monday (and on demand) | `Fedora (weekly)`: the test suite on `develop` inside a Fedora container. It is not part of per-commit CI because it shares the Ubuntu rustc and target; only the system libraries differ. |
+1. **PR into `develop`:** a cheap preflight (branch name, changed paths, `cargo fmt`, scripts), then the full Linux/Windows/macOS + web suite for the areas the PR touches. This is the gate.
+2. **Merge into `develop`:** the suite runs once more on the squashed commit. It catches the rare break when `develop` moved after the PR ran, and it is the **only run that saves the build cache**.
+3. **PR `develop → main`:** nothing is rebuilt; the `gate` job requires the `develop` run of that exact commit to be green.
+4. **PR `release/*`, `hotfix/*`, `dependabot/*` → `main`, and Actions → CI → "Run workflow" on any branch:** full suite.
+5. **The only required check is `CI ok`**; a job skipped on purpose (path filter, draft PR) counts as ok. Fedora runs weekly on `develop` ([`fedora.yml`](.github/workflows/fedora.yml)).
 
-Why PRs never save cache: GitHub scopes a PR's cache to its merge ref, so no other run can restore
-it. It only fills the 10 GB repository quota and evicts the `develop` cache. Without the cache,
-Windows/macOS build GPUI from scratch (~19 min instead of ~3 min).
+Pushes to a work branch without a PR run nothing, and draft PRs run only the preflight.
+
+Why only `develop` saves the cache: GitHub scopes a cache to the ref that created it. A PR's cache
+lives on its merge ref and no other run can restore it; it only fills the 10 GB repository quota
+and evicts the `develop` cache. Every PR into `develop` restores the `develop` cache (~3.5 min on
+Windows/macOS); without it, ~400 crates build from scratch (CI builds them unoptimised to keep
+that under ~10 min). A slow PR run means the
+`develop` cache is missing or being rebuilt (e.g. right after a toolchain change).
+
+Why no merge queue: queue runs live on `gh-readonly-queue/develop/*` refs, which can restore caches
+only from their own ref and from `main`, not from `develop`, so every queued merge would build cold.
 
 Dependabot opens at most one grouped PR per ecosystem every Monday (06:00 America/Manaus) against
 `develop`, without auto-rebase. Comment `@dependabot rebase` to refresh one.
