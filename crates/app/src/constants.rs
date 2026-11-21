@@ -23,3 +23,9 @@ pub const TLS_LABEL_FONT_PX: f32 = 12.5;
 /// Configuração do runtime tokio reutilizado pela introspecção de banco.
 pub const INTROSPECT_WORKER_THREADS: usize = 1;
 pub const INTROSPECT_TIMEOUT_SECS: u64 = 10;
+
+/// Configuração do log rotativo estruturado do app Desktop (#98).
+pub const LOGS_DIR_NAME: &str = "logs";
+pub const LOG_FILE_NAME: &str = "db-modeling.log";
+pub const LOG_ROTATED_FILE_NAME: &str = "db-modeling.log.1";
+pub const MAX_LOG_FILE_BYTES: u64 = 1024 * 1024;

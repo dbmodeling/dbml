@@ -351,7 +351,7 @@ impl AppState {
     pub async fn shutdown(&self, grace: std::time::Duration) {
         self.lifecycle.shutdown(grace).await;
         if let Err(err) = self.flush().await {
-            eprintln!("Failed to save pending changes on shutdown: {err:#}");
+            tracing::error!("Failed to save pending changes on shutdown: {err:#}");
         }
     }
 
@@ -396,7 +396,7 @@ impl AppState {
             })
             .await;
             if let Err(err) = result {
-                eprintln!("Failed to save changes: {err:#}");
+                tracing::error!("Failed to save changes: {err:#}");
             }
         });
     }

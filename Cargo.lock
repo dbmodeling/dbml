@@ -253,6 +253,7 @@ dependencies = [
  "serde_json",
  "sql-import",
  "tokio",
+ "tracing",
 ]
 
 [[package]]
@@ -1550,6 +1551,7 @@ dependencies = [
  "schema",
  "sql-import",
  "sqlx",
+ "thiserror 2.0.21",
  "tiberius",
  "tokio",
  "tokio-util",
@@ -1593,6 +1595,7 @@ dependencies = [
  "sql-import",
  "tokio",
  "tokio-tungstenite",
+ "tracing",
 ]
 
 [[package]]
@@ -1633,6 +1636,7 @@ dependencies = [
  "serde-wasm-bindgen",
  "serde_json",
  "sql-import",
+ "thiserror 2.0.21",
  "wasm-bindgen",
 ]
 

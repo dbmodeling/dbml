@@ -26,30 +26,40 @@ pub use tls::{
 pub use url::{Dialect, detect_dialect, mask_url, with_password};
 
 /// Error raised while connecting to or reading a database. Messages never contain the password.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum Error {
     /// The connection target could not be understood.
+    #[error("invalid connection target: {0}")]
     InvalidTarget(String),
     /// The engine is recognised but its introspector is not available yet.
+    #[error("introspection of {0:?} is not available yet")]
     Unsupported(Dialect),
-    /// Connecting failed (network, authentication, missing file, timeout).
+    /// Credentials were rejected by the database server.
+    #[error("authentication failed: {0}")]
+    Authentication(String),
+    /// Connecting failed (network, missing file, timeout, TLS handshake).
+    #[error("could not connect: {0}")]
     Connect(String),
     /// A catalog query failed.
+    #[error("could not read the catalog: {0}")]
     Query(String),
 }
 
-impl std::fmt::Display for Error {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::InvalidTarget(m) => write!(f, "invalid connection target: {m}"),
-            Self::Unsupported(d) => write!(f, "introspection of {d:?} is not available yet"),
-            Self::Connect(m) => write!(f, "could not connect: {m}"),
-            Self::Query(m) => write!(f, "could not read the catalog: {m}"),
+impl Error {
+    /// Classifies a driver connection error into [`Self::Authentication`] or [`Self::Connect`].
+    #[must_use]
+    pub fn from_connect(message: String) -> Self {
+        let lower = message.to_ascii_lowercase();
+        if constants::AUTH_ERROR_MARKERS
+            .iter()
+            .any(|marker| lower.contains(marker))
+        {
+            Self::Authentication(message)
+        } else {
+            Self::Connect(message)
         }
     }
 }
-
-impl std::error::Error for Error {}
 
 /// Limits applied while reading a catalog.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -166,4 +176,25 @@ pub async fn test_connection(target: &str, options: &Options) -> Result<TestOutc
 /// Removes anything that looks like the target (and so a password) from a driver message.
 pub(crate) fn sanitize(msg: &str, target: &str) -> String {
     msg.replace(target, &mask_url(target))
+}
+
+#[cfg(test)]
+mod error_tests {
+    use super::*;
+
+    #[test]
+    fn from_connect_distinguishes_authentication_from_network_errors() {
+        assert!(matches!(
+            Error::from_connect("password authentication failed for user \"app\"".into()),
+            Error::Authentication(_)
+        ));
+        assert!(matches!(
+            Error::from_connect("Access denied for user 'root'@'localhost'".into()),
+            Error::Authentication(_)
+        ));
+        assert!(matches!(
+            Error::from_connect("connection refused (os error 111)".into()),
+            Error::Connect(_)
+        ));
+    }
 }

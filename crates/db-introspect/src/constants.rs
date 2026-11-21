@@ -29,3 +29,13 @@ pub const MYSQL_TLS_DISABLE: &str = "DISABLED";
 pub const SQLSERVER_TRUE: &str = "true";
 /// SQL Server falsy flag value.
 pub const SQLSERVER_FALSE: &str = "false";
+
+/// Case-insensitive driver substrings indicating an authentication failure rather than a network error.
+pub const AUTH_ERROR_MARKERS: [&str; 6] = [
+    "28p01",
+    "28000",
+    "password authentication failed",
+    "access denied for user",
+    "login failed for user",
+    "authentication failed",
+];

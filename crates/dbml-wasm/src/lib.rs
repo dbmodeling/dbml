@@ -50,12 +50,35 @@ pub fn install_panic_hook() {
     }
 }
 
+/// Erro tipado interno do módulo Wasm; convertido em `JsValue` apenas na fronteira JS (#96).
+#[derive(Debug, thiserror::Error)]
+pub enum WasmError {
+    /// Falha ao serializar estrutura Rust para `JsValue`.
+    #[error("serialization failed: {0}")]
+    Serialize(String),
+    /// Falha ao desserializar argumento vindo do JavaScript.
+    #[error("deserialization failed: {0}")]
+    Deserialize(String),
+    /// Dialeto SQL não suportado.
+    #[error("unsupported dialect: {0}")]
+    UnsupportedDialect(String),
+    /// Falha ao exportar o diagrama.
+    #[error("export failed: {0}")]
+    Export(String),
+}
+
+impl From<WasmError> for JsValue {
+    fn from(err: WasmError) -> Self {
+        Self::from_str(&err.to_string())
+    }
+}
+
 /// Serializa estruturas para `JsValue` garantindo que `HashMap` vire objeto JSON (`{}`) e não `Map`.
 fn to_js_json<T: Serialize>(value: &T) -> Result<JsValue, JsValue> {
     let serializer = serde_wasm_bindgen::Serializer::json_compatible();
     value
         .serialize(&serializer)
-        .map_err(|e| JsValue::from_str(&e.to_string()))
+        .map_err(|e| WasmError::Serialize(e.to_string()).into())
 }
 
 /// Cor padrão de um grupo sem `color`: paleta fixa pela posição do grupo (idêntico a `canvas.rs`).

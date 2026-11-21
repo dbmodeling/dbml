@@ -154,3 +154,28 @@ pub fn descendant_tokens(node: &SyntaxNode) -> Vec<SyntaxToken> {
         .filter(|t| !t.kind().is_trivia())
         .collect()
 }
+
+#[cfg(test)]
+mod recovery_tests {
+    use super::*;
+
+    #[test]
+    fn lossless_recovery_on_unterminated_and_degenerate_inputs() {
+        let deep_braces = "{".repeat(512) + "Table x { id int }" + &"}".repeat(512);
+        let samples = [
+            "",
+            "\u{FEFF}Table a { id int [pk] }",
+            "Table \"unterminated",
+            "Table a { col varchar [note: 'unterminated",
+            "Table a { /* unterminated block comment",
+            "Table a { col int [pk, , , ]",
+            "Ref: >>>>>> <<<<<< ----",
+            "Enum e { '' \"\" `` }",
+            deep_braces.as_str(),
+        ];
+        for src in samples {
+            let parsed = parse(src);
+            assert_eq!(parsed.syntax().text().to_string(), src);
+        }
+    }
+}

@@ -82,7 +82,7 @@ async fn connect(target: &str, options: &Options) -> Result<Conn, Error> {
                 "{msg} (for a self-signed certificate add ?trustServerCertificate=true)"
             ))
         } else {
-            Error::Connect(msg)
+            Error::from_connect(msg)
         }
     })?;
     Ok(conn)

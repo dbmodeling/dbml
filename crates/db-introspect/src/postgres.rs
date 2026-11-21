@@ -24,7 +24,7 @@ async fn connect(target: &str, options: &Options) -> Result<PgConnection, Error>
     let conn = tokio::time::timeout(secs, opts.connect())
         .await
         .map_err(|_| Error::Connect(format!("timed out after {}s", secs.as_secs())))?
-        .map_err(|e| Error::Connect(sanitize(&e.to_string(), target)))?;
+        .map_err(|e| Error::from_connect(sanitize(&e.to_string(), target)))?;
     Ok(conn)
 }
 

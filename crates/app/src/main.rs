@@ -23,6 +23,7 @@ mod history;
 mod i18n;
 mod ide;
 mod import_sql;
+mod logging;
 mod motion;
 mod platform;
 mod recovery;
@@ -69,6 +70,7 @@ impl AssetSource for AppAssets {
 }
 
 fn main() {
+    logging::init();
     fatal::install_panic_hook();
     i18n::set(
         std::env::var("DBM_LANG")

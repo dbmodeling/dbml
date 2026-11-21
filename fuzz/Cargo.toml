@@ -1,0 +1,27 @@
+[package]
+name = "dbml-fuzz"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+dbml-syntax = { path = "../crates/core/dbml-syntax" }
+sql-import = { path = "../crates/sql-import" }
+
+[[bin]]
+name = "dbml_parse"
+path = "fuzz_targets/dbml_parse.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "sql_import"
+path = "fuzz_targets/sql_import.rs"
+test = false
+doc = false
+bench = false
