@@ -1,11 +1,17 @@
 import * as vscode from 'vscode';
-import { checkCli, runIntrospect, runTestConnection } from './introspect.js';
+import { base64ToBytes } from './base64.js';
+import type { CliHost } from './cliHost.js';
+import { getTrustedCliPath } from './cliPath.js';
+import { parseWebviewMessage, type WebviewMessage } from './messages.js';
+import { sanitizeSession } from './session.js';
+import { isAllowedDbmlUri } from './uriPolicy.js';
+import { byPath, displayPath, findDbmlFiles } from './workspaceFiles.js';
 
 /** Lista os `.dbml` do workspace no formato esperado pela aba Arquivos do Workbench. */
 async function listDbmlFiles(active?: vscode.Uri): Promise<Array<{ name: string; path: string; active: boolean }>> {
-  const uris = await vscode.workspace.findFiles('**/*.dbml', '**/node_modules/**');
+  const uris = await findDbmlFiles();
   return uris
-    .sort((a, b) => a.fsPath.localeCompare(b.fsPath))
+    .sort(byPath)
     .map((u) => ({
       name: vscode.workspace.asRelativePath(u, (vscode.workspace.workspaceFolders?.length ?? 0) > 1),
       path: u.toString(),
@@ -16,17 +22,35 @@ async function listDbmlFiles(active?: vscode.Uri): Promise<Array<{ name: string;
 export class DbmlCustomEditorProvider implements vscode.CustomTextEditorProvider {
   public static readonly viewType = 'dbmodeling.editor';
 
-  constructor(private readonly context: vscode.ExtensionContext) {}
+  private readonly verifiedClis = new Set<string>();
+
+  constructor(
+    private readonly context: vscode.ExtensionContext,
+    private readonly cli: CliHost
+  ) {}
+
+  /** Caminho confiável da CLI, já verificado (presença + versão mínima) — a checagem é feita uma vez por caminho. */
+  private async ensureCli(): Promise<string> {
+    if (this.cli.unavailableReason) throw new Error(this.cli.unavailableReason);
+    const path = await getTrustedCliPath(this.context);
+    if (!this.verifiedClis.has(path)) {
+      await this.cli.checkCli(path);
+      this.verifiedClis.add(path);
+    }
+    return path;
+  }
 
   public static register(
     context: vscode.ExtensionContext,
-    diagnostics: vscode.DiagnosticCollection
+    diagnostics: vscode.DiagnosticCollection,
+    cli: CliHost
   ): vscode.Disposable {
-    const provider = new DbmlCustomEditorProvider(context);
+    const provider = new DbmlCustomEditorProvider(context, cli);
     provider.diagnostics = diagnostics;
     context.subscriptions.push(vscode.workspace.onDidCloseTextDocument((document) => diagnostics.delete(document.uri)));
     return vscode.window.registerCustomEditorProvider(DbmlCustomEditorProvider.viewType, provider, {
-      webviewOptions: { retainContextWhenHidden: true },
+      // Webview oculta é descartada (libera DOM, canvas e instância Wasm); ao voltar, 'ready' reenvia texto, layout e sessão.
+      webviewOptions: { retainContextWhenHidden: false },
       supportsMultipleEditorsPerDocument: true,
     });
   }
@@ -47,7 +71,10 @@ export class DbmlCustomEditorProvider implements vscode.CustomTextEditorProvider
     webview.html = this.getHtmlForWebview(webview);
 
     const sidecarUri = this.getSidecarUri(document.uri);
-    const canSidecar = document.uri.scheme === 'file';
+    // Sidecar em `file:` e em workspaces virtuais (mesmo esquema de uma pasta aberta, via workspace.fs); `untitled:`, `git:` etc. ficam sem.
+    const canSidecar =
+      document.uri.scheme === 'file' ||
+      (vscode.workspace.workspaceFolders ?? []).some((f) => f.uri.scheme === document.uri.scheme);
     let layoutData: unknown = null;
     if (canSidecar) {
       try {
@@ -71,6 +98,7 @@ export class DbmlCustomEditorProvider implements vscode.CustomTextEditorProvider
             : '';
         } catch { /* The host still reports its dirty state. */ }
       }
+      lastPosted = { source: document.getText(), saved: !document.isDirty };
       webview.postMessage({
         type: 'update',
         documentId,
@@ -81,23 +109,32 @@ export class DbmlCustomEditorProvider implements vscode.CustomTextEditorProvider
         layout: withLayout ? layoutData : undefined,
         title: title(),
         files,
-        session: withLayout ? this.context.workspaceState.get(sessionKey) : undefined,
+        session: withLayout ? sanitizeSession(this.context.workspaceState.get(sessionKey)) : undefined,
       });
     };
 
     // Alterações textuais (digitação no editor nativo, Ctrl+Z, outros editores): reenviadas com debounce.
-    // O Workbench ignora o eco quando o texto já é idêntico ao que ele aplicou.
-    let changeTimer: NodeJS.Timeout | null = null;
+    // O Workbench ignora o eco quando o texto já é idêntico ao que ele aplicou. Atualizações levam só texto/estado
+    // (a lista de arquivos só é recalculada em criar/excluir/renomear) e são puladas quando nada mudou ou a
+    // aba está oculta (ao reaparecer, o 'ready' reenvia tudo).
+    let lastPosted: { source: string; saved: boolean } | null = null;
+    const postTextUpdate = (extra: Record<string, unknown> = {}) => {
+      if (!webviewPanel.visible) return;
+      const source = document.getText();
+      const saved = !document.isDirty;
+      if (lastPosted && lastPosted.source === source && lastPosted.saved === saved) return;
+      lastPosted = { source, saved };
+      void webview.postMessage({ type: 'update', source, documentId, saved, ...extra });
+    };
+    let changeTimer: ReturnType<typeof setTimeout> | null = null;
     const changeSub = vscode.workspace.onDidChangeTextDocument((e) => {
       if (e.document.uri.toString() !== document.uri.toString()) return;
       if (changeTimer) clearTimeout(changeTimer);
-      changeTimer = setTimeout(() => {
-        webview.postMessage({ type: 'update', source: document.getText(), documentId, saved: !document.isDirty, title: title() });
-      }, 80);
+      changeTimer = setTimeout(() => postTextUpdate({ title: title() }), 80);
     });
     const saveSub = vscode.workspace.onDidSaveTextDocument((savedDocument) => {
       if (savedDocument.uri.toString() !== documentId) return;
-      void webview.postMessage({ type: 'update', source: savedDocument.getText(), documentId, saved: true });
+      postTextUpdate();
     });
     const filesSub = [
       vscode.workspace.onDidCreateFiles(() => void refreshFiles()),
@@ -112,12 +149,19 @@ export class DbmlCustomEditorProvider implements vscode.CustomTextEditorProvider
       });
     };
 
-    const handleMessage = async (message: any) => {
+    // Falhas de gravação aparecem uma vez por arquivo e tipo (não a cada arraste de tabela).
+    const warned = new Set<string>();
+    const warnOnce = (kind: 'sidecar' | 'edit', text: string) => {
+      if (warned.has(kind)) return;
+      warned.add(kind);
+      void vscode.window.showWarningMessage(text);
+    };
+
+    const handleMessage = async (message: WebviewMessage) => {
       try {
         switch (message.command) {
           case 'apply_patch': {
             const patch = message.patch;
-            if (!patch || !patch.range) throw new Error('Invalid patch');
             if (patch.expected_source !== document.getText()) throw new Error('Document changed outside this editor; reload or reconcile changes');
             const range = new vscode.Range(
               new vscode.Position(patch.range.start.line, patch.range.start.character),
@@ -126,7 +170,10 @@ export class DbmlCustomEditorProvider implements vscode.CustomTextEditorProvider
             const edit = new vscode.WorkspaceEdit();
             edit.replace(document.uri, range, patch.new_text);
             // Integra com o histórico nativo (Ctrl+Z / Ctrl+Y)
-            if (!await vscode.workspace.applyEdit(edit)) throw new Error('Could not apply edit');
+            if (!await vscode.workspace.applyEdit(edit)) {
+              warnOnce('edit', `Could not apply the change to ${title()}: the editor rejected the edit (is the file read-only?).`);
+              throw new Error('Could not apply edit');
+            }
             break;
           }
           case 'save_document': {
@@ -150,12 +197,14 @@ export class DbmlCustomEditorProvider implements vscode.CustomTextEditorProvider
               layoutData = message.layout;
             } catch (err) {
               try { await vscode.workspace.fs.delete(temp); } catch { /* temporary file may not exist */ }
+              const cause = err instanceof Error ? err.message : String(err);
+              warnOnce('sidecar', `Could not save the layout of ${title()} (${cause}). Table positions will not be kept.`);
               throw err;
             }
             break;
           }
           case 'diagnostics': {
-            const list = (message.diagnostics || []).map((d: any) => {
+            const list = message.diagnostics.map((d) => {
               const sev =
                 d.severity === 'error'
                   ? vscode.DiagnosticSeverity.Error
@@ -179,21 +228,19 @@ export class DbmlCustomEditorProvider implements vscode.CustomTextEditorProvider
               saveLabel: 'Save export',
             });
             if (saveUri) {
-              const data = isBinary ? Buffer.from(content, 'base64') : new TextEncoder().encode(content);
+              const data = isBinary ? base64ToBytes(content) : new TextEncoder().encode(content);
               await vscode.workspace.fs.writeFile(saveUri, data);
-              vscode.window.showInformationMessage(`Arquivo exportado: ${saveUri.fsPath}`);
+              vscode.window.showInformationMessage(`Arquivo exportado: ${displayPath(saveUri)}`);
             }
             break;
           }
           case 'check_cli': {
-            const cliPath = vscode.workspace.getConfiguration('dbmodeling').get<string>('cliPath') || 'dbml';
-            await checkCli(cliPath);
+            await this.ensureCli();
             break;
           }
           case 'test_connection': {
-            const cliPath = vscode.workspace.getConfiguration('dbmodeling').get<string>('cliPath') || 'dbml';
             try {
-              const result = await runTestConnection(cliPath, message.request);
+              const result = await this.cli.testConnection(await this.ensureCli(), message.request);
               webview.postMessage({ type: 'test_connection_result', id: message.id, result });
             } catch (e) {
               webview.postMessage({
@@ -205,9 +252,8 @@ export class DbmlCustomEditorProvider implements vscode.CustomTextEditorProvider
             break;
           }
           case 'introspect': {
-            const cliPath = vscode.workspace.getConfiguration('dbmodeling').get<string>('cliPath') || 'dbml';
             try {
-              const result = await runIntrospect(cliPath, message.request);
+              const result = await this.cli.introspect(await this.ensureCli(), message.request);
               webview.postMessage({ type: 'introspect_result', id: message.id, result });
             } catch (e) {
               webview.postMessage({
@@ -219,11 +265,17 @@ export class DbmlCustomEditorProvider implements vscode.CustomTextEditorProvider
             break;
           }
           case 'open_file': {
-            await vscode.commands.executeCommand(
-              'vscode.openWith',
-              vscode.Uri.parse(message.path),
-              DbmlCustomEditorProvider.viewType
-            );
+            let target: vscode.Uri;
+            try {
+              target = vscode.Uri.parse(message.path, true);
+            } catch {
+              throw new Error('Invalid file path');
+            }
+            const isCurrent = target.toString() === documentId;
+            if (!isCurrent && !isAllowedDbmlUri(target, vscode.workspace.workspaceFolders?.map((f) => f.uri) ?? [])) {
+              throw new Error('Only .dbml files inside the workspace can be opened');
+            }
+            await vscode.commands.executeCommand('vscode.openWith', target, DbmlCustomEditorProvider.viewType);
             break;
           }
           case 'new_file': {
@@ -231,7 +283,7 @@ export class DbmlCustomEditorProvider implements vscode.CustomTextEditorProvider
             break;
           }
           case 'save_session': {
-            await this.context.workspaceState.update(sessionKey, message.session);
+            await this.context.workspaceState.update(sessionKey, sanitizeSession(message.session));
             break;
           }
           case 'ready': {
@@ -247,7 +299,17 @@ export class DbmlCustomEditorProvider implements vscode.CustomTextEditorProvider
         else console.error(err);
       }
     };
-    webview.onDidReceiveMessage((message) => {
+    webview.onDidReceiveMessage((raw: unknown) => {
+      const parsed = parseWebviewMessage(raw);
+      if (!parsed.ok) {
+        console.warn(`[dbmodeling] mensagem da Webview descartada: ${parsed.reason}`);
+        if (parsed.id != null) {
+          const type = parsed.command === 'introspect' || parsed.command === 'test_connection' ? `${parsed.command}_result` : 'result';
+          void webview.postMessage({ type, id: parsed.id, error: `Invalid message (${parsed.reason})` });
+        }
+        return;
+      }
+      const message = parsed.message;
       if (['apply_patch', 'save_document', 'save_layout'].includes(message.command)) {
         const previous = this.edits.get(document) ?? Promise.resolve();
         const next = previous.then(() => handleMessage(message));

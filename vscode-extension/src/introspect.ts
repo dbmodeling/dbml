@@ -1,7 +1,4 @@
 import { execFile } from 'child_process';
-import { constants } from 'node:fs';
-import { access, stat } from 'node:fs/promises';
-import { delimiter, join } from 'node:path';
 
 /** Mesmos campos do modal "Connect to Database" (`IntrospectRequest` em `canvas-web`). */
 export interface IntrospectRequest {
@@ -62,20 +59,54 @@ export function runTestConnection(cliPath: string, req: IntrospectRequest): Prom
   );
 }
 
-/** Checks that the CLI is available without running it. */
-export async function checkCli(cliPath: string): Promise<void> {
-  const paths = /[\\/]/.test(cliPath) ? [cliPath]
-    : (process.env.PATH ?? '').split(delimiter).filter(Boolean).map((dir) => join(dir, cliPath));
-  for (const path of paths) {
-    const candidates = process.platform === 'win32' && !/\.exe$/i.test(path) ? [path, `${path}.exe`] : [path];
-    for (const candidate of candidates) {
-      try {
-        await access(candidate, constants.X_OK);
-        if ((await stat(candidate)).isFile()) return;
-      } catch { /* Check the next PATH entry. */ }
-    }
+/** Versão mínima da CLI que a extensão suporta (`import --url/--test/--password-stdin`). */
+export const MIN_CLI_VERSION: readonly [number, number, number] = [0, 1, 4];
+
+const INSTALL_HELP =
+  'Install it from https://github.com/dbmodeling/dbml/releases (or run the install script from the README) and make sure it is on PATH, or set "dbmodeling.cliPath".';
+
+/** Extrai `x.y.z` da saída de `dbml --version` (ex.: `dbml 0.1.4`). */
+export function parseCliVersion(output: string): [number, number, number] | undefined {
+  const m = /(\d+)\.(\d+)\.(\d+)/.exec(output);
+  return m ? [Number(m[1]), Number(m[2]), Number(m[3])] : undefined;
+}
+
+export function compareVersions(a: readonly number[], b: readonly number[]): number {
+  for (let i = 0; i < 3; i++) {
+    const d = (a[i] ?? 0) - (b[i] ?? 0);
+    if (d !== 0) return d;
   }
-  throw new Error('The dbml CLI is unavailable. Install it or set dbmodeling.cliPath.');
+  return 0;
+}
+
+/** Confere que a CLI existe e que a versão é compatível; devolve a versão encontrada. */
+export function checkCli(cliPath: string): Promise<string> {
+  return new Promise((resolve, reject) => {
+    execFile(cliPath, ['--version'], { timeout: 10_000 }, (error, stdout) => {
+      if (error) {
+        const code = (error as NodeJS.ErrnoException).code;
+        reject(
+          new Error(
+            code === 'ENOENT' || code === 'EACCES'
+              ? `The dbml CLI ("${cliPath}") was not found. ${INSTALL_HELP}`
+              : `Could not read the dbml CLI version from "${cliPath}": ${error.message}`
+          )
+        );
+        return;
+      }
+      const version = parseCliVersion(stdout);
+      if (!version) {
+        reject(new Error(`Could not read the dbml CLI version from "${cliPath}" (unexpected output). ${INSTALL_HELP}`));
+        return;
+      }
+      const found = version.join('.');
+      if (compareVersions(version, MIN_CLI_VERSION) < 0) {
+        reject(new Error(`dbml CLI ${found} is too old; this extension needs ${MIN_CLI_VERSION.join('.')} or newer. ${INSTALL_HELP}`));
+        return;
+      }
+      resolve(found);
+    });
+  });
 }
 
 function runCli(cliPath: string, args: string[], req: IntrospectRequest): Promise<string> {
@@ -96,7 +127,7 @@ function runCliFull(
         if (error) {
           const code = (error as NodeJS.ErrnoException).code;
           if (code === 'ENOENT') {
-            reject(new Error(`Could not run "${cliPath}". Install the dbml CLI or set "dbmodeling.cliPath".`));
+            reject(new Error(`Could not run "${cliPath}". ${INSTALL_HELP}`));
             return;
           }
           const msg = stderr.split('\n').find((l) => l.startsWith('Error:'))?.replace(/^Error:\s*/, '');
