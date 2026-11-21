@@ -74,6 +74,53 @@ jobs:
       - name: Executar suíte de testes (cargo test)
         run: cargo test --locked --workspace
 
+  fedora:
+    name: Rust (Fedora)
+    runs-on: ubuntu-latest
+    container:
+      image: fedora:latest
+
+    steps:
+      - name: Instalar dependências nativas (Fedora / GPUI / Wayland / Vulkan / X11 / Fontconfig)
+        run: |
+          dnf install -y \
+            git \
+            curl \
+            tar \
+            gcc \
+            gcc-c++ \
+            pkg-config \
+            fontconfig-devel \
+            freetype-devel \
+            alsa-lib-devel \
+            libxkbcommon-devel \
+            libxkbcommon-x11-devel \
+            vulkan-loader-devel \
+            wayland-devel \
+            libX11-devel \
+            libxcb-devel \
+            openssl-devel
+
+      - name: Checkout do repositório
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Instalar Toolchain Rust
+        uses: dtolnay/rust-toolchain@39008827e6b4319a349e9a42dfc90579dd25f1ca # stable
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+          components: clippy
+
+      - name: Cache de compilação do Rust
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
+        with:
+          shared-key: "workspace-ci-fedora"
+
+      - name: Executar linter (cargo clippy)
+        run: cargo clippy --locked --workspace --all-targets -- -D warnings
+
+      - name: Executar suíte de testes (cargo test)
+        run: cargo test --locked --workspace
+
   wasm:
     name: Wasm (dbml-wasm)
     runs-on: ubuntu-latest
