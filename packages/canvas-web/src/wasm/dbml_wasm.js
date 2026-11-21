@@ -497,7 +497,7 @@ function __wbg_get_imports() {
             const ret = Object.entries(arg0);
             return ret;
         },
-        __wbg_error_ccb1519d9913634f: function(arg0, arg1) {
+        __wbg_error_380ebc5514f29455: function(arg0, arg1) {
             console.error(getStringFromWasm0(arg0, arg1));
         },
         __wbg_get_658f6698067d9515: function() { return handleError(function (arg0, arg1) {

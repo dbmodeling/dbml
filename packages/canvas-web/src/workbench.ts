@@ -1797,7 +1797,7 @@ export class Workbench {
       <span class="cnts">${ICON('Table2', 12)}${t('{} tabelas · {} relações', this.schema.tables.length, this.schema.refs.length)}</span>
       ${this.connectionHtml()}${this.engineHtml()}
       <span class="hint">${esc(this.hint())}</span>
-      <span>${Math.round(this.zoom * 100)}%</span><span>DBML</span><span>v0.1.4</span>
+      <span>${Math.round(this.zoom * 100)}%</span><span>DBML</span><span>v0.2.0</span>
       <span class="theme" data-act="ToggleTheme" title="${t("Alternar tema · Ctrl+T")}">${ICON(dark ? 'Moon' : 'Sun', 12)}${t(dark ? 'Escuro' : 'Claro')}</span>`;
   }
 
