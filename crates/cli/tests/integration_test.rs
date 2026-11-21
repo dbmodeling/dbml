@@ -305,6 +305,49 @@ async fn pending_patches_edit_the_buffer_in_place() {
 }
 
 #[tokio::test]
+async fn startup_removes_only_stale_atomic_write_leftovers() {
+    use std::time::{Duration, SystemTime};
+    let dir = std::env::temp_dir().join(format!("dbml_stale_tmp_{}", std::process::id()));
+    let _ = tokio::fs::remove_dir_all(&dir).await;
+    tokio::fs::create_dir_all(&dir).await.unwrap();
+    let old = SystemTime::now() - Duration::from_secs(600);
+    let touch_old = |name: &str| {
+        let path = dir.join(name);
+        std::fs::write(&path, "x").unwrap();
+        std::fs::File::options()
+            .write(true)
+            .open(&path)
+            .unwrap()
+            .set_modified(old)
+            .unwrap();
+        path
+    };
+    let stale_doc = touch_old(".schema.dbml.tmp-4242-7");
+    let stale_layout = touch_old(".schema.dbml.layout.json.tmp-4242-8");
+    // Não casam com o padrão de `atomic_write`: ficam.
+    let user_hidden = touch_old(".notes.tmp-1-2");
+    let user_file = touch_old("backup.tmp-4242-7");
+    let wrong_pid = touch_old(".schema.dbml.tmp-abc-7");
+    // Recente: pode ser uma gravação em andamento de outro processo.
+    let fresh = dir.join(".schema.dbml.tmp-4242-9");
+    std::fs::write(&fresh, "x").unwrap();
+    let schema = dir.join("schema.dbml");
+    std::fs::write(&schema, "Table a { id int }\n").unwrap();
+
+    let removed = dbml_cli::state::clean_stale_temp_files(&dir, Duration::from_secs(60)).await;
+    assert_eq!(removed, 2);
+    assert!(!stale_doc.exists() && !stale_layout.exists());
+    assert!(user_hidden.exists() && user_file.exists() && wrong_pid.exists());
+    assert!(fresh.exists() && schema.exists());
+
+    // AppState::new também limpa a pasta do projeto (com a idade mínima padrão).
+    let stale_again = touch_old(".schema.dbml.tmp-1-1");
+    dbml_cli::state::AppState::new(dir.clone()).await.unwrap();
+    assert!(!stale_again.exists());
+    let _ = tokio::fs::remove_dir_all(&dir).await;
+}
+
+#[tokio::test]
 async fn save_document_flushes_pending_edits() {
     let d = Doc::new("flush_save").await;
     d.prepend("// editado\n").await;

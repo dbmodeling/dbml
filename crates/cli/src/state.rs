@@ -39,6 +39,55 @@ pub async fn atomic_write(path: &Path, content: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Idade mínima para um arquivo temporário de gravação atômica ser considerado abandonado
+/// (uma gravação em andamento dura milissegundos; outro processo pode estar escrevendo agora).
+pub const STALE_TEMP_AGE: std::time::Duration = std::time::Duration::from_secs(60);
+
+/// Reconhece `.<nome>.tmp-<pid>-<seq>` com `<nome>` terminando em `.dbml` ou `.dbml.layout.json`
+/// (o padrão criado por [`atomic_write`] para os arquivos que este servidor grava; a comparação
+/// é exata de propósito, pois o nome é gerado por nós).
+#[allow(clippy::case_sensitive_file_extension_comparisons)]
+fn is_atomic_write_leftover(file_name: &str) -> bool {
+    let Some(rest) = file_name.strip_prefix('.') else {
+        return false;
+    };
+    let Some((name, suffix)) = rest.rsplit_once(".tmp-") else {
+        return false;
+    };
+    let Some((pid, seq)) = suffix.split_once('-') else {
+        return false;
+    };
+    let digits = |s: &str| !s.is_empty() && s.bytes().all(|b| b.is_ascii_digit());
+    digits(pid) && digits(seq) && (name.ends_with(".dbml") || name.ends_with(".dbml.layout.json"))
+}
+
+/// Remove de `dir` os temporários de gravações atômicas interrompidas (processo morto entre a
+/// escrita e o rename) com mais de `min_age`. Devolve quantos foram removidos.
+pub async fn clean_stale_temp_files(dir: &Path, min_age: std::time::Duration) -> usize {
+    let Ok(mut entries) = tokio::fs::read_dir(dir).await else {
+        return 0;
+    };
+    let mut removed = 0;
+    while let Ok(Some(entry)) = entries.next_entry().await {
+        let name = entry.file_name();
+        if !name.to_str().is_some_and(is_atomic_write_leftover) {
+            continue;
+        }
+        let Ok(meta) = entry.metadata().await else {
+            continue;
+        };
+        let old_enough = meta
+            .modified()
+            .ok()
+            .and_then(|m| m.elapsed().ok())
+            .is_some_and(|age| age >= min_age);
+        if meta.is_file() && old_enough && tokio::fs::remove_file(entry.path()).await.is_ok() {
+            removed += 1;
+        }
+    }
+    removed
+}
+
 /// Gera o token de sessão desta execução: 128 bits do gerador do sistema operacional em hex.
 ///
 /// # Panics
@@ -217,6 +266,11 @@ impl AppState {
         };
 
         let layout_path = layout_path_for(&file_path);
+
+        // Sobras de gravações atômicas interrompidas numa execução anterior.
+        if let Some(dir) = file_path.parent() {
+            clean_stale_temp_files(dir, STALE_TEMP_AGE).await;
+        }
 
         // Cria arquivo com template inicial se não existir
         if !path_exists(&file_path).await {
