@@ -39,6 +39,10 @@ const NEW_TABLE_NAME: &str = "new_table";
 pub struct Doc {
     /// identifica a cópia de recuperação (`recovery`) desta aba
     id: u64,
+    /// posições já gravadas (ou lidas) no sidecar de layout
+    layout_saved: std::collections::HashMap<String, (f32, f32)>,
+    /// gravação do sidecar com debounce
+    layout_task: Option<Task<()>>,
     path: Option<PathBuf>,
     title: String,
     editor: Entity<EditorState>,
@@ -735,11 +739,17 @@ impl Shell {
             .as_deref()
             .map(crate::session::load_edges)
             .unwrap_or_default();
+        let saved_positions = path
+            .as_deref()
+            .map(crate::session::load_positions)
+            .unwrap_or_default();
         let diagram = cx.new(|cx| {
             let mut d = Diagram::new(dbml_analysis::analyze(&text), cx);
             d.set_edges(edges);
+            d.seed_positions(saved_positions);
             d
         });
+        let layout_saved = diagram.read(cx).positions().clone();
         let editor = cx.new(|cx| {
             let mut st = EditorState::new(window, cx)
                 .default_value(text)
@@ -796,6 +806,9 @@ impl Shell {
         // repinta o shell só quando muda algo que ele mostra (seleção, zoom, dica...);
         // mover/arrastar no canvas redesenha apenas o canvas
         let obs = cx.observe(&diagram, |this: &mut Shell, d, cx| {
+            if let Some(i) = this.docs.iter().position(|doc| doc.diagram == d) {
+                this.save_layout(i, cx);
+            }
             let sum = d.read(cx).summary();
             if this.last_summary.as_ref() != Some(&sum) {
                 let had_selection = this
@@ -866,6 +879,8 @@ impl Shell {
         self.subs.extend([sub, obs, events]);
         self.docs.push(Doc {
             id: crate::recovery::next_id(),
+            layout_saved,
+            layout_task: None,
             path,
             title,
             editor,
@@ -891,6 +906,28 @@ impl Shell {
 
     /// Abre `path` em uma aba. A leitura roda em segundo plano (pasta de rede lenta não congela
     /// a janela); `finish_open` conclui na thread da UI.
+    /// Grava as posições dos cartões no sidecar (`<arquivo>.dbml.layout.json`) quando mudam
+    /// (arrastar, desfazer/refazer, reorganizar, tabela nova), com debounce e em segundo plano.
+    fn save_layout(&mut self, i: usize, cx: &mut Context<Self>) {
+        let Some(doc) = self.docs.get_mut(i) else { return };
+        let Some(path) = doc.path.clone() else { return };
+        let pos = doc.diagram.read(cx).positions().clone();
+        if pos == doc.layout_saved {
+            return;
+        }
+        doc.layout_saved.clone_from(&pos);
+        let bg = cx.background_executor().clone();
+        doc.layout_task = Some(cx.spawn(async move |_, _| {
+            bg.timer(std::time::Duration::from_millis(400)).await;
+            bg.spawn(async move {
+                if let Err(e) = crate::session::save_positions(&path, &pos) {
+                    eprintln!("{}", crate::i18n::t("não foi possível gravar o layout de {}: {}").replacen("{}", &path.display().to_string(), 1).replacen("{}", &e.to_string(), 1));
+                }
+            })
+            .await;
+        }));
+    }
+
     /// Publica as abas com edições não salvas (para o panic hook) e agenda a gravação das cópias
     /// de recuperação; salvar ou fechar a aba apaga a cópia na próxima gravação.
     fn publish_recovery(&mut self, cx: &mut Context<Self>) {
@@ -1465,6 +1502,7 @@ impl Shell {
         let editor = doc.editor.clone();
         let diagram = doc.diagram.clone();
         let edges = doc.path.as_deref().map(crate::session::load_edges).unwrap_or_default();
+        let saved_positions = doc.path.as_deref().map(crate::session::load_positions).unwrap_or_default();
         let title = doc.title.clone();
         if editor.read(cx).value().as_ref() != text {
             self.suppress_history = true;
@@ -1475,6 +1513,7 @@ impl Shell {
         diagram.update(cx, |d, cx| {
             d.set_schema(schema);
             d.set_edges(edges);
+            d.seed_positions(saved_positions);
             cx.notify();
         });
         if changed {
@@ -1513,8 +1552,10 @@ impl Shell {
                 window.push_notification(crate::i18n::t("Salvo em {}").replace("{}", &path.display().to_string()), cx);
                 doc.title = file_title(&path);
                 doc.path = Some(path.clone());
-                // arquivo novo/"salvar como": leva o estilo das relações para o sidecar
+                // arquivo novo/"salvar como": leva estilo das relações e posições para o sidecar
                 Self::save_edges(doc, cx);
+                doc.layout_saved.clear();
+                self.save_layout(i, cx);
                 if let Some(dir) = self.project.clone() {
                     Self::rescan(dir, window, cx);
                 }

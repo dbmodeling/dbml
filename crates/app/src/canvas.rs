@@ -217,6 +217,19 @@ impl Diagram {
         self.schema = schema;
     }
 
+    /// Aplica posições salvas (sidecar de layout): cartões presentes mantêm o lugar salvo, os que
+    /// não estão no sidecar partem do auto-layout sem cair em cima dos demais; chaves de
+    /// tabelas que não existem mais são descartadas.
+    pub fn seed_positions(&mut self, saved: HashMap<String, (f32, f32)>) {
+        if saved.is_empty() {
+            return;
+        }
+        self.layout_motion = None;
+        self.pos = saved;
+        let schema = std::mem::take(&mut self.schema);
+        self.set_schema(schema);
+    }
+
     pub fn relayout(&mut self) {
         self.advance_motion(Instant::now(), motion::disabled());
         let from = self.pos.clone();
@@ -2768,6 +2781,11 @@ mod tests {
                     d.set_schema(added.clone());
                     d.apply_snapshot(added, d.pos.clone(), Some("c".into()), None, Vec::new());
                     assert_eq!(d.appearing.contains_key("c"), !motion::disabled());
+                    // posições do sidecar: respeita as salvas, completa as ausentes, ignora as órfãs
+                    d.seed_positions(HashMap::from([("a".to_string(), (500., 600.)), ("ghost".to_string(), (1., 1.))]));
+                    assert_eq!(d.pos["a"], (500., 600.));
+                    assert!(!d.pos.contains_key("ghost"));
+                    assert!(d.pos.contains_key("b") && d.pos.contains_key("c"));
                     cx.notify();
                 });
                 draw(cx);
