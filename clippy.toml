@@ -1,0 +1,5 @@
+# Allow test ergonomics while enforcing strict panic-free lints in production code (#95).
+allow-unwrap-in-tests = true
+allow-expect-in-tests = true
+allow-indexing-slicing-in-tests = true
+allow-panic-in-tests = true

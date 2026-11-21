@@ -94,6 +94,10 @@ pub async fn clean_stale_temp_files(dir: &Path, min_age: std::time::Duration) ->
 pub fn generate_token() -> String {
     use std::fmt::Write as _;
     let mut bytes = [0u8; 16];
+    #[expect(
+        clippy::expect_used,
+        reason = "server refuses to start without OS cryptographic entropy"
+    )]
     getrandom::fill(&mut bytes).expect("o sistema operacional não forneceu entropia");
     bytes.iter().fold(String::with_capacity(32), |mut out, b| {
         let _ = write!(out, "{b:02x}");
@@ -457,6 +461,10 @@ impl AppState {
             version: doc.version,
             reason,
         };
+        #[expect(
+            clippy::expect_used,
+            reason = "in-memory DocumentMessage serialization is infallible"
+        )]
         serde_json::to_string(&msg).expect("serialização de DocumentMessage não falha")
     }
 

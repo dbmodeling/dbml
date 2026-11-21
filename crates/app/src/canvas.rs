@@ -964,8 +964,10 @@ impl Diagram {
                 self.pos
                     .insert(name.clone(), (sx + (x - sx) * t, sy + (y - sy) * t));
             }
-            if reduced || layout.progress.finished(now) {
-                self.pos = self.layout_motion.take().unwrap().to;
+            if (reduced || layout.progress.finished(now))
+                && let Some(finished) = self.layout_motion.take()
+            {
+                self.pos = finished.to;
             }
         }
         self.appearing.retain(|_, t| !reduced && !t.finished(now));

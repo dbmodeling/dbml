@@ -1,5 +1,11 @@
 #![forbid(unsafe_code)]
 #![deny(missing_docs)]
+#![allow(
+    clippy::cast_precision_loss,
+    clippy::cast_possible_truncation,
+    clippy::cast_possible_wrap,
+    clippy::cast_sign_loss
+)]
 //! Diagram export without UI dependencies: Mermaid `erDiagram`, vector SVG and PNG/JPEG
 //! rasterisation (ADR-0007: scene → SVG → raster).
 

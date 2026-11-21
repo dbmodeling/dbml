@@ -1,3 +1,4 @@
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 //! Testes de ponta a ponta do servidor Axum/WebSocket (sobem um listener real em porta efêmera).
 
 use dbml_cli::server::create_router;

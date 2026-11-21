@@ -15,6 +15,10 @@ pub fn disabled() -> bool {
     *DISABLED.get_or_init(|| std::env::var("DBM_NO_ANIM").is_ok_and(|v| v == "1"))
 }
 
+#[expect(
+    clippy::expect_used,
+    reason = "constant cubic-bezier control points are valid in [0, 1]"
+)]
 pub fn easing() -> base::Easing {
     base::Easing::cubic_bezier(0.2, 0.8, 0.2, 1.).expect("curva de movimento válida")
 }

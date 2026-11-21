@@ -1,4 +1,10 @@
 #![forbid(unsafe_code)]
+#![allow(
+    clippy::cast_precision_loss,
+    clippy::cast_possible_truncation,
+    clippy::cast_possible_wrap,
+    clippy::cast_sign_loss
+)]
 #![deny(missing_docs)]
 //! Deterministic layered auto-layout (simplified Sugiyama) and orthogonal edge routing.
 

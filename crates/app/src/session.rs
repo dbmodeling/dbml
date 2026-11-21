@@ -82,7 +82,11 @@ pub fn save_positions(
     if !tables.is_object() {
         *tables = serde_json::Value::Object(serde_json::Map::new());
     }
-    let tables = tables.as_object_mut().expect("tables é objeto");
+    let Some(tables) = tables.as_object_mut() else {
+        return Err(std::io::Error::other(crate::i18n::t(
+            "sidecar de layout não é um objeto JSON",
+        )));
+    };
     let round = |n: f32| (f64::from(n) * 100.0).round() / 100.0;
     for (name, &(x, y)) in pos {
         let entry = tables
@@ -91,9 +95,10 @@ pub fn save_positions(
         if !entry.is_object() {
             *entry = serde_json::Value::Object(serde_json::Map::new());
         }
-        let entry = entry.as_object_mut().expect("entrada é objeto");
-        entry.insert("x".into(), serde_json::json!(round(x)));
-        entry.insert("y".into(), serde_json::json!(round(y)));
+        if let Some(entry) = entry.as_object_mut() {
+            entry.insert("x".into(), serde_json::json!(round(x)));
+            entry.insert("y".into(), serde_json::json!(round(y)));
+        }
     }
     let json = serde_json::to_string_pretty(&v).map_err(std::io::Error::other)?;
     atomic_write_sync(&p, &json)

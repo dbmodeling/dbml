@@ -114,6 +114,10 @@ impl Language for DbmlLang {
             23 => SyntaxKind::Indexes,
             24 => SyntaxKind::Note,
             25 => SyntaxKind::Project,
+            #[expect(
+                clippy::panic,
+                reason = "rowan::Language::kind_from_raw requires infallible conversion for known SyntaxKind discriminants"
+            )]
             other => panic!("invalid SyntaxKind raw discriminant: {other}"),
         }
     }

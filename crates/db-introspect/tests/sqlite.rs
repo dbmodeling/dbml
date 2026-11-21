@@ -1,3 +1,4 @@
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 //! SQLite end-to-end: real file, read-only connection, DBML that parses cleanly.
 
 use db_introspect::{Error, Options, introspect, test_connection};

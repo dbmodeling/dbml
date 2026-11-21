@@ -1,5 +1,11 @@
 #![cfg_attr(windows, windows_subsystem = "windows")]
 #![deny(unsafe_code)]
+#![allow(
+    clippy::cast_precision_loss,
+    clippy::cast_possible_truncation,
+    clippy::cast_possible_wrap,
+    clippy::cast_sign_loss
+)]
 
 //! DB Modeling: visual database modeling with DBML ↔ canvas.
 

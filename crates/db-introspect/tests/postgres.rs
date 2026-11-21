@@ -1,3 +1,4 @@
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 //! PostgreSQL end-to-end against a real server (for example a Docker container).
 //!
 //! Ignored by default. Run with:

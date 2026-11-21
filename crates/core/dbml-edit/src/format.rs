@@ -41,7 +41,7 @@ pub(crate) fn format(text: &str) -> String {
         blank_run = 0;
         let (open, close) = braces(line);
         let leading_close = i32::from(line.starts_with('}'));
-        let indent = (depth - leading_close).max(0) as usize;
+        let indent = usize::try_from((depth - leading_close).max(0)).unwrap_or(0);
         // remove linha em branco antes de `}`
         if leading_close == 1 && out.ends_with("\n\n") {
             out.pop();

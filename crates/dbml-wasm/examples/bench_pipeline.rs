@@ -7,8 +7,8 @@ use std::hint::black_box;
 use std::time::Instant;
 
 const TABLE_COUNTS: [usize; 3] = [50, 200, 500];
-const WARMUP_ITERS: usize = 2;
-const SAMPLE_ITERS: usize = 5;
+const WARMUP_ITERS: u32 = 2;
+const SAMPLE_ITERS: u32 = 5;
 const GROUP_SIZE: usize = 10;
 const EXTRA_COLS: usize = 4;
 const ROUTE_GAP_PX: f32 = 16.0;
@@ -46,7 +46,7 @@ fn measure_ms<F: FnMut()>(mut f: F) -> f64 {
     for _ in 0..SAMPLE_ITERS {
         f();
     }
-    start.elapsed().as_secs_f64() * 1000.0 / SAMPLE_ITERS as f64
+    start.elapsed().as_secs_f64() * 1000.0 / f64::from(SAMPLE_ITERS)
 }
 
 fn main() {

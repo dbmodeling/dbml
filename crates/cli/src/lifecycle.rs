@@ -36,7 +36,10 @@ impl Lifecycle {
     where
         F: Future<Output = ()> + Send + 'static,
     {
-        let mut tasks = self.tasks.lock().expect("lifecycle mutex poisoned");
+        let mut tasks = self
+            .tasks
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         while tasks.try_join_next().is_some() {}
         tasks.spawn(work);
     }
@@ -59,7 +62,10 @@ impl Lifecycle {
     /// Entra em pânico se o mutex interno estiver envenenado.
     #[must_use]
     pub fn running(&self) -> usize {
-        let mut tasks = self.tasks.lock().expect("lifecycle mutex poisoned");
+        let mut tasks = self
+            .tasks
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         while tasks.try_join_next().is_some() {}
         tasks.len()
     }
@@ -105,7 +111,12 @@ impl Lifecycle {
     /// Entra em pânico se o mutex interno estiver envenenado.
     pub async fn shutdown(&self, grace: Duration) {
         self.begin_shutdown();
-        let mut tasks = std::mem::take(&mut *self.tasks.lock().expect("lifecycle mutex poisoned"));
+        let mut tasks = std::mem::take(
+            &mut *self
+                .tasks
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
+        );
         let _ =
             tokio::time::timeout(grace, async { while tasks.join_next().await.is_some() {} }).await;
         tasks.abort_all();

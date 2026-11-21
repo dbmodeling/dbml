@@ -88,7 +88,10 @@ pub fn complete(text: &str, offset: usize) -> Vec<Completion> {
     let word = &line[word_start..];
     let ctx = &line[..word_start];
 
-    let depth = before.matches('{').count() as i64 - before.matches('}').count() as i64;
+    let depth = before
+        .matches('{')
+        .count()
+        .saturating_sub(before.matches('}').count());
     let in_brackets = line.matches('[').count() > line.matches(']').count();
     let schema = analyze(text);
 
@@ -168,7 +171,7 @@ pub fn complete(text: &str, offset: usize) -> Vec<Completion> {
                 .iter()
                 .map(|t| item(t, t, CompletionKind::Type, "type"))
                 .collect()
-        } else if depth <= 0 && ctx.trim().is_empty() {
+        } else if depth == 0 && ctx.trim().is_empty() {
             vec![
                 item("Table", "Table ", CompletionKind::Keyword, "new table"),
                 item("Ref", "Ref: ", CompletionKind::Keyword, "new relation"),

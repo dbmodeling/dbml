@@ -1,3 +1,5 @@
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+
 #[tokio::test]
 async fn test_state_creation_and_atomic_write() {
     let tmp_dir = std::env::temp_dir();

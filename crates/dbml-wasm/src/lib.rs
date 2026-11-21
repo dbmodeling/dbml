@@ -1,5 +1,11 @@
 #![forbid(unsafe_code)]
 #![deny(missing_docs)]
+#![allow(
+    clippy::cast_precision_loss,
+    clippy::cast_possible_truncation,
+    clippy::cast_possible_wrap,
+    clippy::cast_sign_loss
+)]
 //! WebAssembly bindings exposing the DB Modeling Rust core (CST parser, semantic
 //! analysis, minimal text patcher, clustered auto-layout, and orthogonal routing).
 
