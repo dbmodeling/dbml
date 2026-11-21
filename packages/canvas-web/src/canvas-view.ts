@@ -1,9 +1,10 @@
 /**
  * Renderizadores dos elementos internos da superfície do Canvas (`crates/app/src/canvas.rs`):
- * Molduras de Grupo (`TableGroup`), Arestas Ortogonais SVG, Cartões de Tabela DOM e Ilhas Flutuantes.
+ * Molduras de Grupo (`TableGroup`), Relações SVG, Cartões de Tabela DOM e Ilhas Flutuantes.
  */
 
-import { Schema, SceneGeometry, qualifiedEndpointTable, qualifiedTableName } from './types';
+import { curvedEdge, edgeDrawing } from './edge-path';
+import { Schema, SceneGeometry, EdgeStyle, edgeKey, qualifiedEndpointTable, qualifiedTableName } from './types';
 import { Point } from './viewport';
 import {
   Glass,
@@ -39,6 +40,7 @@ export function renderCanvasWorld(params: {
   schema: Schema;
   positions: Record<string, Point>;
   scene: SceneGeometry | null;
+  edges?: Record<string, EdgeStyle>;
   selection: string[];
   topTable: string | null;
   linkDrag: ActiveLinkDrag | null;
@@ -50,6 +52,7 @@ export function renderCanvasWorld(params: {
     schema,
     positions,
     scene,
+    edges: edgeStyles,
     selection,
     topTable,
     linkDrag,
@@ -59,7 +62,6 @@ export function renderCanvasWorld(params: {
   } = params;
 
   const isSelected = (name: string) => selection.includes(name);
-  const hasSel = selection.length > 0;
   let html = '';
 
   // 1. Molduras de Grupo (`canvas.rs` linhas 772-855)
@@ -109,9 +111,8 @@ export function renderCanvasWorld(params: {
     `;
   }
 
-  // 2. Arestas Ortogonais + Portas + Cardinalidade (`canvas.rs` linhas 458-562, 729-769)
+  // 2. Relações, portas e cardinalidade
   let svgPaths = '';
-  let labelsHtml = '';
 
   const edges =
     scene?.edges ??
@@ -172,16 +173,18 @@ export function renderCanvasWorld(params: {
   for (const e of edges) {
     if (!e) continue;
     const lit = isSelected(e.from_table) || isSelected(e.to_table);
-    const stroke = lit ? g.accent : g.textMuted;
-    const opacity = lit ? 1 : hasSel ? 0.2 : 0.55;
-    const strokeW = lit ? 2 : 1.5;
-
-    svgPaths += `<path d="${e.svg_path}" fill="none" stroke="${stroke}" stroke-opacity="${opacity}" stroke-width="${strokeW}" />`;
-    svgPaths += `<circle cx="${e.ax}" cy="${e.ay}" r="3" fill="${stroke}" fill-opacity="${opacity}" />`;
-    svgPaths += `<circle cx="${e.bx}" cy="${e.by}" r="3" fill="${stroke}" fill-opacity="${opacity}" />`;
-
-    labelsHtml += `<div style="position:absolute;left:${e.start_label_pos.x}px;top:${e.start_label_pos.y}px;font-size:10px;color:${g.textMuted};opacity:${opacity};pointer-events:none;z-index:2;">${e.start_label}</div>`;
-    labelsHtml += `<div style="position:absolute;left:${e.end_label_pos.x}px;top:${e.end_label_pos.y}px;font-size:10px;color:${g.textMuted};opacity:${opacity};pointer-events:none;z-index:2;">${e.end_label}</div>`;
+    const a = positions[e.from_table], b = positions[e.to_table];
+    if (!a || !b) continue;
+    const curve0 = curvedEdge(a.x, e.ay, b.x, e.by, edgeStyles?.[edgeKey(e)]);
+    const curve = { ...curve0, path: edgeDrawing(e, curve0, edgeStyles?.[edgeKey(e)]).path };
+    const stroke = lit ? g.accent : g.relStroke;
+    if (lit) svgPaths += `<path d="${curve.path}" fill="none" stroke="${g.accent}" stroke-opacity="0.16" stroke-width="8" stroke-linecap="round" />`;
+    svgPaths += `<path d="${curve.path}" fill="none" stroke="${stroke}" stroke-width="${lit ? 1.8 : 1.4}" />`;
+    svgPaths += `<circle cx="${curve.x1}" cy="${e.ay}" r="3" fill="${stroke}" />`;
+    svgPaths += `<circle cx="${curve.x2}" cy="${e.by}" r="3.5" fill="${g.card}" stroke="${stroke}" stroke-width="1.5" />`;
+    const label = lit ? g.accent : g.textFaint;
+    svgPaths += `<text x="${curve.x1 + Math.sign(curve.d1) * 11}" y="${e.ay - 6}" text-anchor="middle" font-family="Geist Mono, monospace" font-size="10" font-weight="500" fill="${label}">${e.start_label}</text>`;
+    svgPaths += `<text x="${curve.x2 + Math.sign(curve.d2) * 11}" y="${e.by - 6}" text-anchor="middle" font-family="Geist Mono, monospace" font-size="10" font-weight="500" fill="${label}">${e.end_label}</text>`;
   }
 
   // Linha provisória ao arrastar relação (`Drag::Link`)
@@ -192,7 +195,6 @@ export function renderCanvasWorld(params: {
   }
 
   html += `<svg class="dbm-edges-svg" width="1" height="1">${svgPaths}</svg>`;
-  html += labelsHtml;
 
   // 3. Cartões de Tabela (`canvas.rs` linhas 859-1152)
   const fkSet = new Set(schema.refs.map((r) => `${qualifiedEndpointTable(r.from)}::${r.from.column}`));

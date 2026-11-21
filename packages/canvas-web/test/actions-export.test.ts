@@ -6,24 +6,24 @@ const labels = (group: string) => catalog().filter((e) => e.group === group).map
 describe('export dropdown groups', () => {
   it('code dropdown lists the five databases then Mermaid', () => {
     expect(labels(GROUP_EXPORT_CODE)).toEqual([
-      'Export Code: PostgreSQL (.sql)',
-      'Export Code: MySQL (.sql)',
-      'Export Code: SQLite (.sql)',
-      'Export Code: SQL Server (.sql)',
-      'Export Code: Oracle (.sql)',
-      'Export Code: Mermaid erDiagram (.mmd)',
+      'Exportar código: PostgreSQL (.sql)',
+      'Exportar código: MySQL (.sql)',
+      'Exportar código: SQLite (.sql)',
+      'Exportar código: SQL Server (.sql)',
+      'Exportar código: Oracle (.sql)',
+      'Exportar código: Mermaid erDiagram (.mmd)',
     ]);
   });
 
   it('image dropdown lists PNG, JPEG and SVG', () => {
     expect(labels(GROUP_EXPORT_IMAGE)).toEqual([
-      'Export Image: PNG',
-      'Export Image: JPEG',
-      'Export Image: Vector SVG',
+      'Exportar imagem: PNG',
+      'Exportar imagem: JPEG',
+      'Exportar imagem: SVG vetorial',
     ]);
   });
 
   it('keeps no leftover legacy Export group', () => {
-    expect(catalog().some((e) => e.group === 'Export')).toBe(false);
+    expect(catalog().some((e) => e.group === 'Exportar')).toBe(false);
   });
 });

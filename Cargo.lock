@@ -236,6 +236,7 @@ name = "app"
 version = "0.1.4"
 dependencies = [
  "anyhow",
+ "base64 0.22.1",
  "db-introspect",
  "dbml-analysis",
  "dbml-edit",
@@ -1674,6 +1675,7 @@ dependencies = [
  "layout",
  "resvg 0.46.0",
  "schema",
+ "serde",
 ]
 
 [[package]]

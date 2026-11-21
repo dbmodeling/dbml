@@ -13,6 +13,8 @@ pub struct DocSnapshot {
     pub text: Arc<str>,
     /// World coordinates of tables (`"<name>"`) and enums (`"enum:<name>"`).
     pub pos: HashMap<String, (f32, f32)>,
+    /// Estilo das relações (`edges` do sidecar).
+    pub edges: diagram_export::EdgeStyles,
     /// Primary selected table.
     pub selected: Option<String>,
     /// Selected enum name.
@@ -22,10 +24,12 @@ pub struct DocSnapshot {
 }
 
 impl DocSnapshot {
-    /// Returns `true` when both the DBML text and all card positions are identical.
+    /// Returns `true` when the DBML text, card positions and relation styles are identical.
     #[must_use]
     pub fn same_state(&self, other: &Self) -> bool {
-        (Arc::ptr_eq(&self.text, &other.text) || self.text == other.text) && self.pos == other.pos
+        (Arc::ptr_eq(&self.text, &other.text) || self.text == other.text)
+            && self.pos == other.pos
+            && self.edges == other.edges
     }
 }
 
@@ -97,6 +101,7 @@ mod tests {
         DocSnapshot {
             text: Arc::from(text),
             pos,
+            edges: diagram_export::EdgeStyles::new(),
             selected: Some("users".to_string()),
             selected_enum: None,
             multi: Vec::new(),
@@ -129,6 +134,24 @@ mod tests {
 
         let redone = h.redo(undone).unwrap();
         assert_eq!(redone, s1);
+    }
+
+    #[test]
+    fn edge_style_change_is_its_own_undo_step() {
+        let mut h = UndoHistory::new();
+        let s0 = snap("v", 0.0, 0.0);
+        let mut s1 = s0.clone();
+        s1.edges.insert(
+            "a.id->b.id".into(),
+            diagram_export::EdgeStyle {
+                straight: true,
+                ..Default::default()
+            },
+        );
+        h.push(s0.clone());
+        h.push(s1.clone());
+        assert_eq!(h.undo(s0.clone()), Some(s1));
+        assert_eq!(h.undo(s0.clone()), Some(s0));
     }
 
     #[test]

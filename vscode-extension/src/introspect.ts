@@ -1,4 +1,7 @@
 import { execFile } from 'child_process';
+import { constants } from 'node:fs';
+import { access, stat } from 'node:fs/promises';
+import { delimiter, join } from 'node:path';
 
 /** Mesmos campos do modal "Connect to Database" (`IntrospectRequest` em `canvas-web`). */
 export interface IntrospectRequest {
@@ -57,6 +60,22 @@ export function runTestConnection(cliPath: string, req: IntrospectRequest): Prom
   return runCli(cliPath, ['import', '--url', buildUrl(req), '--test', ...(req.dialect !== 'sqlite' && req.password ? ['--password-stdin'] : [])], req).then(
     (stdout) => JSON.parse(stdout) as TestConnectionResult
   );
+}
+
+/** Checks that the CLI is available without running it. */
+export async function checkCli(cliPath: string): Promise<void> {
+  const paths = /[\\/]/.test(cliPath) ? [cliPath]
+    : (process.env.PATH ?? '').split(delimiter).filter(Boolean).map((dir) => join(dir, cliPath));
+  for (const path of paths) {
+    const candidates = process.platform === 'win32' && !/\.exe$/i.test(path) ? [path, `${path}.exe`] : [path];
+    for (const candidate of candidates) {
+      try {
+        await access(candidate, constants.X_OK);
+        if ((await stat(candidate)).isFile()) return;
+      } catch { /* Check the next PATH entry. */ }
+    }
+  }
+  throw new Error('The dbml CLI is unavailable. Install it or set dbmodeling.cliPath.');
 }
 
 function runCli(cliPath: string, args: string[], req: IntrospectRequest): Promise<string> {

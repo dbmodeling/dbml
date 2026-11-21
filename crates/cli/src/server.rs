@@ -20,13 +20,50 @@ enum ClientMessage {
         byte_start: usize,
         byte_end: usize,
         new_text: String,
+        expected_source: String,
+        expected_file: String,
     },
-    #[serde(rename = "save_source")]
-    SaveSource(String),
     #[serde(rename = "save_layout")]
-    SaveLayout(serde_json::Value),
+    SaveLayout {
+        layout: serde_json::Value,
+        expected_file: String,
+    },
+    #[serde(rename = "save_document")]
+    SaveDocument {
+        expected_source: String,
+        expected_file: String,
+    },
     #[serde(rename = "open_file")]
     OpenFile(String),
+}
+
+fn apply_patch(
+    mut current: String,
+    expected: &str,
+    start: usize,
+    end: usize,
+    text: &str,
+) -> anyhow::Result<String> {
+    if current != expected {
+        anyhow::bail!("Document changed outside this editor; reload or reconcile changes");
+    }
+    if start > end
+        || end > current.len()
+        || !current.is_char_boundary(start)
+        || !current.is_char_boundary(end)
+    {
+        anyhow::bail!("Invalid patch range");
+    }
+    current.replace_range(start..end, text);
+    Ok(current)
+}
+
+async fn active_file(state: &AppState, expected_file: &str) -> anyhow::Result<std::path::PathBuf> {
+    let path = state.file_path.read().await;
+    if path.to_string_lossy() != expected_file {
+        anyhow::bail!("Active file changed; reload or reconcile changes");
+    }
+    Ok(path.clone())
 }
 
 const MAX_WS_PAYLOAD_BYTES: usize = 16 * 1024 * 1024;
@@ -50,8 +87,10 @@ async fn ws_handler(ws: WebSocketUpgrade, State(state): State<AppState>) -> impl
 async fn handle_socket(socket: WebSocket, state: AppState) {
     let (mut sender, mut receiver) = socket.split();
 
-    // 1. Envia payload inicial ao conectar
-    {
+    // Subscribe before reading the initial snapshot so file changes are not missed.
+    let mut rx = state.tx.subscribe();
+    let init_msg = {
+        let _guard = state.write_lock.lock().await;
         let content = state.content.read().await.clone();
         let layout: Option<serde_json::Value> = state
             .layout
@@ -61,26 +100,32 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
             .and_then(|s| serde_json::from_str(s).ok());
 
         let title = state.active_title().await;
+        let document_id = state.file_path.read().await.to_string_lossy().into_owned();
         let files = state.workspace_files().await;
 
-        let init_msg = serde_json::json!({
+        serde_json::json!({
             "type": "init",
             "source": content,
             "layout": layout,
             "title": title,
+            "documentId": document_id,
+            "saved": true,
             "files": files
         })
-        .to_string();
-
-        if sender.send(Message::Text(init_msg.into())).await.is_err() {
-            return;
-        }
+        .to_string()
+    };
+    if sender.send(Message::Text(init_msg.into())).await.is_err() {
+        return;
     }
 
-    // 2. Canal de broadcast para enviar atualizações externas a este cliente
-    let mut rx = state.tx.subscribe();
+    let (reply_tx, mut reply_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
     let mut send_task = tokio::spawn(async move {
-        while let Ok(msg) = rx.recv().await {
+        loop {
+            let msg = tokio::select! {
+                Ok(msg) = rx.recv() => msg,
+                Some(msg) = reply_rx.recv() => msg,
+                else => break,
+            };
             if sender.send(Message::Text(msg.into())).await.is_err() {
                 break;
             }
@@ -101,54 +146,74 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
                     "Ignoring oversized WebSocket payload ({} bytes)",
                     text.len()
                 );
-                continue;
+                break;
             }
-            let client_msg = match serde_json::from_str::<ClientMessage>(&text) {
+            let envelope: serde_json::Value = match serde_json::from_str(&text) {
+                Ok(value) => value,
+                Err(_) => continue,
+            };
+            let id = envelope
+                .get("id")
+                .cloned()
+                .unwrap_or(serde_json::Value::Null);
+            let client_msg = match serde_json::from_value::<ClientMessage>(envelope) {
                 Ok(msg) => msg,
                 Err(err) => {
-                    eprintln!("Ignoring invalid WebSocket message: {err}");
+                    let _ = reply_tx.send(serde_json::json!({"type": "result", "id": id, "error": format!("Invalid request: {err}")}).to_string());
                     continue;
                 }
             };
-            match client_msg {
+            let _guard = state_clone.write_lock.lock().await;
+            let result: anyhow::Result<()> = match client_msg {
                 ClientMessage::ApplyPatch {
                     byte_start,
                     byte_end,
                     new_text,
+                    expected_file,
+                    expected_source,
                 } => {
-                    let current = state_clone.content.read().await.clone();
-                    if byte_start <= byte_end
-                        && byte_end <= current.len()
-                        && current.is_char_boundary(byte_start)
-                        && current.is_char_boundary(byte_end)
-                    {
-                        let mut updated = current;
-                        updated.replace_range(byte_start..byte_end, &new_text);
-                        if let Err(err) = state_clone.save_content(updated).await {
-                            eprintln!("Failed to save patched content: {err}");
+                    async {
+                        let path = active_file(&state_clone, &expected_file).await?;
+                        let current = tokio::fs::read_to_string(path).await?;
+                        let updated = apply_patch(
+                            current,
+                            &expected_source,
+                            byte_start,
+                            byte_end,
+                            &new_text,
+                        )?;
+                        state_clone.save_content(updated).await
+                    }
+                    .await
+                }
+                ClientMessage::SaveLayout {
+                    layout,
+                    expected_file,
+                } => {
+                    async {
+                        active_file(&state_clone, &expected_file).await?;
+                        let layout = serde_json::to_string_pretty(&layout)?;
+                        state_clone.save_layout(layout).await
+                    }
+                    .await
+                }
+                ClientMessage::SaveDocument {
+                    expected_source,
+                    expected_file,
+                } => {
+                    async {
+                        let path = active_file(&state_clone, &expected_file).await?;
+                        if tokio::fs::read_to_string(path).await? != expected_source {
+                            anyhow::bail!(
+                                "Document changed outside this editor; reload or reconcile changes"
+                            );
                         }
+                        Ok(())
                     }
+                    .await
                 }
-                ClientMessage::SaveSource(new_source) => {
-                    if let Err(err) = state_clone.save_content(new_source).await {
-                        eprintln!("Failed to save source: {err}");
-                    }
-                }
-                ClientMessage::SaveLayout(layout_val) => {
-                    if let Ok(layout_str) = serde_json::to_string_pretty(&layout_val)
-                        && let Err(err) = state_clone.save_layout(layout_str).await
-                    {
-                        eprintln!("Failed to save layout: {err}");
-                    }
-                }
-                ClientMessage::OpenFile(path) => {
-                    if let Err(err) = state_clone
-                        .switch_file(std::path::PathBuf::from(path))
-                        .await
-                    {
-                        eprintln!("Rejected open_file request: {err}");
-                        continue;
-                    }
+                ClientMessage::OpenFile(path) => async {
+                    state_clone.switch_file(std::path::PathBuf::from(path)).await?;
                     let content = state_clone.content.read().await.clone();
                     let layout: Option<serde_json::Value> = state_clone
                         .layout
@@ -156,19 +221,27 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
                         .await
                         .as_ref()
                         .and_then(|s| serde_json::from_str(s).ok());
-                    let title = state_clone.active_title().await;
-                    let files = state_clone.workspace_files().await;
+                    let document_id = state_clone
+                        .file_path
+                        .read()
+                        .await
+                        .to_string_lossy()
+                        .into_owned();
                     let update_msg = serde_json::json!({
-                        "type": "update",
-                        "source": content,
-                        "layout": layout,
-                        "title": title,
-                        "files": files
-                    })
-                    .to_string();
+                        "type": "update", "source": content, "layout": layout,
+                        "title": state_clone.active_title().await, "files": state_clone.workspace_files().await,
+                        "documentId": document_id, "saved": true
+                    }).to_string();
                     let _ = state_clone.tx.send(update_msg);
-                }
-            }
+                    Ok(())
+                }.await,
+            };
+            let _ = reply_tx.send(
+                serde_json::json!({
+                    "type": "result", "id": id, "error": result.err().map(|e| format!("{e:#}"))
+                })
+                .to_string(),
+            );
         }
     });
 
@@ -177,4 +250,16 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
         _ = (&mut send_task) => recv_task.abort(),
         _ = (&mut recv_task) => send_task.abort(),
     };
+}
+
+#[cfg(test)]
+mod tests {
+    use super::apply_patch;
+
+    #[test]
+    fn rejects_stale_and_invalid_patches() {
+        assert!(apply_patch("new".into(), "old", 0, 3, "x").is_err());
+        assert!(apply_patch("é".into(), "é", 1, 2, "x").is_err());
+        assert_eq!(apply_patch("é".into(), "é", 0, 2, "x").unwrap(), "x");
+    }
 }

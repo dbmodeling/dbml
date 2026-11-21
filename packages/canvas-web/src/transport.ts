@@ -5,6 +5,7 @@
 
 import {
   HostTransport,
+  DocumentMetadata,
   TextPatch,
   SidecarLayout,
   Diagnostic,
@@ -41,19 +42,29 @@ export class VsCodeTransport implements HostTransport {
   private updateCallback?: (
     source: string,
     layout?: SidecarLayout,
-    meta?: { title?: string; files?: WorkspaceFileEntry[]; session?: SessionSnapshot }
+    meta?: DocumentMetadata
   ) => void;
   private workspaceFilesCallback?: (
     files: WorkspaceFileEntry[],
     activeTitle?: string
   ) => void;
-  private externalChangeCallback?: (newSource: string) => void;
+  private externalChangeCallback?: (newSource: string, documentId?: string) => void;
   private errorCallback?: (diagnostics: Diagnostic[]) => void;
   private pendingIntrospect = new Map<
     number,
     { resolve: (r: IntrospectResult) => void; reject: (e: Error) => void }
   >();
   private introspectSeq = 0;
+  private requestSeq = 0;
+  private pending = new Map<number, { resolve: () => void; reject: (e: Error) => void }>();
+  private request(command: string, payload: object = {}): Promise<void> {
+    const id = ++this.requestSeq;
+    return new Promise((resolve, reject) => {
+      this.pending.set(id, { resolve, reject });
+      this.vscode.postMessage({ command, id, ...payload });
+    });
+  }
+
   private pendingTest = new Map<
     number,
     { resolve: (r: TestConnectionResult) => void; reject: (e: Error) => void }
@@ -66,12 +77,22 @@ export class VsCodeTransport implements HostTransport {
       const message = event.data;
       if (!message) return;
       switch (message.type) {
+        case 'result': {
+          const p = this.pending.get(message.id);
+          this.pending.delete(message.id);
+          if (message.error) p?.reject(new Error(message.error)); else p?.resolve();
+          break;
+        }
         case 'update':
           if (this.updateCallback) {
             this.updateCallback(message.source, message.layout, {
               title: message.title,
               files: message.files,
               session: message.session,
+              saved: message.saved,
+              savedSource: message.savedSource,
+              autosave: message.autosave,
+              documentId: message.documentId,
             });
           }
           if (message.files && this.workspaceFilesCallback) {
@@ -113,6 +134,10 @@ export class VsCodeTransport implements HostTransport {
     });
   }
 
+  public checkDatabaseSupport(): Promise<void> {
+    return this.request('check_cli');
+  }
+
   public testConnection(req: IntrospectRequest): Promise<TestConnectionResult> {
     const id = ++this.introspectSeq;
     return new Promise((resolve, reject) => {
@@ -130,34 +155,24 @@ export class VsCodeTransport implements HostTransport {
     });
   }
 
-  public async sendPatch(patch: TextPatch): Promise<void> {
-    this.vscode.postMessage({
-      command: 'apply_patch',
-      patch,
-    });
+  public sendPatch(patch: TextPatch): Promise<void> {
+    return this.request('apply_patch', { patch });
   }
 
-  public async saveLayout(layout: SidecarLayout): Promise<void> {
-    this.vscode.postMessage({
-      command: 'save_layout',
-      layout,
-    });
+  public saveDocument(expected_source: string): Promise<void> {
+    return this.request('save_document', { expected_source });
+  }
+
+  public saveLayout(layout: SidecarLayout): Promise<void> {
+    return this.request('save_layout', { layout });
   }
 
   public async exportFile(filename: string, content: string, isBinary: boolean): Promise<void> {
-    this.vscode.postMessage({
-      command: 'export_file',
-      filename,
-      content,
-      isBinary,
-    });
+    await this.request('export_file', { filename, content, isBinary });
   }
 
   public async openFile(path: string): Promise<void> {
-    this.vscode.postMessage({
-      command: 'open_file',
-      path,
-    });
+    await this.request('open_file', { path });
   }
 
   /** Avisa o host que a Webview está montada e pronta para receber o documento. */
@@ -193,7 +208,7 @@ export class VsCodeTransport implements HostTransport {
     callback: (
       source: string,
       layout?: SidecarLayout,
-      meta?: { title?: string; files?: WorkspaceFileEntry[]; session?: SessionSnapshot }
+      meta?: DocumentMetadata
     ) => void
   ): void {
     this.updateCallback = callback;
@@ -205,7 +220,7 @@ export class VsCodeTransport implements HostTransport {
     this.workspaceFilesCallback = callback;
   }
 
-  public onFileChangedExternally(callback: (newSource: string) => void): void {
+  public onFileChangedExternally(callback: (newSource: string, documentId?: string) => void): void {
     this.externalChangeCallback = callback;
   }
 
@@ -221,10 +236,22 @@ export class WebSocketTransport implements HostTransport {
   private updateCallback?: (
     source: string,
     layout?: SidecarLayout,
-    meta?: { title?: string; files?: WorkspaceFileEntry[]; session?: SessionSnapshot }
+    meta?: DocumentMetadata
   ) => void;
-  private externalChangeCallback?: (newSource: string) => void;
+  private externalChangeCallback?: (newSource: string, documentId?: string) => void;
   private reconnectTimer: number | null = null;
+  private requestSeq = 0;
+  private pending = new Map<number, { resolve: () => void; reject: (e: Error) => void }>();
+  private request(type: string, payload: unknown): Promise<void> {
+    if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return Promise.reject(new Error('Disconnected; reconnect and save again'));
+    const id = ++this.requestSeq;
+    return new Promise((resolve, reject) => {
+      this.pending.set(id, { resolve, reject });
+      try { this.ws!.send(JSON.stringify({ type, payload, id })); }
+      catch (error) { this.pending.delete(id); reject(error); }
+    });
+  }
+
 
   constructor(url = `ws://${window.location.host}/ws`) {
     this.url = url;
@@ -238,17 +265,23 @@ export class WebSocketTransport implements HostTransport {
       this.ws.onmessage = (event) => {
         try {
           const msg = JSON.parse(event.data);
-          if (msg.type === 'init' || msg.type === 'update') {
+          if (msg.type === 'result') {
+            const p = this.pending.get(msg.id);
+            this.pending.delete(msg.id);
+            if (msg.error) p?.reject(new Error(msg.error)); else p?.resolve();
+          } else if (msg.type === 'init' || msg.type === 'update') {
             if (this.updateCallback) {
               this.updateCallback(msg.source, msg.layout, {
                 title: msg.title,
                 files: msg.files,
                 session: msg.session,
+              saved: msg.saved,
+              documentId: msg.documentId,
               });
             }
           } else if (msg.type === 'external_change') {
             if (this.externalChangeCallback) {
-              this.externalChangeCallback(msg.source);
+              this.externalChangeCallback(msg.source, msg.documentId);
             }
           }
         } catch (e) {
@@ -257,6 +290,8 @@ export class WebSocketTransport implements HostTransport {
       };
 
       this.ws.onclose = () => {
+        for (const p of this.pending.values()) p.reject(new Error('Connection lost; reconnect and save again'));
+        this.pending.clear();
         if (!this.reconnectTimer) {
           this.reconnectTimer = window.setTimeout(() => {
             this.reconnectTimer = null;
@@ -269,19 +304,13 @@ export class WebSocketTransport implements HostTransport {
     }
   }
 
-  public async sendPatch(patch: TextPatch): Promise<void> {
-    if (this.ws && this.ws.readyState === WebSocket.OPEN) {
-      this.ws.send(
-        JSON.stringify({
-          type: 'apply_patch',
-          payload: {
-            byte_start: patch.byte_start,
-            byte_end: patch.byte_end,
-            new_text: patch.new_text,
-          },
-        })
-      );
-    }
+  public sendPatch(patch: TextPatch): Promise<void> {
+    const { byte_start, byte_end, new_text, expected_source, expected_file } = patch;
+    return this.request('apply_patch', { byte_start, byte_end, new_text, expected_source, expected_file });
+  }
+
+  public saveDocument(expected_source: string, expected_file?: string): Promise<void> {
+    return this.request('save_document', { expected_source, expected_file });
   }
 
   public async testConnection(req: IntrospectRequest): Promise<TestConnectionResult> {
@@ -307,10 +336,8 @@ export class WebSocketTransport implements HostTransport {
     return body as IntrospectResult;
   }
 
-  public async saveLayout(layout: SidecarLayout): Promise<void> {
-    if (this.ws && this.ws.readyState === WebSocket.OPEN) {
-      this.ws.send(JSON.stringify({ type: 'save_layout', payload: layout }));
-    }
+  public saveLayout(layout: SidecarLayout, expected_file?: string): Promise<void> {
+    return this.request('save_layout', { layout, expected_file });
   }
 
   public async exportFile(filename: string, content: string, isBinary: boolean): Promise<void> {
@@ -340,23 +367,21 @@ export class WebSocketTransport implements HostTransport {
     URL.revokeObjectURL(url);
   }
 
-  public async openFile(path: string): Promise<void> {
-    if (this.ws && this.ws.readyState === WebSocket.OPEN) {
-      this.ws.send(JSON.stringify({ type: 'open_file', payload: path }));
-    }
+  public openFile(path: string): Promise<void> {
+    return this.request('open_file', path);
   }
 
   public onDocumentUpdated(
     callback: (
       source: string,
       layout?: SidecarLayout,
-      meta?: { title?: string; files?: WorkspaceFileEntry[]; session?: SessionSnapshot }
+      meta?: DocumentMetadata
     ) => void
   ): void {
     this.updateCallback = callback;
   }
 
-  public onFileChangedExternally(callback: (newSource: string) => void): void {
+  public onFileChangedExternally(callback: (newSource: string, documentId?: string) => void): void {
     this.externalChangeCallback = callback;
   }
 }

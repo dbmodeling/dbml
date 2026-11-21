@@ -1,4 +1,4 @@
-//! View-model for the "Connect to Database…" modal (parity with `connect-db.ts` on the web).
+//! View-model for the "Conectar ao banco…" modal (parity with `connect-db.ts` on the web).
 
 use db_introspect::{ConnectionParams, Dialect, Options};
 use std::time::Duration;
@@ -12,7 +12,7 @@ pub enum Status {
     Connecting,
     /// The last attempt failed; the message never contains the password.
     Failed(String),
-    /// The last "Test connection" succeeded; the message names the server and the schemas.
+    /// The last "Testar conexão" succeeded; the message names the server and the schemas.
     Tested(String),
     /// DBML was generated and can be applied.
     Ready,
@@ -58,7 +58,7 @@ impl ConnectModel {
         self.confirm_replace = false;
     }
 
-    /// Result of "Test connection": no DBML is produced, so nothing can be applied.
+    /// Result of "Testar conexão": no DBML is produced, so nothing can be applied.
     pub fn finish_test(&mut self, result: Result<String, String>) {
         self.dbml.clear();
         self.warnings.clear();
@@ -131,7 +131,9 @@ pub fn introspect_blocking(
         .map_err(|e| e.to_string())?;
     let tables = dbml_analysis::analyze(&outcome.dbml).tables.len();
     if tables == 0 {
-        return Err("Connected, but no tables were found. Check the database and schema.".into());
+        return Err(
+            crate::i18n::t("Conectado, mas nenhuma tabela foi encontrada. Verifique o banco e o schema.").into(),
+        );
     }
     Ok(Generated {
         dbml: outcome.dbml,
@@ -158,12 +160,12 @@ pub fn test_blocking(params: &ConnectionParams, schemas: Vec<String>) -> Result<
     Ok(summarize_test(&out.server, &out.schemas))
 }
 
-/// `Connected to X. Schemas: a, b (+3 more).`
+/// `Conectado a X. Schemas: a, b (+3 a mais).`
 #[must_use]
 pub fn summarize_test(server: &str, schemas: &[String]) -> String {
     const SHOWN: usize = 8;
     if schemas.is_empty() {
-        return format!("Connected to {server}.");
+        return crate::i18n::t("Conectado a {}.").replace("{}", server);
     }
     let shown = schemas
         .iter()
@@ -173,9 +175,9 @@ pub fn summarize_test(server: &str, schemas: &[String]) -> String {
         .join(", ");
     let more = schemas.len().saturating_sub(SHOWN);
     if more > 0 {
-        format!("Connected to {server}. Schemas: {shown} (+{more} more).")
+        crate::i18n::t("Conectado a {}. Schemas: {} (+{} a mais).").replacen("{}", server, 1).replacen("{}", &shown, 1).replacen("{}", &more.to_string(), 1)
     } else {
-        format!("Connected to {server}. Schemas: {shown}.")
+        crate::i18n::t("Conectado a {}. Schemas: {}.").replacen("{}", server, 1).replacen("{}", &shown, 1)
     }
 }
 
@@ -227,8 +229,8 @@ mod tests {
     #[test]
     fn test_result_never_enables_apply() {
         let mut m = ConnectModel::new(Dialect::Postgres);
-        m.finish_test(Ok("Connected to X.".into()));
-        assert_eq!(m.status, Status::Tested("Connected to X.".into()));
+        m.finish_test(Ok("Conectado a X.".into()));
+        assert_eq!(m.status, Status::Tested("Conectado a X.".into()));
         assert!(!m.can_apply());
         m.finish_test(Err("nope".into()));
         assert_eq!(m.status, Status::Failed("nope".into()));
@@ -238,14 +240,14 @@ mod tests {
     fn summarizes_schemas_and_truncates_long_lists() {
         assert_eq!(
             summarize_test("SQLite 3.45", &[]),
-            "Connected to SQLite 3.45."
+            "Conectado a SQLite 3.45."
         );
         assert_eq!(
             summarize_test("PG 16", &["a".into(), "b".into()]),
-            "Connected to PG 16. Schemas: a, b."
+            "Conectado a PG 16. Schemas: a, b."
         );
         let many: Vec<String> = (0..11).map(|i| format!("s{i}")).collect();
-        assert!(summarize_test("X", &many).ends_with("s7 (+3 more)."));
+        assert!(summarize_test("X", &many).ends_with("s7 (+3 a mais)."));
     }
 
     #[test]

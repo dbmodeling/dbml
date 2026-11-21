@@ -70,7 +70,7 @@ describe('connect to database', () => {
     m.start();
     m.finish({ dbml: '', warnings: [], tables: 0 });
     expect(m.status).toBe('failed');
-    expect(m.error).toContain('no tables');
+    expect(m.error).toContain('nenhuma tabela');
     m.setEngine('mysql');
     expect(m.status).toBe('idle');
   });
@@ -78,17 +78,17 @@ describe('connect to database', () => {
   it('lists the four supported engines and exposes the action in the palette', () => {
     expect(DB_ENGINES.map((e) => e.label)).toEqual(['PostgreSQL', 'MySQL', 'SQL Server', 'SQLite']);
     const a = catalog().find((e) => e.id === 'ConnectDatabase');
-    expect(a?.group).toBe('File');
-    expect(a?.label).toBe('Connect to Database…');
+    expect(a?.group).toBe('Arquivo');
+    expect(a?.label).toBe('Conectar ao banco…');
   });
 });
 
 describe('test connection', () => {
   it('summarizes the server and truncates long schema lists', () => {
-    expect(summarizeTest('SQLite 3.45', [])).toBe('Connected to SQLite 3.45.');
-    expect(summarizeTest('PG 16', ['a', 'b'])).toBe('Connected to PG 16. Schemas: a, b.');
+    expect(summarizeTest('SQLite 3.45', [])).toBe('Conectado a SQLite 3.45.');
+    expect(summarizeTest('PG 16', ['a', 'b'])).toBe('Conectado a PG 16. Schemas: a, b.');
     const many = Array.from({ length: 11 }, (_, i) => `s${i}`);
-    expect(summarizeTest('X', many).endsWith('s7 (+3 more).')).toBe(true);
+    expect(summarizeTest('X', many).endsWith('s7 (+3 a mais).')).toBe(true);
   });
 
   it('a successful test never enables Replace/Insert and clears older results', () => {
@@ -97,7 +97,7 @@ describe('test connection', () => {
     expect(m.canApply()).toBe(true);
     m.finishTest('MySQL 8.4', ['shop']);
     expect(m.status).toBe('tested');
-    expect(m.error).toBe('Connected to MySQL 8.4. Schemas: shop.');
+    expect(m.error).toBe('Conectado a MySQL 8.4. Schemas: shop.');
     expect(m.canApply()).toBe(false);
   });
 });

@@ -34,22 +34,45 @@ fn windows_build() -> u32 {
     }
 }
 
-/// (fundo da janela, chrome translúcido?)
-/// - Windows 11 (build >= 22621): Mica Alt — segue o papel de parede, leve.
-/// - Windows 10: acrílico (`Blurred`).
-/// - Linux: opaco. O GPUI só desfoca no KDE Wayland; no GNOME/X11 alfa sem blur fica "sujo".
-pub fn window_background() -> (WindowBackgroundAppearance, bool) {
+/// Indica se a plataforma/compositor suporta desfoque de fundo da janela (padrão de translucidez).
+pub fn supports_blur() -> bool {
+    #[cfg(any(windows, target_os = "macos"))]
+    {
+        true
+    }
+    #[cfg(not(any(windows, target_os = "macos")))]
+    {
+        std::env::var_os("WAYLAND_DISPLAY").is_some()
+            && std::env::var("XDG_CURRENT_DESKTOP")
+                .is_ok_and(|d| d.to_ascii_uppercase().contains("KDE"))
+    }
+}
+
+/// Aparência de fundo da janela conforme a escolha de tema translúcido:
+/// - `translucent = false`: sempre `Opaque`.
+/// - `translucent = true`:
+///   - Windows / macOS / KDE Wayland: `Blurred`.
+///   - Demais sistemas (Linux X11 / GNOME): `Transparent` (sem desfoque).
+pub fn window_background(translucent: bool) -> WindowBackgroundAppearance {
+    if !translucent {
+        return WindowBackgroundAppearance::Opaque;
+    }
+    // acrílico (desfoca o que está atrás da janela); Mica só tinge com o papel de parede
     #[cfg(windows)]
     {
-        if windows_build() >= 22621 {
-            (WindowBackgroundAppearance::MicaAltBackdrop, true)
-        } else {
-            (WindowBackgroundAppearance::Blurred, true)
-        }
+        WindowBackgroundAppearance::Blurred
     }
-    #[cfg(not(windows))]
+    #[cfg(target_os = "macos")]
     {
-        (WindowBackgroundAppearance::Opaque, false)
+        WindowBackgroundAppearance::Blurred
+    }
+    #[cfg(not(any(windows, target_os = "macos")))]
+    {
+        if supports_blur() {
+            WindowBackgroundAppearance::Blurred
+        } else {
+            WindowBackgroundAppearance::Transparent
+        }
     }
 }
 

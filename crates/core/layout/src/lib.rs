@@ -13,14 +13,14 @@ pub const GROUP_PAD: f32 = 32.0;
 
 /// Canonical 8-color palette for tables and groups (matches `crates/app/src/glass.rs`).
 pub const TABLE_COLORS: &[&str] = &[
-    "#3b82f6", // Blue
-    "#06b6d4", // Cyan
-    "#22c55e", // Green
-    "#84cc16", // Lime
-    "#f59e0b", // Amber
-    "#f97316", // Orange
-    "#ec4899", // Pink
-    "#8b5cf6", // Violet
+    "#589aed", // Blue
+    "#00b1ba", // Cyan
+    "#4eb068", // Green
+    "#8ea432", // Lime
+    "#c09000", // Amber
+    "#df784e", // Orange
+    "#d771a4", // Pink
+    "#9f85e5", // Violet
 ];
 
 /// Computes the height of a table card with `cols` columns in world pixels.
@@ -381,6 +381,143 @@ pub fn route(a: Pos, sa: f32, b: Pos, sb: f32, obstacles: &[Rect], gap: f32) -> 
         .filter(|p| !blocked(p, obstacles))
         .min_by(|p, q| length(p).total_cmp(&length(q)))
         .unwrap_or(simple)
+}
+
+/// Curva cúbica entre as portas de duas tabelas, em coordenadas de mundo.
+#[must_use]
+pub fn relation_curve(ax: f32, ay: f32, bx: f32, by: f32) -> [crate::Pos; 4] {
+    // controle = metade do vão (mín. 50): relação longa sai horizontal e faz "S", não diagonal
+    let bend = |gap: f32| (gap.abs() / 2.0).max(50.0);
+    let (x1, x2, d1, d2) = if bx >= ax + crate::CARD_W {
+        let d = bend(bx - ax - crate::CARD_W);
+        (ax + crate::CARD_W, bx, d, -d)
+    } else if bx + crate::CARD_W <= ax {
+        let d = bend(ax - bx - crate::CARD_W);
+        (ax, bx + crate::CARD_W, -d, d)
+    } else {
+        (ax, bx, -70.0, -70.0)
+    };
+    let by = if (x1 - x2).abs() < 0.001 && (ay - by).abs() < 0.001 {
+        by + 8.0
+    } else {
+        by
+    };
+    [
+        crate::Pos { x: x1, y: ay },
+        crate::Pos { x: x1 + d1, y: ay },
+        crate::Pos { x: x2 + d2, y: by },
+        crate::Pos { x: x2, y: by },
+    ]
+}
+
+/// Trechos cúbicos de uma relação automática: a curva de [`relation_curve`] quando ela não cruza
+/// nenhum cartão de `obstacles` (as outras tabelas); senão a rota ortogonal de [`crate::route`],
+/// que desvia dos cartões, com cantos arredondados.
+#[must_use]
+pub fn relation_segments(
+    ax: f32,
+    ay: f32,
+    bx: f32,
+    by: f32,
+    obstacles: &[crate::Rect],
+) -> Vec<[crate::Pos; 4]> {
+    let curve = relation_curve(ax, ay, bx, by);
+    if !curve_hits(&curve, obstacles) {
+        return vec![curve];
+    }
+    let [a, c1, c2, b] = curve;
+    let (sa, sb) = ((c1.x - a.x).signum(), (c2.x - b.x).signum());
+    rounded_segments(&crate::route(a, sa, b, sb, obstacles, 24.0), 12.0)
+}
+
+fn curve_hits(c: &[crate::Pos; 4], obstacles: &[crate::Rect]) -> bool {
+    (1..48).any(|i| {
+        let t = i as f32 / 48.0;
+        let u = 1.0 - t;
+        let (w0, w1, w2, w3) = (u * u * u, 3.0 * u * u * t, 3.0 * u * t * t, t * t * t);
+        let x = w0 * c[0].x + w1 * c[1].x + w2 * c[2].x + w3 * c[3].x;
+        let y = w0 * c[0].y + w1 * c[1].y + w2 * c[2].y + w3 * c[3].y;
+        // folga de 4: a linha raspando a borda também conta como "por baixo"
+        obstacles
+            .iter()
+            .any(|r| x > r.x - 4.0 && x < r.x + r.w + 4.0 && y > r.y - 4.0 && y < r.y + r.h + 4.0)
+    })
+}
+
+/// Polilinha ortogonal → trechos cúbicos: retas e cantos de raio `r` (quadrática elevada a cúbica).
+fn rounded_segments(pts: &[crate::Pos], r: f32) -> Vec<[crate::Pos; 4]> {
+    let lerp = |p: crate::Pos, q: crate::Pos, k: f32| crate::Pos {
+        x: p.x + (q.x - p.x) * k,
+        y: p.y + (q.y - p.y) * k,
+    };
+    let dist = |p: crate::Pos, q: crate::Pos| (q.x - p.x).hypot(q.y - p.y);
+    let line = |p, q| [p, lerp(p, q, 1.0 / 3.0), lerp(p, q, 2.0 / 3.0), q];
+    let mut out = Vec::new();
+    let Some(&first) = pts.first() else {
+        return out;
+    };
+    let mut cur = first;
+    for w in pts.windows(3) {
+        let (p, c, n) = (w[0], w[1], w[2]);
+        let k = r.min(dist(p, c) / 2.0).min(dist(c, n) / 2.0);
+        if k < 0.5 {
+            continue;
+        }
+        let s = lerp(c, p, k / dist(p, c));
+        let e = lerp(c, n, k / dist(c, n));
+        if dist(cur, s) > 0.01 {
+            out.push(line(cur, s));
+        }
+        out.push([s, lerp(s, c, 2.0 / 3.0), lerp(e, c, 2.0 / 3.0), e]);
+        cur = e;
+    }
+    if let Some(&last) = pts.last()
+        && (dist(cur, last) > 0.01 || out.is_empty())
+    {
+        out.push(line(cur, last));
+    }
+    out
+}
+
+/// Caminho SVG (`M … C …`) dos trechos de [`relation_segments`].
+#[must_use]
+pub fn segments_svg_path(segs: &[[crate::Pos; 4]]) -> String {
+    use std::fmt::Write as _;
+    let mut d = String::new();
+    if let Some(f) = segs.first() {
+        let _ = write!(d, "M {:.2} {:.2}", f[0].x, f[0].y);
+    }
+    for [_, c1, c2, e] in segs {
+        let _ = write!(
+            d,
+            " C {:.2} {:.2} {:.2} {:.2} {:.2} {:.2}",
+            c1.x, c1.y, c2.x, c2.y, e.x, e.y
+        );
+    }
+    d
+}
+
+#[cfg(test)]
+mod relation_tests {
+    use super::*;
+
+    #[test]
+    fn relacao_desvia_de_cartao_no_caminho() {
+        let livre = relation_segments(0.0, 50.0, 800.0, 50.0, &[]);
+        assert_eq!(livre.len(), 1);
+        let meio = crate::Rect {
+            x: 350.0,
+            y: 0.0,
+            w: 200.0,
+            h: 120.0,
+        };
+        let segs = relation_segments(0.0, 50.0, 800.0, 50.0, &[meio]);
+        assert!(segs.len() > 1);
+        assert!(!segs.iter().any(|c| curve_hits(c, &[meio])));
+        let (a, b) = (segs[0][0], segs[segs.len() - 1][3]);
+        assert_eq!((a.x, a.y, b.x, b.y), (crate::CARD_W, 50.0, 800.0, 50.0));
+        assert!(segments_svg_path(&segs).starts_with("M "));
+    }
 }
 
 #[cfg(test)]

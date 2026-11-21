@@ -8,6 +8,7 @@ import { Schema, Diagnostic, qualifiedEndpointTable, qualifiedTableName } from '
 import { Glass, TABLE_COLORS, STANDARD_TYPES, hexWithAlpha } from './glass';
 import { iconSvg } from './icons';
 import { catalog, ActionId } from './actions';
+import { t } from './i18n';
 
 export type EditTarget =
   | { kind: 'table'; table: string }
@@ -197,7 +198,7 @@ export function renderInspectorPane(params: {
     TABLE_COLORS.forEach(([label, hexv]) => {
       const on = currentHex === hexv.toLowerCase();
       swatches += `
-        <button title="${escHtml(label)}" data-set-color="${hexv}" data-table="${escHtml(tq)}" style="width:22px;height:22px;border-radius:999px;background:${hexv};border:2px solid ${on ? g.text : 'transparent'};cursor:pointer;padding:0;"></button>
+        <button title="${escHtml(t(label))}" data-set-color="${hexv}" data-table="${escHtml(tq)}" style="width:22px;height:22px;border-radius:999px;background:${hexv};border:2px solid ${on ? g.text : 'transparent'};cursor:pointer;padding:0;"></button>
       `;
     });
     swatches += `
@@ -287,7 +288,7 @@ export function renderInspectorPane(params: {
                   ([sType, sDesc]) => `
                 <div data-apply-type="${escHtml(sType)}" data-table="${escHtml(tq)}" data-col="${escHtml(c.name)}" style="display:flex;justify-content:space-between;align-items:center;padding:4px 6px;border-radius:4px;cursor:pointer;font-size:12px;">
                   <span style="font-weight:500;color:${g.text};">${escHtml(sType)}</span>
-                  <span style="font-size:10.5px;color:${g.textFaint};">${escHtml(sDesc)}</span>
+                  <span style="font-size:10.5px;color:${g.textFaint};">${escHtml(t(sDesc))}</span>
                 </div>
               `
                 )

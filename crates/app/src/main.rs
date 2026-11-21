@@ -9,12 +9,13 @@ mod connect_db;
 mod glass;
 mod history;
 mod ide;
+mod i18n;
 mod import_sql;
+mod motion;
 mod platform;
 mod session;
 mod settings;
 mod shell;
-mod widgets;
 
 use glass::Mode;
 use gpui_kit::*;
@@ -25,11 +26,12 @@ use std::path::PathBuf;
 /// nome do `.desktop` instalado pelos pacotes (`scripts/build-deb.sh`, `scripts/build-fedora.sh`).
 const APP_ID: &str = "db-modeling";
 
-pub(crate) const FONTS: [&[u8]; 4] = [
-    include_bytes!("../assets/fonts/Inter-Light.ttf"),
-    include_bytes!("../assets/fonts/Inter-Regular.ttf"),
-    include_bytes!("../assets/fonts/Inter-Medium.ttf"),
-    include_bytes!("../assets/fonts/Inter-SemiBold.ttf"),
+pub(crate) const FONTS: [&[u8]; 5] = [
+    include_bytes!("../assets/fonts/Geist-Regular.ttf"),
+    include_bytes!("../assets/fonts/Geist-Medium.ttf"),
+    include_bytes!("../assets/fonts/Geist-SemiBold.ttf"),
+    include_bytes!("../assets/fonts/GeistMono-Regular.ttf"),
+    include_bytes!("../assets/fonts/GeistMono-Medium.ttf"),
 ];
 
 /// Assets do app: arquivos da marca + catálogo de ícones do GPUI Kit.
@@ -54,26 +56,39 @@ impl AssetSource for AppAssets {
 }
 
 fn main() {
+    i18n::set(std::env::var("DBM_LANG").ok().and_then(|v| i18n::Lang::parse(&v)).or_else(|| settings::load().lang).unwrap_or_else(i18n::system));
     if std::env::args().any(|a| a == "--version" || a == "-V" || a == "-v") {
         println!("db-modeling {}", env!("CARGO_PKG_VERSION"));
         return;
     }
     if std::env::args().any(|a| a == "--help" || a == "-h") {
-        println!("DB Modeling {}", env!("CARGO_PKG_VERSION"));
-        println!("Visual database schema modeling on the canvas or in DBML text\n");
-        println!("Usage: db-modeling [FILE.dbml | FOLDER]\n");
-        println!("Options:");
-        println!("  -v, -V, --version   Show application version");
-        println!("  -h, --help          Show this help message");
+        println!("dbmodeling {}", env!("CARGO_PKG_VERSION"));
+        println!("{}", i18n::t("Modelagem visual de esquemas de banco de dados no canvas ou em texto DBML\n"));
+        println!("{}", i18n::t("Uso: db-modeling [ARQUIVO.dbml | PASTA]\n"));
+        println!("{}", i18n::t("Opções:"));
+        println!("{}", i18n::t("  -v, -V, --version   Mostra a versão do aplicativo"));
+        println!("{}", i18n::t("  -h, --help          Mostra esta mensagem de ajuda"));
         return;
     }
     gpui_kit::application().with_assets(AppAssets).run(|cx| {
         gpui_kit::init(cx);
+        if motion::disabled() {
+            cx.set_reduce_motion(true);
+        }
         cx.text_system()
             .add_fonts(FONTS.iter().map(|f| Cow::Borrowed(*f)).collect())
             .expect("valid embedded fonts");
         cx.bind_keys(actions::catalog().into_iter().filter_map(|e| e.binding));
-        let (background, translucent) = platform::window_background();
+        let prefs = settings::load();
+        i18n::set(std::env::var("DBM_LANG").ok().and_then(|v| i18n::Lang::parse(&v)).or(prefs.lang).unwrap_or_else(i18n::system));
+        let env_mode = match std::env::var("DBM_MODE").as_deref() {
+            Ok("light" | "light-translucent") => Some(Mode::Light),
+            Ok("dark" | "dark-translucent") => Some(Mode::Dark),
+            _ => None,
+        };
+        // transparência da janela desativada (decisão de produto, 2026-11-16): sempre opaca
+        let translucent = false;
+        let background = platform::window_background(translucent);
         // DBM_SIZE=LxA abre a janela nesse tamanho (harness de screenshot do responsivo)
         let bounds = std::env::var("DBM_SIZE").ok().and_then(|v| {
             let (w, h) = v.split_once('x')?;
@@ -86,7 +101,7 @@ fn main() {
             window_min_size: Some(size(px(640.), px(420.))),
             // Barra de título própria só no Windows (legenda desenhada pelo app).
             titlebar: Some(TitlebarOptions {
-                title: Some("DB Modeling".into()),
+                title: Some("dbmodeling".into()),
                 appears_transparent: cfg!(windows),
                 ..Default::default()
             }),
@@ -97,16 +112,11 @@ fn main() {
         };
         let (win, shell) = gpui_kit::open_window(opts, cx, |window, cx| {
             // tema: DBM_MODE (harness de screenshot) > preferência salva > sistema
-            let prefs = settings::load();
-            let mode = match std::env::var("DBM_MODE").as_deref() {
-                Ok("light") => Mode::Light,
-                Ok("dark") => Mode::Dark,
-                _ => prefs.mode.unwrap_or(match window.appearance() {
-                    WindowAppearance::Light | WindowAppearance::VibrantLight => Mode::Light,
-                    _ => Mode::Dark,
-                }),
-            };
-            shell::apply_theme_scaled(mode, prefs.ui_scale, cx);
+            let mode = env_mode.or(prefs.mode).unwrap_or(match window.appearance() {
+                WindowAppearance::Light | WindowAppearance::VibrantLight => Mode::Light,
+                _ => Mode::Dark,
+            });
+            shell::apply_theme_scaled(mode, translucent, prefs.ui_scale, cx);
             // `app arquivo.dbml` abre o arquivo; `app pasta/` abre o projeto; sem argumento, o exemplo
             let start = std::env::args().nth(1).map(PathBuf::from);
             let shell = cx.new(|cx| shell::Shell::new(start, mode, translucent, window, cx));

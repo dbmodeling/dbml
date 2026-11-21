@@ -115,6 +115,23 @@ export function format_dbml(source) {
 }
 
 /**
+ * Identifies DBML objects that conflict with an import in append mode.
+ * @param {string} existing
+ * @param {string} incoming
+ * @returns {string[]}
+ */
+export function import_conflicts(existing, incoming) {
+    const ptr0 = passStringToWasm0(existing, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+    const len0 = WASM_VECTOR_LEN;
+    const ptr1 = passStringToWasm0(incoming, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+    const len1 = WASM_VECTOR_LEN;
+    const ret = wasm.import_conflicts(ptr0, len0, ptr1, len1);
+    var v3 = getArrayJsValueFromWasm0(ret[0], ret[1]);
+    wasm.__wbindgen_free(ret[0], ret[1] * 4, 4);
+    return v3;
+}
+
+/**
  * Imports SQL DDL written for `dialect` (`postgres`, `mysql`, `sqlite`) into DBML.
  *
  * Returns `{ dbml, warnings: [{ line, column, message }] }`. Unsupported or malformed
@@ -492,6 +509,17 @@ function debugString(val) {
     }
     // TODO we could test for more things here, like `Set`s and `Map`s.
     return className;
+}
+
+function getArrayJsValueFromWasm0(ptr, len) {
+    ptr = ptr >>> 0;
+    const mem = getDataViewMemory0();
+    const result = [];
+    for (let i = ptr; i < ptr + 4 * len; i += 4) {
+        result.push(wasm.__wbindgen_externrefs.get(mem.getUint32(i, true)));
+    }
+    wasm.__externref_drop_slice(ptr, len);
+    return result;
 }
 
 function getArrayU8FromWasm0(ptr, len) {

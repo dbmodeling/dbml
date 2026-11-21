@@ -9,21 +9,31 @@ mod panels;
 use crate::actions::{self, *};
 use crate::canvas::{Diagram, DiagramEvent, Tool};
 use crate::glass::*;
+use crate::motion;
 use dbml_analysis::Severity;
 use gpui_kit::assets::IconName;
 use gpui_kit::component::button::{Button, ButtonVariants};
 use gpui_kit::component::checkbox::Checkbox;
 use gpui_kit::component::command::{Command, CommandGroup, CommandItem, CommandState};
-use gpui_kit::component::input::{Editor, EditorState, Input, InputEvent, InputState};
+use gpui_kit::component::dialog::Dialog;
+use gpui_kit::component::input::{
+    Editor, EditorState, Escape, Input, InputEvent, InputState, RangeDecoration,
+    RangeDecorationCollection, RangeDecorationStyle,
+};
 use gpui_kit::component::kbd::Kbd;
-use gpui_kit::component::menu::DropdownMenu;
-use gpui_kit::component::resizable::{h_resizable, resizable_panel};
+use gpui_kit::component::menu::PopupMenu;
+use gpui_kit::component::popover::Popover;
+use gpui_kit::component::resizable::{HandleEdge, resize_handle};
 use gpui_kit::component::theme::{Theme, ThemeMode};
 use gpui_kit::component::tooltip::Tooltip;
-use gpui_kit::component::{Disableable as _, Icon, InteractiveElementExt as _, Sizable, WindowExt};
+use gpui_kit::component::{Icon, InteractiveElementExt as _, Sizable, WindowExt};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 use std::path::{Path, PathBuf};
+
+/// Máximo de tabelas (e de colunas) listadas na paleta por busca.
+const PALETTE_HITS: usize = 30;
+const NEW_TABLE_NAME: &str = "new_table";
 
 /// Um arquivo aberto (aba).
 pub struct Doc {
@@ -35,7 +45,12 @@ pub struct Doc {
     last_text: std::sync::Arc<str>,
     history: crate::history::UndoHistory,
     dirty: bool,
+    autosave: Option<Task<()>>,
     diags: Vec<dbml_analysis::Diagnostic>,
+    /// realce do bloco da tabela selecionada no editor
+    table_hl: RangeDecorationCollection,
+    /// (tabela, texto) para os quais `table_hl` foi calculado; evita reparsear a cada frame
+    hl_key: (Option<String>, std::sync::Arc<str>),
 }
 
 impl Doc {
@@ -49,6 +64,7 @@ impl Doc {
 #[derive(Clone, PartialEq, Eq, Debug)]
 enum EditTarget {
     Table(String),
+    TableNote(String),
     ColName(String, String),
     ColType(String, String),
     ColDefault(String, String),
@@ -59,6 +75,14 @@ enum EditTarget {
     NewEnumVal(String),
 }
 
+/// Visão do espaço de trabalho: só canvas, canvas + editor, ou só editor.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum View {
+    Diagram,
+    Split,
+    Code,
+}
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Pane {
     Files,
@@ -67,24 +91,24 @@ enum Pane {
 }
 
 const STANDARD_TYPES: &[(&str, &str)] = &[
-    ("int", "4-byte integer"),
-    ("bigint", "8-byte integer"),
-    ("smallint", "2-byte integer"),
-    ("serial", "auto-increment"),
-    ("varchar(255)", "variable-length text"),
-    ("text", "long text"),
-    ("boolean", "boolean"),
-    ("uuid", "unique identifier"),
-    ("timestamp", "date and time"),
-    ("timestamptz", "date/time with timezone"),
-    ("date", "date"),
-    ("time", "time"),
-    ("decimal(10,2)", "exact decimal"),
-    ("float", "floating point"),
-    ("double", "double precision"),
+    ("int", "inteiro de 4 bytes"),
+    ("bigint", "inteiro de 8 bytes"),
+    ("smallint", "inteiro de 2 bytes"),
+    ("serial", "autoincremento"),
+    ("varchar(255)", "texto de tamanho variável"),
+    ("text", "texto longo"),
+    ("boolean", "booleano"),
+    ("uuid", "identificador único"),
+    ("timestamp", "data e hora"),
+    ("timestamptz", "data/hora com fuso"),
+    ("date", "data"),
+    ("time", "hora"),
+    ("decimal(10,2)", "decimal exato"),
+    ("float", "ponto flutuante"),
+    ("double", "precisão dupla"),
     ("json", "JSON"),
-    ("jsonb", "binary JSON"),
-    ("bytea", "binary"),
+    ("jsonb", "JSON binário"),
+    ("bytea", "binário"),
 ];
 
 fn extract_enums_from_dbml(text: &str) -> Vec<String> {
@@ -116,18 +140,17 @@ pub struct Shell {
     pane: Pane,
     sidebar_open: bool,
     editor_open: bool,
+    /// com `editor_open`: editor ocupa tudo, sem canvas nem inspector
+    code_only: bool,
     inspector_open: bool,
     mode: Mode,
     /// chrome translúcido (há blur no fundo da janela)
     translucent: bool,
-    /// larguras dos painéis (salvas); `panels_gen` recria o grupo ao restaurar
+    lang_pref: Option<crate::i18n::Lang>,
+    /// larguras dos painéis (sidebar, editor, inspector; salvas em preferências)
     widths: (f32, f32, f32),
-    panels_gen: usize,
-    translucent_cards: bool,
     /// largura da coluna de tipos de dados no inspector
     col_type_w: f32,
-    /// arraste horizontal para redimensionar a coluna de tipos (x inicial, `col_type_w` inicial)
-    col_resize_start: Option<(Pixels, f32)>,
     editing: Option<(EditTarget, Entity<InputState>, Subscription)>,
     last_summary: Option<crate::canvas::Summary>,
     palette: Entity<CommandState>,
@@ -139,6 +162,19 @@ pub struct Shell {
     restoring_session: bool,
     suppress_history: bool,
     import_dialect: sql_import::SqlDialect,
+    /// (caminho de origem, branch git) — recalculado só quando o arquivo ativo/pasta muda
+    git_branch: (Option<PathBuf>, Option<String>),
+    /// `.dbml` abertos/salvos recentemente, mais recente primeiro (tela inicial)
+    recent: Vec<crate::session::RecentFile>,
+    /// filtro do explorador (aberto = `Some`)
+    filter: Option<(Entity<InputState>, Subscription)>,
+    /// coluna expandida no acordeão do inspector: `(tabela, Option<coluna>)`
+    open_col: Option<(String, Option<String>)>,
+    /// seções/grupos recolhidos manualmente no painel Esquema
+    collapsed: std::collections::HashSet<String>,
+    last_canvas: Option<EntityId>,
+    canvas_epoch: u64,
+    popover_epoch: u64,
 }
 
 impl Focusable for Shell {
@@ -153,11 +189,12 @@ impl Focusable for Shell {
     reason = "Non-scaled theme helper retained for API completeness"
 )]
 pub fn apply_theme(mode: Mode, cx: &mut App) {
-    apply_theme_scaled(mode, 1.0, cx);
+    apply_theme_scaled(mode, false, 1.0, cx);
 }
 
 /// Aplica tema considerando a escala de UI configurada.
-pub fn apply_theme_scaled(mode: Mode, scale: f32, cx: &mut App) {
+pub fn apply_theme_scaled(mode: Mode, translucent: bool, scale: f32, cx: &mut App) {
+    let scale = scale * crate::glass::UI_BASE;
     Theme::change(
         match mode {
             Mode::Dark => ThemeMode::Dark,
@@ -166,12 +203,23 @@ pub fn apply_theme_scaled(mode: Mode, scale: f32, cx: &mut App) {
         None,
         cx,
     );
-    let g = Glass::of_scaled(mode, false, scale);
+    let g = Glass::of_scaled(mode, false, scale / crate::glass::UI_BASE);
     Theme::update(cx, |t| {
+        t.motion.duration_fast = motion::FAST;
+        t.motion.duration_normal = motion::BASE;
+        t.motion.duration_slow = motion::SLOW;
+        t.motion.easing_enter = motion::easing();
+        t.motion.easing_exit = motion::easing();
+        t.motion.easing_move = motion::easing();
+        // o Root do gpui-component pinta este fundo atrás de tudo: opaco, ele esconde a translucidez da janela
+        if translucent {
+            t.tokens.background = gpui_kit::transparent_black().into();
+        }
         t.font_family = FONT.into();
-        t.font_size = px((13.5 * scale).round());
-        t.radius = px((6. * scale).round());
-        t.radius_lg = px((10. * scale).round());
+        t.mono_font_family = crate::glass::FONT_MONO.into();
+        t.font_size = px((13. * scale).round());
+        t.radius = px((8. * scale).round());
+        t.radius_lg = px((12. * scale).round());
         // popovers, menus e tooltips: camada elevada com sombra (como no Zed)
         t.shadow = true;
         // acento em todo lugar que o componente usa "primário" (o botão tem campos próprios)
@@ -185,9 +233,305 @@ pub fn apply_theme_scaled(mode: Mode, scale: f32, cx: &mut App) {
         t.colors.button_primary_active = active;
         t.colors.button_primary_foreground = gpui_kit::white();
         t.colors.ring = g.accent;
-        t.colors.popover = g.island.opacity(1.);
+        // `opacity` só multiplica o alfa (island é translúcido); menus precisam de fundo sólido
+        t.colors.popover = g.modal.alpha(1.);
+        t.colors.overlay = g.scrim;
         t.colors.popover_foreground = g.text;
+        t.colors.border = g.edge;
+        // linha selecionada/hover de listas e menus (paleta, menus suspensos)
+        t.colors.accent = g.active;
+        t.colors.accent_foreground = g.text;
     });
+}
+
+/// Moldura comum dos diálogos: fundo `modal` opaco, borda `edge_strong`, raio 14, título 13px
+/// semibold. (A sombra é fixa no `gpui-component`.)
+fn dialog_frame(d: Dialog, g: &Glass, width: f32, title: Option<&'static str>) -> Dialog {
+    let d = d
+        .entrance(gpui_kit::component::dialog::DialogEntrance::FadeSlide)
+        .w(px(width))
+        .bg(g.modal.alpha(1.))
+        .border_color(g.edge_strong)
+        .rounded(px(14.));
+    match title {
+        Some(t) => d.title(
+            div()
+                .text_size(px(13.))
+                .font_weight(FontWeight::SEMIBOLD)
+                .child(t),
+        ),
+        None => d,
+    }
+}
+
+/// Diálogo do v4: sem padding nem botão de fechar da moldura (o conteúdo traz o cabeçalho).
+fn dialog_bare(d: Dialog, g: &Glass, width: f32) -> Dialog {
+    dialog_frame(d, g, width, None)
+        .close_button(false)
+        .p(px(0.))
+        .overflow_hidden()
+}
+
+/// Botão X do cabeçalho dos diálogos (Esc também fecha).
+fn dialog_close(g: &Glass) -> Stateful<Div> {
+    let (h, t) = (g.hover, g.text);
+    div()
+        .id("dialog-close")
+        .role(Role::Button)
+        .aria_label(crate::i18n::t("Fechar"))
+        .flex_none()
+        .p(px(6.))
+        .rounded(px(6.))
+        .cursor_pointer()
+        .text_color(g.text_faint)
+        .hover(move |s| s.bg(h).text_color(t))
+        .on_click(|_, window, cx| window.close_dialog(cx))
+        .child(Icon::new(IconName::X).size(px(15.)))
+}
+
+/// Cabeçalho dos diálogos: título 15px semibold, subtítulo 12.5px e X à direita.
+fn dialog_header(g: &Glass, title: &'static str, subtitle: &'static str) -> Div {
+    div()
+        .flex()
+        .items_start()
+        .gap(px(12.))
+        .pl(px(18.))
+        .pr(px(12.))
+        .pt(px(16.))
+        .child(
+            div()
+                .flex_1()
+                .flex()
+                .flex_col()
+                .gap(px(3.))
+                .child(
+                    div()
+                        .text_size(px(15.))
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .child(title),
+                )
+                .child(
+                    div()
+                        .text_size(px(12.5))
+                        .text_color(g.text_muted)
+                        .child(subtitle),
+                ),
+        )
+        .child(dialog_close(g))
+}
+
+/// Botão de rodapé dos diálogos: `primary` = acento, `outline` = contorno, senão texto.
+fn dialog_btn(
+    g: &Glass,
+    id: &'static str,
+    label: impl Into<SharedString>,
+    icon: Option<IconName>,
+    primary: bool,
+    outline: bool,
+    enabled: bool,
+) -> Stateful<Div> {
+    let (hover, text) = (g.hover, g.text);
+    div()
+        .id(id)
+        .role(Role::Button)
+        .h(px(32.))
+        .px(px(14.))
+        .rounded(px(8.))
+        .flex()
+        .items_center()
+        .gap(px(7.))
+        .text_size(TEXT_SM)
+        .when(primary, |d| {
+            d.bg(g.accent)
+                .text_color(gpui_kit::white())
+                .font_weight(FontWeight::MEDIUM)
+        })
+        .when(!primary, |d| d.text_color(g.text_muted))
+        .when(outline, |d| d.border_1().border_color(g.edge_strong))
+        .when(enabled, |d| {
+            d.cursor_pointer()
+                .when(!primary, |d| d.hover(move |s| s.bg(hover).text_color(text)))
+        })
+        .when(!enabled, |d| d.opacity(0.5))
+        .children(icon.map(|i| Icon::new(i).size(px(13.))))
+        .child(label.into())
+}
+
+/// Ícone da linha da paleta, por grupo do catálogo.
+fn group_icon(group: &str) -> IconName {
+    match group {
+        "Arquivo" => IconName::File,
+        "Editar" => IconName::Pencil,
+        "Exibir" => IconName::PanelsTopLeft,
+        "Canvas" => IconName::Frame,
+        "Tabelas" => IconName::Table2,
+        "Aparência" => IconName::Palette,
+        "Editor" => IconName::Braces,
+        actions::GROUP_EXPORT_CODE => IconName::Database,
+        actions::GROUP_EXPORT_IMAGE => IconName::Image,
+        _ => IconName::Command,
+    }
+}
+
+/// Ícone específico de cada ação (para a paleta de comandos e os submenus do menu principal).
+fn action_icon(action: &dyn Action, group: &str) -> IconName {
+    if action.partial_eq(&NewFile) {
+        IconName::FilePlus
+    } else if action.partial_eq(&OpenFile) {
+        IconName::FolderOpen
+    } else if action.partial_eq(&OpenFolder) {
+        IconName::FolderTree
+    } else if action.partial_eq(&CloseTab) {
+        IconName::X
+    } else if action.partial_eq(&SaveFile) {
+        IconName::Save
+    } else if action.partial_eq(&ImportSqlDdl) {
+        IconName::FileInput
+    } else if action.partial_eq(&ConnectDatabase) {
+        IconName::Database
+    } else if action.partial_eq(&Quit) {
+        IconName::LogOut
+    } else if action.partial_eq(&Undo) {
+        IconName::Undo2
+    } else if action.partial_eq(&Redo) {
+        IconName::Redo2
+    } else if action.partial_eq(&NextTab) {
+        IconName::ArrowRight
+    } else if action.partial_eq(&PrevTab) {
+        IconName::ArrowLeft
+    } else if action.partial_eq(&ShowFiles) {
+        IconName::Folder
+    } else if action.partial_eq(&ShowSchema) {
+        IconName::Table2
+    } else if action.partial_eq(&ShowProblems) {
+        IconName::TriangleAlert
+    } else if action.partial_eq(&ToggleTheme) {
+        IconName::SunMoon
+    } else if action.partial_eq(&ThemeLight) {
+        IconName::Sun
+    } else if action.partial_eq(&ThemeDark) {
+        IconName::Moon
+    } else if action.partial_eq(&ToggleEditor) || action.partial_eq(&ShowCodeView) {
+        IconName::Braces
+    } else if action.partial_eq(&ShowDiagramView) {
+        IconName::Workflow
+    } else if action.partial_eq(&ShowSplitView) {
+        IconName::Columns2
+    } else if action.partial_eq(&FilterExplorer) {
+        IconName::ListFilter
+    } else if action.partial_eq(&ToggleSidebar) {
+        IconName::PanelLeft
+    } else if action.partial_eq(&ToggleInspector) || action.partial_eq(&ToggleAutoCollapseInspector)
+    {
+        IconName::PanelRight
+    } else if action.partial_eq(&ToggleLegend) {
+        IconName::Info
+    } else if action.partial_eq(&ToolSelect) {
+        IconName::MousePointer2
+    } else if action.partial_eq(&ToolHand) {
+        IconName::Hand
+    } else if action.partial_eq(&FitView) {
+        IconName::Scan
+    } else if action.partial_eq(&Relayout) {
+        IconName::LayoutGrid
+    } else if action.partial_eq(&ZoomIn) {
+        IconName::ZoomIn
+    } else if action.partial_eq(&ZoomOut) {
+        IconName::ZoomOut
+    } else if action.partial_eq(&Deselect) {
+        IconName::SquareDashed
+    } else if action.partial_eq(&NewTable) {
+        IconName::SquarePlus
+    } else if action.partial_eq(&NewEnum) {
+        IconName::List
+    } else if action.partial_eq(&DeleteSelection) {
+        IconName::Trash
+    } else if action.partial_eq(&RenameSelected) || action.partial_eq(&EditTableNote) {
+        IconName::Pencil
+    } else if action.partial_eq(&DuplicateTable) {
+        IconName::Copy
+    } else if action.partial_eq(&RevealInDbml) {
+        IconName::FileCode
+    } else if action.partial_eq(&GroupSelection) || action.partial_eq(&UngroupSelection) {
+        IconName::Group
+    } else if action.partial_eq(&FormatDocument) {
+        IconName::WandSparkles
+    } else if action.partial_eq(&ExportMermaid) {
+        IconName::GitFork
+    } else if action.partial_eq(&ExportSvg) {
+        IconName::PenTool
+    } else if action.partial_eq(&AddPresetUuidPk) {
+        IconName::FingerprintPattern
+    } else if action.partial_eq(&AddPresetBigIntPk) {
+        IconName::KeyRound
+    } else if action.partial_eq(&AddPresetTimestamps) {
+        IconName::Clock
+    } else if action.partial_eq(&AddPresetSoftDelete) {
+        IconName::Archive
+    } else if action.partial_eq(&ShowShortcuts) {
+        IconName::Keyboard
+    } else {
+        group_icon(group)
+    }
+}
+
+/// Atalho à direita: mono 10.5px, `text_muted`, chip com fundo `input`, borda `edge_strong` e raio 5.
+fn shortcut_chip(k: Kbd, g: &Glass) -> Kbd {
+    k.font_family(FONT_MONO)
+        .text_size(px(10.5))
+        .text_color(g.text_muted)
+        .bg(g.input)
+        .border_1()
+        .border_color(g.edge_strong)
+        .rounded(px(5.))
+}
+
+/// Seletor segmentado do v4 (trilho `g.input`, ativo em acento) no lugar de uma fileira de botões.
+/// `items`: (id, rótulo, ativo, habilitado); `pick` recebe o índice clicado.
+fn segmented(
+    g: &Glass,
+    items: &[(&'static str, &'static str, bool, bool)],
+    pick: impl Fn(usize, &mut App) + 'static,
+) -> Div {
+    let pick = std::rc::Rc::new(pick);
+    let text = g.text;
+    let mut row = div()
+        .flex()
+        .flex_wrap()
+        .items_center()
+        .gap(px(2.))
+        .p(px(3.))
+        .rounded(px(9.))
+        .bg(g.input);
+    for (i, &(id, label, on, enabled)) in items.iter().enumerate() {
+        let pick = pick.clone();
+        row = row.child(
+            div()
+                .id(id)
+                .role(Role::Button)
+                .aria_label(label)
+                .h(px(26.))
+                .px(px(10.))
+                .rounded(px(6.))
+                .flex()
+                .items_center()
+                .text_size(px(12.5))
+                .text_color(if on {
+                    gpui_kit::white()
+                } else if enabled {
+                    g.text_muted
+                } else {
+                    g.text_faint
+                })
+                .when(on, |d| d.bg(g.accent))
+                .when(enabled && !on, |d| d.hover(move |s| s.text_color(text)))
+                .when(enabled, |d| {
+                    d.cursor_pointer().on_click(move |_, _, cx| pick(i, cx))
+                })
+                .child(label),
+        );
+    }
+    row
 }
 
 /// Lista os `.dbml` de uma pasta (até 3 níveis, sem pastas ocultas), em ordem.
@@ -214,6 +558,28 @@ fn scan(dir: &Path) -> Vec<PathBuf> {
     out
 }
 
+/// Branch atual lendo `.git/HEAD` (sobe os diretórios; sem processo externo).
+/// HEAD solto (detached) vira o hash abreviado.
+fn git_branch(start: &Path) -> Option<String> {
+    let git = start
+        .ancestors()
+        .map(|d| d.join(".git"))
+        .find(|g| g.exists())?;
+    // worktree/submódulo: `.git` é um arquivo "gitdir: <caminho>"
+    let dir = if git.is_file() {
+        let text = std::fs::read_to_string(&git).ok()?;
+        git.parent()?.join(text.strip_prefix("gitdir:")?.trim())
+    } else {
+        git
+    };
+    let head = std::fs::read_to_string(dir.join("HEAD")).ok()?;
+    let head = head.trim();
+    Some(match head.strip_prefix("ref: refs/heads/") {
+        Some(b) => b.to_string(),
+        None => head.chars().take(7).collect(),
+    })
+}
+
 fn file_title(p: &Path) -> String {
     p.file_name()
         .map_or_else(|| "?".to_string(), |n| n.to_string_lossy().into_owned())
@@ -238,20 +604,17 @@ impl Shell {
             sidebar_open: std::env::var("DBM_SIDEBAR").is_ok()
                 || crate::settings::load().sidebar_open,
             editor_open: std::env::var("DBM_EDITOR").is_ok(),
+            code_only: false,
             inspector_open: std::env::var("DBM_INSPECTOR").is_ok()
                 || crate::settings::load().inspector_open,
             mode,
             translucent,
+            lang_pref: crate::settings::load().lang,
             widths: {
                 let p = crate::settings::load();
                 (p.sidebar_w, p.editor_w, p.inspector_w)
             },
-            // DBM_TRANSLUCENT: usado pelo harness de screenshot
-            translucent_cards: std::env::var("DBM_TRANSLUCENT").is_ok()
-                || crate::settings::load().translucent_cards,
             col_type_w: crate::settings::load().col_type_w,
-            col_resize_start: None,
-            panels_gen: 0,
             last_summary: None,
             editing: None,
             palette: cx.new(|cx| CommandState::new(window, cx)),
@@ -263,6 +626,18 @@ impl Shell {
             restoring_session: false,
             suppress_history: false,
             import_dialect: sql_import::SqlDialect::Postgres,
+            git_branch: (None, None),
+            recent: crate::session::load()
+                .recent
+                .into_iter()
+                .filter(|r| r.path.is_file())
+                .collect(),
+            filter: None,
+            open_col: None,
+            collapsed: std::collections::HashSet::new(),
+            last_canvas: None,
+            canvas_epoch: 0,
+            popover_epoch: 0,
         };
         // DBM_PANE: painel inicial (usado pelo harness de screenshot)
         this.pane = match std::env::var("DBM_PANE").as_deref() {
@@ -293,9 +668,19 @@ impl Shell {
         crate::history::DocSnapshot {
             text: doc.last_text.clone(),
             pos: d.positions().clone(),
+            edges: d.edges().clone(),
             selected,
             selected_enum,
             multi,
+        }
+    }
+
+    /// Grava `edges` no sidecar do arquivo (sem caminho = documento novo: nada a gravar).
+    fn save_edges(doc: &Doc, cx: &App) {
+        if let Some(path) = &doc.path
+            && let Err(e) = crate::session::save_edges(path, doc.diagram.read(cx).edges())
+        {
+            eprintln!("{}", crate::i18n::t("não foi possível gravar o layout de {}: {}").replacen("{}", &path.display().to_string(), 1).replacen("{}", &e.to_string(), 1));
         }
     }
 
@@ -308,7 +693,15 @@ impl Shell {
         cx: &mut Context<Self>,
     ) {
         let initial_arc: std::sync::Arc<str> = std::sync::Arc::from(text.as_str());
-        let diagram = cx.new(|cx| Diagram::new(dbml_analysis::analyze(&text), cx));
+        let edges = path
+            .as_deref()
+            .map(crate::session::load_edges)
+            .unwrap_or_default();
+        let diagram = cx.new(|cx| {
+            let mut d = Diagram::new(dbml_analysis::analyze(&text), cx);
+            d.set_edges(edges);
+            d
+        });
         let editor = cx.new(|cx| {
             let mut st = EditorState::new(window, cx)
                 .default_value(text)
@@ -317,11 +710,14 @@ impl Shell {
             st
         });
         let diags = editor.update(cx, crate::ide::refresh_diagnostics);
+        let table_hl = editor.update(cx, |e, cx| {
+            e.create_range_decorations_collection(Vec::new(), cx)
+        });
         // texto → Schema → canvas, a cada edição
         let sub = cx.subscribe_in(
             &editor,
             window,
-            |this: &mut Shell, ed, ev: &InputEvent, _, cx| {
+            |this: &mut Shell, ed, ev: &InputEvent, window, cx| {
                 if !matches!(ev, InputEvent::Change) {
                     return;
                 }
@@ -336,6 +732,7 @@ impl Shell {
                         doc.history.push(crate::history::DocSnapshot {
                             text: doc.last_text.clone(),
                             pos: d.positions().clone(),
+                            edges: d.edges().clone(),
                             selected,
                             selected_enum,
                             multi,
@@ -350,6 +747,9 @@ impl Shell {
                             cx.notify();
                         });
                     }
+                }
+                if !suppress && let Some(i) = this.doc_index(ed) {
+                    this.schedule_autosave(i, window, cx);
                 }
                 cx.notify();
             },
@@ -407,10 +807,19 @@ impl Shell {
                         doc.history.push(crate::history::DocSnapshot {
                             text: doc.last_text.clone(),
                             pos: old_pos.clone(),
+                            edges: doc.diagram.read(cx).edges().clone(),
                             selected,
                             selected_enum,
                             multi,
                         });
+                    }
+                }
+                DiagramEvent::EdgesChanged(old_edges) => {
+                    if let Some(doc) = this.docs.iter_mut().find(|d| &d.diagram == diag_entity) {
+                        let mut before = Self::snapshot_of(doc, cx);
+                        before.edges.clone_from(old_edges);
+                        doc.history.push(before);
+                        Self::save_edges(doc, cx);
                     }
                 }
             },
@@ -425,7 +834,10 @@ impl Shell {
             last_text: initial_arc,
             history: crate::history::UndoHistory::new(),
             dirty: false,
+            autosave: None,
             diags,
+            table_hl,
+            hl_key: (None, std::sync::Arc::from("")),
         });
         self.active = self.docs.len() - 1;
         cx.notify();
@@ -445,11 +857,40 @@ impl Shell {
         match std::fs::read_to_string(&path) {
             Ok(text) => {
                 let title = file_title(&path);
-                self.add_doc(text, Some(path), title, window, cx);
+                self.add_doc(text, Some(path.clone()), title, window, cx);
+                self.touch_recent(path, cx);
                 self.save_session(cx);
             }
-            Err(e) => window.push_notification(format!("Could not open file: {e}"), cx),
+            Err(e) => {
+                eprintln!("Could not open {}: {e}", path.display());
+                let hint = match e.kind() {
+                    std::io::ErrorKind::NotFound => "O arquivo foi movido ou removido. Escolha o arquivo novamente.",
+                    std::io::ErrorKind::PermissionDenied => "Sem acesso ao arquivo. Verifique as permissões ou abra uma cópia.",
+                    std::io::ErrorKind::InvalidData => "O arquivo não está em UTF-8. Abra uma cópia salva em UTF-8.",
+                    _ => "Não foi possível abrir o arquivo. Selecione-o novamente.",
+                };
+                window.push_notification(crate::i18n::t(hint), cx);
+            }
         }
+    }
+
+    /// Registra o arquivo no histórico de recentes (não na restauração da sessão).
+    fn touch_recent(&mut self, path: PathBuf, cx: &App) {
+        if self.restoring_session {
+            return;
+        }
+        let Some(doc) = self.docs.iter().find(|d| d.path.as_ref() == Some(&path)) else {
+            return;
+        };
+        let tables = doc.diagram.read(cx).schema().tables.len();
+        crate::session::push_recent(
+            &mut self.recent,
+            crate::session::RecentFile {
+                path,
+                tables,
+                at: crate::session::now_secs(),
+            },
+        );
     }
 
     fn set_project(&mut self, dir: PathBuf, window: &mut Window, cx: &mut Context<Self>) {
@@ -517,6 +958,7 @@ impl Shell {
             && let Some(ed) = session.editor_open
         {
             self.editor_open = ed;
+            self.code_only = ed && session.code_view == Some(true);
         }
 
         self.restoring_session = false;
@@ -558,6 +1000,8 @@ impl Shell {
             active_file,
             pane,
             editor_open: Some(self.editor_open),
+            code_view: Some(self.code_only),
+            recent: self.recent.clone(),
             viewports,
         });
     }
@@ -591,7 +1035,7 @@ impl Shell {
             files: true,
             directories: false,
             multiple: true,
-            prompt: Some("Open".into()),
+            prompt: Some(crate::i18n::t("Abrir").into()),
         });
         cx.spawn_in(window, async move |this, cx| {
             let Ok(Ok(Some(paths))) = rx.await else {
@@ -616,7 +1060,7 @@ impl Shell {
             files: false,
             directories: true,
             multiple: false,
-            prompt: Some("Open Project".into()),
+            prompt: Some(crate::i18n::t("Abrir projeto").into()),
         });
         cx.spawn_in(window, async move |this, cx| {
             let Ok(Ok(Some(paths))) = rx.await else {
@@ -634,44 +1078,96 @@ impl Shell {
     fn save_file(&mut self, _: &SaveFile, window: &mut Window, cx: &mut Context<Self>) {
         let Some(doc) = self.doc() else { return };
         if let Some(path) = doc.path.clone() {
-            self.write(path, window, cx);
+            self.write(self.active, path, false, window, cx);
             return;
         }
         let dir = self
             .project
             .clone()
             .unwrap_or_else(|| std::env::current_dir().unwrap_or_default());
+        let editor = doc.editor.clone();
         let rx = cx.prompt_for_new_path(&dir, Some(&doc.title));
         cx.spawn_in(window, async move |this, cx| {
             let Ok(Ok(Some(path))) = rx.await else { return };
-            this.update_in(cx, |this, window, cx| this.write(path, window, cx))
+            this.update_in(cx, |this, window, cx| {
+                if let Some(i) = this.doc_index(&editor) { this.write(i, path, false, window, cx); }
+            })
                 .ok();
         })
         .detach();
     }
 
-    fn write(&mut self, path: PathBuf, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(doc) = self.docs.get_mut(self.active) else {
+    fn doc_index(&self, editor: &Entity<EditorState>) -> Option<usize> {
+        self.docs.iter().position(|doc| doc.editor.entity_id() == editor.entity_id())
+    }
+
+    fn schedule_autosave(&mut self, i: usize, window: &mut Window, cx: &mut Context<Self>) {
+        let doc = &mut self.docs[i];
+        doc.autosave = None;
+        if !doc.dirty || doc.path.is_none() {
             return;
-        };
+        }
+        let editor = doc.editor.clone();
+        let timer = cx.background_executor().timer(std::time::Duration::from_millis(600));
+        doc.autosave = Some(cx.spawn_in(window, async move |this, cx| {
+            timer.await;
+            this.update_in(cx, |this, window, cx| {
+                let Some(i) = this.doc_index(&editor) else { return };
+                let doc = &this.docs[i];
+                if let Some(path) = doc.path.clone().filter(|_| doc.dirty) {
+                    this.write(i, path, true, window, cx);
+                }
+            }).ok();
+        }));
+    }
+
+    fn write(&mut self, i: usize, path: PathBuf, autosave: bool, window: &mut Window, cx: &mut Context<Self>) -> bool {
+        let Some(doc) = self.docs.get_mut(i) else { return false };
         let text = doc.editor.read(cx).value().to_string();
-        match std::fs::write(&path, &text) {
+        if autosave && !std::fs::read_to_string(&path).is_ok_and(|disk| disk == doc.saved_text.as_ref()) {
+            window.push_notification(crate::i18n::t("O arquivo mudou no disco. Salve manualmente para confirmar."), cx);
+            return false;
+        }
+        let ok = match crate::session::atomic_write_sync(&path, &text) {
             Ok(()) => {
-                window.push_notification(format!("Saved to {}", path.display()), cx);
-                doc.title = file_title(&path);
-                doc.path = Some(path);
                 let saved: std::sync::Arc<str> = std::sync::Arc::from(text.as_str());
                 doc.saved_text = saved.clone();
                 doc.last_text = saved;
                 doc.dirty = false;
+                if autosave {
+                    cx.notify();
+                    return true;
+                }
+                doc.autosave = None;
+                window.push_notification(crate::i18n::t("Salvo em {}").replace("{}", &path.display().to_string()), cx);
+                doc.title = file_title(&path);
+                doc.path = Some(path.clone());
+                // arquivo novo/"salvar como": leva o estilo das relações para o sidecar
+                Self::save_edges(doc, cx);
                 if let Some(dir) = self.project.clone() {
                     self.files = scan(&dir);
                 }
+                self.touch_recent(path, cx);
                 self.save_session(cx);
+                true
             }
-            Err(e) => window.push_notification(format!("Could not save file: {e}"), cx),
-        }
+            Err(e) => {
+                eprintln!("Could not save {}: {e}", path.display());
+                let hint = if file_in_use(&e) {
+                    "O arquivo está em uso. Feche-o no outro aplicativo ou use Salvar como."
+                } else if e.kind() == std::io::ErrorKind::StorageFull {
+                    "O disco está cheio. Libere espaço ou use Salvar como."
+                } else if e.kind() == std::io::ErrorKind::PermissionDenied {
+                    "Sem permissão para gravar nesta pasta. Use Salvar como para escolher outra."
+                } else {
+                    "Suas alterações continuam abertas. Tente salvar novamente ou use Salvar como."
+                };
+                window.push_notification(crate::i18n::t(hint), cx);
+                false
+            }
+        };
         cx.notify();
+        ok
     }
 
     fn force_close_tab_at(&mut self, i: usize, cx: &mut Context<Self>) {
@@ -692,38 +1188,23 @@ impl Shell {
         let Some(doc) = self.docs.get(i) else {
             return;
         };
+        let editor = doc.editor.clone();
         if let Some(path) = doc.path.clone() {
-            let text = doc.editor.read(cx).value().to_string();
-            match std::fs::write(&path, &text) {
-                Ok(()) => {
-                    window.push_notification(format!("Saved to {}", path.display()), cx);
-                    self.force_close_tab_at(i, cx);
-                }
-                Err(e) => window.push_notification(format!("Could not save file: {e}"), cx),
-            }
+            if self.write(i, path, false, window, cx) { self.force_close_tab_at(i, cx); }
             return;
         }
-        let dir = self
-            .project
-            .clone()
-            .unwrap_or_else(|| std::env::current_dir().unwrap_or_default());
+        let dir = self.project.clone().unwrap_or_else(|| std::env::current_dir().unwrap_or_default());
         let rx = cx.prompt_for_new_path(&dir, Some(&doc.title));
         cx.spawn_in(window, async move |this, cx| {
             let Ok(Ok(Some(path))) = rx.await else { return };
             this.update_in(cx, |this, window, cx| {
-                let Some(doc) = this.docs.get(i) else { return };
-                let text = doc.editor.read(cx).value().to_string();
-                match std::fs::write(&path, &text) {
-                    Ok(()) => {
-                        window.push_notification(format!("Saved to {}", path.display()), cx);
-                        this.force_close_tab_at(i, cx);
-                    }
-                    Err(e) => window.push_notification(format!("Could not save file: {e}"), cx),
+                if let Some(i) = this.doc_index(&editor)
+                    && this.write(i, path, false, window, cx)
+                {
+                    this.force_close_tab_at(i, cx);
                 }
-            })
-            .ok();
-        })
-        .detach();
+            }).ok();
+        }).detach();
     }
 
     fn close_tab_at(&mut self, i: usize, window: &mut Window, cx: &mut Context<Self>) {
@@ -735,24 +1216,25 @@ impl Shell {
             return;
         }
         let title = doc.title.clone();
+        let editor = doc.editor.clone();
         let shell = cx.entity();
+        let g = Glass::of_scaled(self.mode, self.translucent, self.ui_scale);
         window.open_dialog(cx, move |dialog, _, _| {
             let title = title.clone();
             let shell = shell.clone();
-            dialog
-                .w(px(440.))
-                .title("Unsaved Changes")
-                .content(move |content, _, _| {
+            let editor = editor.clone();
+            dialog_frame(dialog, &g, 440., Some(crate::i18n::t("Alterações não salvas"))).content(
+                move |content, _, _| {
                     let shell_save = shell.clone();
                     let shell_discard = shell.clone();
+                    let editor_save = editor.clone();
+                    let editor_discard = editor.clone();
                     content.child(
                         div()
                             .flex()
                             .flex_col()
                             .gap(px(16.))
-                            .child(div().text_size(TEXT_SM).child(format!(
-                                "Do you want to save the changes made to \"{title}\"?"
-                            )))
+                            .child(div().text_size(TEXT_SM).child(crate::i18n::t("Deseja salvar as alterações feitas em \"{}\"?").replace("{}", &title)))
                             .child(
                                 div()
                                     .flex()
@@ -762,7 +1244,7 @@ impl Shell {
                                         Button::new("dlg-cancel-close")
                                             .ghost()
                                             .small()
-                                            .label("Cancel")
+                                            .label(crate::i18n::t("Cancelar"))
                                             .on_click(|_, window, cx| {
                                                 window.close_dialog(cx);
                                             }),
@@ -771,11 +1253,11 @@ impl Shell {
                                         Button::new("dlg-discard-close")
                                             .ghost()
                                             .small()
-                                            .label("Discard changes")
+                                            .label(crate::i18n::t("Descartar alterações"))
                                             .on_click(move |_, window, cx| {
                                                 window.close_dialog(cx);
                                                 shell_discard.update(cx, |s, cx| {
-                                                    s.force_close_tab_at(i, cx);
+                                                    if let Some(i) = s.doc_index(&editor_discard) { s.force_close_tab_at(i, cx); }
                                                 });
                                             }),
                                     )
@@ -783,17 +1265,18 @@ impl Shell {
                                         Button::new("dlg-save-close")
                                             .primary()
                                             .small()
-                                            .label("Save")
+                                            .label(crate::i18n::t("Salvar"))
                                             .on_click(move |_, window, cx| {
                                                 window.close_dialog(cx);
                                                 shell_save.update(cx, |s, cx| {
-                                                    s.save_and_close_tab_at(i, window, cx);
+                                                    if let Some(i) = s.doc_index(&editor_save) { s.save_and_close_tab_at(i, window, cx); }
                                                 });
                                             }),
                                     ),
                             ),
                     )
-                })
+                },
+            )
         });
     }
 
@@ -818,30 +1301,143 @@ impl Shell {
     }
 
     fn toggle_left_pane(&mut self, target: Option<Pane>, cx: &mut Context<Self>) {
-        match target {
-            Some(pane) => {
-                // clicar no painel já aberto recolhe a barra lateral; caso contrário abre exclusivamente
-                if self.sidebar_open && !self.editor_open && self.pane == pane {
-                    self.sidebar_open = false;
-                } else {
-                    self.pane = pane;
-                    self.sidebar_open = true;
-                    self.editor_open = false;
-                }
+        if let Some(pane) = target {
+            // clicar no painel já aberto recolhe a barra lateral; caso contrário abre exclusivamente
+            if self.sidebar_open && !self.editor_open && self.pane == pane {
+                self.sidebar_open = false;
+            } else {
+                self.pane = pane;
+                self.sidebar_open = true;
+                self.editor_open = false;
+                self.code_only = false;
             }
-            None => {
-                // alternar editor DBML de forma exclusiva com os outros painéis esquerdos
-                if self.editor_open {
-                    self.editor_open = false;
-                } else {
-                    self.editor_open = true;
-                    self.sidebar_open = false;
-                }
+        } else {
+            // alternar editor DBML de forma exclusiva com os outros painéis esquerdos;
+            // de "Code" volta para "Split"
+            if self.editor_open && !self.code_only {
+                self.editor_open = false;
+            } else {
+                self.editor_open = true;
+                self.sidebar_open = false;
             }
+            self.code_only = false;
         }
         self.save_prefs();
         self.save_session(cx);
         cx.notify();
+    }
+
+    /// Realça no editor o bloco da tabela selecionada (fundo em `accent`; a biblioteca não
+    /// desenha a barra lateral, só preenchimento). Só recalcula quando seleção ou texto mudam.
+    fn sync_table_highlight(&mut self, cx: &mut Context<Self>) {
+        let accent = Glass::of_scaled(self.mode, self.translucent, self.ui_scale).accent;
+        let Some(doc) = self.docs.get_mut(self.active) else {
+            return;
+        };
+        let selected = doc
+            .diagram
+            .read(cx)
+            .selected()
+            .map(schema::Table::qualified_name);
+        if doc.hl_key.0 == selected && doc.hl_key.1 == doc.last_text {
+            return;
+        }
+        let range = selected
+            .as_deref()
+            .and_then(|t| crate::ide::table_block(&doc.last_text, t));
+        doc.hl_key = (selected, doc.last_text.clone());
+        let fill = range.map(|r| {
+            RangeDecoration::new(r)
+                .with_style(RangeDecorationStyle::Fill)
+                .with_color(accent.opacity(0.07))
+        });
+        doc.table_hl.set(fill.into_iter().collect(), cx);
+    }
+
+    fn view(&self) -> View {
+        match (self.editor_open, self.code_only) {
+            (false, _) => View::Diagram,
+            (true, false) => View::Split,
+            (true, true) => View::Code,
+        }
+    }
+
+    fn set_view(&mut self, view: View, cx: &mut Context<Self>) {
+        self.editor_open = view != View::Diagram;
+        self.code_only = view == View::Code;
+        if self.editor_open {
+            self.sidebar_open = false;
+        }
+        self.save_prefs();
+        self.save_session(cx);
+        cx.notify();
+    }
+
+    fn show_diagram_view(&mut self, _: &ShowDiagramView, _: &mut Window, cx: &mut Context<Self>) {
+        self.set_view(View::Diagram, cx);
+    }
+
+    fn show_split_view(&mut self, _: &ShowSplitView, _: &mut Window, cx: &mut Context<Self>) {
+        self.set_view(View::Split, cx);
+    }
+
+    fn show_code_view(&mut self, _: &ShowCodeView, _: &mut Window, cx: &mut Context<Self>) {
+        self.set_view(View::Code, cx);
+    }
+
+    /// Alterna o filtro do explorador de esquema.
+    fn filter_explorer(&mut self, _: &FilterExplorer, window: &mut Window, cx: &mut Context<Self>) {
+        let toggle = self.pane == Pane::Schema && self.sidebar_open && !self.editor_open;
+        self.pane = Pane::Schema;
+        self.sidebar_open = true;
+        self.editor_open = false;
+        self.code_only = false;
+        if toggle {
+            self.toggle_filter_explorer(window, cx);
+        } else {
+            self.open_filter(window, cx);
+        }
+        self.save_prefs();
+        self.save_session(cx);
+    }
+
+    /// Alterna o campo de filtro no cabeçalho do painel Esquema.
+    fn toggle_filter_explorer(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.filter.is_some() {
+            self.close_filter(window, cx);
+        } else {
+            self.open_filter(window, cx);
+        }
+    }
+
+    fn open_filter(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some((input, _)) = &self.filter {
+            let handle = input.read(cx).focus_handle(cx);
+            window.focus(&handle, cx);
+            return;
+        }
+        let input = cx.new(|cx| InputState::new(window, cx).placeholder(crate::i18n::t("Filtrar tabelas…")));
+        let handle = input.read(cx).focus_handle(cx);
+        window.focus(&handle, cx);
+        let sub = cx.subscribe_in(
+            &input,
+            window,
+            |_: &mut Shell, _, ev: &InputEvent, _, cx| {
+                if matches!(ev, InputEvent::Change) {
+                    cx.notify();
+                }
+            },
+        );
+        self.filter = Some((input, sub));
+        cx.notify();
+    }
+
+    /// Esc: limpa e fecha o filtro, devolvendo o foco ao shell.
+    fn close_filter(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.filter.take().is_some() {
+            window.focus(&self.focus, cx);
+            cx.notify();
+        }
     }
 
     fn show_pane(&mut self, pane: Pane, cx: &mut Context<Self>) {
@@ -898,9 +1494,10 @@ impl Shell {
                     if let Some(p) = Self::linux_save_dialog_fallback(&fallback_default) {
                         p
                     } else {
+                        eprintln!("Could not open export file dialog: {portal_err}");
                         let _ = cx.update(|window, cx| {
                             window.push_notification(
-                                format!("File dialog unavailable ({portal_err})"),
+                                crate::i18n::t("Não foi possível abrir a janela de salvamento. Tente exportar novamente."),
                                 cx,
                             );
                         });
@@ -908,13 +1505,18 @@ impl Shell {
                     }
                 }
             };
-            let res =
-                build().and_then(|bytes| std::fs::write(&path, bytes).map_err(|e| e.to_string()));
+            let res = build().and_then(|bytes| {
+                std::fs::write(&path, bytes).map_err(|error| {
+                    eprintln!("Could not write export {}: {error}", path.display());
+                    crate::i18n::t(export_write_hint(&error)).to_owned()
+                })
+            });
             cx.update(|window, cx| match res {
                 Ok(()) => {
-                    window.push_notification(format!("Exported {what} to {}", path.display()), cx);
+                    window
+                        .push_notification(crate::i18n::t("Exportado {} para {}").replacen("{}", &what, 1).replacen("{}", &path.display().to_string(), 1), cx);
                 }
-                Err(e) => window.push_notification(format!("Failed to export {what}: {e}"), cx),
+                Err(e) => window.push_notification(crate::i18n::t("Falha ao exportar {}: {}").replacen("{}", &what, 1).replacen("{}", &e, 1), cx),
             })
             .ok();
         })
@@ -945,7 +1547,21 @@ impl Shell {
         self.save_export(
             &suggested,
             format!("SQL ({})", dialect.as_str()),
-            move || Ok(dbml_analysis::export_sql_ddl(&text, dialect).into_bytes()),
+            move || {
+                dbml_analysis::try_export_sql_ddl(&text, dialect)
+                    .map(String::into_bytes)
+                    .map_err(|err| {
+                        use dbml_analysis::SqlExportError;
+                        eprintln!("SQL generation failed: {err}");
+                        match err {
+                            SqlExportError::InvalidSource(message) => crate::i18n::t("Revise o DBML antes de exportar SQL: {}")
+                                .replace("{}", &crate::i18n::diagnostic(&message)),
+                            SqlExportError::SqliteSchema(schema) => crate::i18n::t("O SQLite não aceita o schema {} nesta exportação. Escolha outro dialeto.")
+                                .replace("{}", &schema),
+                            SqlExportError::UnknownDialect(_) => crate::i18n::t("Escolha outro dialeto para exportar SQL.").into(),
+                        }
+                    })
+            },
             window,
             cx,
         );
@@ -966,9 +1582,18 @@ impl Shell {
 
     fn export_image(&mut self, kind: ImageKind, window: &mut Window, cx: &mut Context<Self>) {
         let Some(doc) = self.doc() else { return };
-        let (schema, pos) = {
+        let (schema, pos, edges, tables, enum_name, relation) = {
             let d = doc.diagram.read(cx);
-            (d.schema().clone(), d.positions().clone())
+            let (selected, enum_name, mut tables) = d.selection_state();
+            tables.extend(selected);
+            (
+                d.schema().clone(),
+                d.positions().clone(),
+                d.edges().clone(),
+                tables,
+                enum_name,
+                d.selected_ref().cloned(),
+            )
         };
         let theme = if self.mode == Mode::Dark {
             diagram_export::Theme::dark()
@@ -980,14 +1605,24 @@ impl Shell {
             &suggested,
             kind.label().into(),
             move || {
-                let svg = diagram_export::to_svg(&schema, &pos, &theme);
-                let fonts: Vec<&[u8]> = crate::FONTS.to_vec();
+                let selection = diagram_export::Selection {
+                    tables: &tables,
+                    enum_name: enum_name.as_deref(),
+                    relation: relation.as_ref().map(|((from, from_col), (to, to_col))| {
+                        ((from.as_str(), from_col.as_str()), (to.as_str(), to_col.as_str()))
+                    }),
+                };
+                let svg = diagram_export::to_svg_with_selection(&schema, &pos, &edges, &theme, &selection);
+                let fonts = &crate::FONTS;
                 match kind {
-                    ImageKind::Svg => Ok(svg.into_bytes()),
-                    ImageKind::Png => diagram_export::svg_to_png(&svg, &fonts, 2.0),
-                    ImageKind::Jpeg => diagram_export::svg_to_jpeg(&svg, &fonts, 2.0, 92),
+                    ImageKind::Svg => Ok(embed_svg_fonts(svg).into_bytes()),
+                    ImageKind::Png => diagram_export::svg_to_png(&svg, fonts, 2.0),
+                    ImageKind::Jpeg => diagram_export::svg_to_jpeg(&svg, fonts, 2.0, 92),
                 }
-                .map_err(|e| e.to_string())
+                .map_err(|error| {
+                    eprintln!("Image generation failed: {error}");
+                    crate::i18n::t("Tente exportar em SVG.").into()
+                })
             },
             window,
             cx,
@@ -1092,14 +1727,17 @@ impl Shell {
     ) {
         let Some(doc) = self.doc() else { return };
         let Some(table) = doc.diagram.read(cx).selection_state().0 else {
-            window.push_notification("Select a table to add a column preset", cx);
+            window.push_notification(
+                crate::i18n::t("Selecione uma tabela para adicionar a predefinição de coluna"),
+                cx,
+            );
             return;
         };
         let text = doc.editor.read(cx).value().to_string();
         match dbml_edit::add_column_preset_text(&text, &table, preset) {
-            None => window.push_notification(format!("Table '{table}' not found"), cx),
+            None => window.push_notification(crate::i18n::t("Tabela '{}' não encontrada").replace("{}", &table), cx),
             Some(new) if new == text => {
-                window.push_notification(format!("{}: columns already exist", preset.label()), cx);
+                window.push_notification(crate::i18n::t("{}: as colunas já existem").replace("{}", preset.label()), cx);
             }
             Some(new) => self.edit_text(false, window, cx, move |_| Some(new)),
         }
@@ -1153,16 +1791,16 @@ impl Shell {
             cx.new(|cx| InputState::new(window, cx).placeholder(ph))
         };
         let host = input(window, cx, "localhost");
-        let port = input(window, cx, "default port");
-        let database = input(window, cx, "database name");
-        let user = input(window, cx, "user");
+        let port = input(window, cx, crate::i18n::t("porta padrão"));
+        let database = input(window, cx, crate::i18n::t("nome do banco"));
+        let user = input(window, cx, crate::i18n::t("usuário"));
         let password = cx.new(|cx| {
             InputState::new(window, cx)
-                .placeholder("password")
+                .placeholder(crate::i18n::t("senha"))
                 .masked(true)
         });
         let path = input(window, cx, "/path/to/database.sqlite");
-        let schemas = input(window, cx, "all schemas (or: public, sales)");
+        let schemas = input(window, cx, crate::i18n::t("todos os schemas (ou: public, sales)"));
         let shell_entity = cx.entity().clone();
         let has_existing = self
             .doc()
@@ -1181,43 +1819,39 @@ impl Shell {
                 path.clone(),
                 schemas.clone(),
             );
-            dialog
-                .w(px(560.))
-                .title("Connect to Database")
-                .content(move |content, _, cx| {
+            dialog_bare(dialog, &g, 560.).margin_top(px(76.)).content(
+                move |content, _, cx| {
                     let st = model.read(cx).clone();
                     let is_file = st.dialect == Dialect::Sqlite;
                     let connecting = st.status == Status::Connecting;
 
-                    let engine_btn = |id: &'static str, label: &'static str, d: Dialect| {
-                        let model = model.clone();
-                        let b = Button::new(id).small().label(label);
-                        let b = if st.dialect == d {
-                            b.primary()
-                        } else {
-                            b.outline()
-                        };
-                        b.disabled(connecting).on_click(move |_, _, cx| {
-                            model.update(cx, |m, cx| {
-                                m.set_dialect(d);
-                                cx.notify();
-                            });
-                        })
-                    };
                     let row = |label: &'static str, field: Entity<InputState>| {
                         div()
                             .flex()
                             .items_center()
                             .gap(SP_SM)
+                            .gap(px(12.))
                             .child(
                                 div()
-                                    .w(px(84.))
+                                    .w(px(96.))
                                     .flex_none()
-                                    .text_size(TEXT_XS)
+                                    .text_size(px(12.5))
                                     .text_color(g.text_muted)
                                     .child(label),
                             )
-                            .child(div().flex_1().child(Input::new(&field).small()))
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .h(px(32.))
+                                    .px(px(10.))
+                                    .rounded(px(7.))
+                                    .bg(g.input_solid)
+                                    .border_1()
+                                    .border_color(g.edge_strong)
+                                    .flex()
+                                    .items_center()
+                                    .child(Input::new(&field).small().appearance(false)),
+                            )
                     };
 
                     // Button factory: `test` only checks credentials and lists schemas.
@@ -1233,12 +1867,22 @@ impl Shell {
                             schemas.clone(),
                         );
                         let label = match (test, connecting) {
-                            (true, _) => "Test connection",
-                            (false, true) => "Connecting…",
-                            (false, false) => "Connect",
+                            (true, _) => crate::i18n::t("Testar conexão"),
+                            (false, true) => crate::i18n::t("Conectando…"),
+                            (false, false) => crate::i18n::t("Conectar"),
                         };
-                        let b = Button::new(id).small().label(label).disabled(connecting);
-                        let b = if test { b.outline() } else { b.primary() };
+                        let b = dialog_btn(
+                            &g,
+                            id,
+                            label,
+                            test.then_some(IconName::PlugZap),
+                            !test,
+                            test,
+                            !connecting,
+                        );
+                        if connecting {
+                            return b;
+                        }
                         b.on_click(move |_, window, cx| {
                             let m = model.read(cx).clone();
                             let mut params = ConnectionParams::new(m.dialect);
@@ -1292,12 +1936,16 @@ impl Shell {
                     let test_btn = action_btn("db-test", true);
 
                     let can_apply = st.can_apply();
+                    let conflicts = shell_entity.read(cx).import_conflicts(&st.dbml, cx);
                     let apply_btn =
                         |id: &'static str, label: String, replace: bool, primary: bool| {
                             let model = model.clone();
                             let shell_entity = shell_entity.clone();
-                            let mut b = Button::new(id).small().label(label).disabled(!can_apply);
-                            b = if primary { b.primary() } else { b.outline() };
+                            let enabled = can_apply && (replace || conflicts.is_empty());
+                            let b = dialog_btn(&g, id, label, None, primary, !primary, enabled);
+                            if !enabled {
+                                return b;
+                            }
                             b.on_click(move |_, window, cx| {
                                 if replace && has_existing && !model.read(cx).confirm_replace {
                                     model.update(cx, |m, cx| {
@@ -1322,41 +1970,36 @@ impl Shell {
                             })
                         };
                     let replace_label = if st.confirm_replace {
-                        "Confirm Replace?".to_string()
+                        crate::i18n::t("Confirmar substituição?").to_string()
                     } else {
-                        "Replace".to_string()
+                        crate::i18n::t("Substituir").to_string()
                     };
 
                     let status_line = match &st.status {
                         Status::Idle => {
-                            div().child("Read-only: only the catalog is read, never your data.")
+                            div().child(crate::i18n::t("Somente leitura: apenas o catálogo é lido, nunca os seus dados."))
                         }
-                        Status::Connecting => div().child("Connecting and reading the schema…"),
+                        Status::Connecting => div().child(crate::i18n::t("Conectando e lendo o esquema…")),
                         Status::Failed(msg) => div()
                             .text_color(rgb(crate::glass::DIAG_ERROR))
-                            .child(msg.clone()),
+                            .child(crate::i18n::t(connection_hint(msg, is_file))),
                         Status::Tested(msg) => div().child(msg.clone()),
-                        Status::Ready => div().child(format!(
-                            "Found {} table{}. Replace the document or insert them.",
-                            st.tables,
-                            if st.tables == 1 { "" } else { "s" }
-                        )),
+                        Status::Ready => div().child(crate::i18n::t(if st.tables == 1 { "{} tabela encontrada. Substitua o documento ou insira-a." } else { "{} tabelas encontradas. Substitua o documento ou insira-as." }).replace("{}", &st.tables.to_string())),
                     };
 
-                    let mut form = div().flex().flex_col().gap(SP_SM);
+                    let mut form = div().flex().flex_col().gap(px(8.)).px(px(18.)).py(px(10.));
                     if is_file {
                         let pick = {
                             let path = path.clone();
-                            Button::new("db-pick-file")
-                                .small()
-                                .outline()
-                                .label("Browse…")
+                            dialog_btn(&g, "db-pick-file", crate::i18n::t("Procurar…"), None, false, true, true)
+                                .h(px(32.))
+                                .text_color(g.text)
                                 .on_click(move |_, window, cx| {
                                     let rx = cx.prompt_for_paths(PathPromptOptions {
                                         files: true,
                                         directories: false,
                                         multiple: false,
-                                        prompt: Some("Select SQLite database".into()),
+                                        prompt: Some(crate::i18n::t("Selecione o banco SQLite").into()),
                                     });
                                     let path = path.clone();
                                     window
@@ -1386,22 +2029,22 @@ impl Shell {
                                 .flex()
                                 .items_center()
                                 .gap(SP_SM)
-                                .child(div().flex_1().child(row("File", path.clone())))
+                                .child(div().flex_1().child(row(crate::i18n::t("Arquivo"), path.clone())))
                                 .child(pick),
                         );
                     } else {
                         form = form
                             .child(row("Host", host.clone()))
-                            .child(row("Port", port.clone()))
-                            .child(row("Database", database.clone()))
-                            .child(row("User", user.clone()))
-                            .child(row("Password", password.clone()))
+                            .child(row(crate::i18n::t("Porta"), port.clone()))
+                            .child(row(crate::i18n::t("Banco"), database.clone()))
+                            .child(row(crate::i18n::t("Usuário"), user.clone()))
+                            .child(row(crate::i18n::t("Senha"), password.clone()))
                             .child(row("Schemas", schemas.clone()));
                         if st.dialect == Dialect::SqlServer {
                             let model = model.clone();
                             form = form.child(
                                 Checkbox::new("db-trust")
-                                    .label("Trust server certificate (self-signed, e.g. Docker)")
+                                    .label(crate::i18n::t("Confiar no certificado do servidor (autoassinado, ex.: Docker)"))
                                     .checked(st.trust_cert)
                                     .on_click(move |checked, _, cx| {
                                         let checked = *checked;
@@ -1414,81 +2057,134 @@ impl Shell {
                         }
                     }
 
-                    content.child(
-                        div()
-                            .flex()
-                            .flex_col()
-                            .gap(SP_MD)
-                            .child(
-                                div()
-                                    .flex()
-                                    .flex_wrap()
-                                    .items_center()
-                                    .gap(px(6.))
-                                    .child(engine_btn("db-pg", "PostgreSQL", Dialect::Postgres))
-                                    .child(engine_btn("db-my", "MySQL", Dialect::Mysql))
-                                    .child(engine_btn("db-ms", "SQL Server", Dialect::SqlServer))
-                                    .child(engine_btn("db-sq", "SQLite", Dialect::Sqlite))
-                                    .child(
-                                        Button::new("db-or")
-                                            .small()
-                                            .outline()
-                                            .label("Oracle (soon)")
-                                            .disabled(true),
+                    content
+                        .child(dialog_header(
+                            &g,
+                            crate::i18n::t("Conectar ao banco"),
+                            crate::i18n::t("Faça a engenharia reversa de um esquema existente para DBML."),
+                        ))
+                        .child(div().flex().px(px(18.)).pt(px(14.)).pb(px(6.)).child(segmented(
+                                &g,
+                                &[
+                                    (
+                                        "db-pg",
+                                        "PostgreSQL",
+                                        st.dialect == Dialect::Postgres,
+                                        !connecting,
                                     ),
-                            )
-                            .child(form)
-                            .child(
-                                div()
-                                    .id("db-status")
-                                    .max_h(px(72.))
-                                    .overflow_y_scroll()
-                                    .text_size(TEXT_XS)
-                                    .text_color(g.text_muted)
-                                    .child(status_line),
-                            )
-                            .when(!st.warnings.is_empty(), |d| {
-                                let mut list = div()
-                                    .id("db-warn")
-                                    .flex()
-                                    .flex_col()
-                                    .max_h(px(64.))
-                                    .overflow_y_scroll()
-                                    .text_size(TEXT_XS)
-                                    .text_color(rgb(crate::glass::DIAG_WARNING));
-                                for w in &st.warnings {
-                                    list = list.child(w.clone());
-                                }
-                                d.child(list)
-                            })
-                            .child(
-                                div()
-                                    .flex()
-                                    .justify_end()
-                                    .gap(SP_SM)
-                                    .child(
-                                        Button::new("db-cancel")
-                                            .small()
-                                            .outline()
-                                            .label("Cancel")
-                                            .on_click(|_, window, cx| window.close_dialog(cx)),
-                                    )
-                                    .child(test_btn)
-                                    .child(connect_btn)
-                                    .child(apply_btn("db-replace", replace_label, true, false))
-                                    .child(apply_btn(
-                                        "db-insert",
-                                        "Insert".to_string(),
-                                        false,
-                                        true,
-                                    )),
-                            ),
-                    )
-                })
+                                    ("db-my", "MySQL", st.dialect == Dialect::Mysql, !connecting),
+                                    (
+                                        "db-ms",
+                                        "SQL Server",
+                                        st.dialect == Dialect::SqlServer,
+                                        !connecting,
+                                    ),
+                                    (
+                                        "db-sq",
+                                        "SQLite",
+                                        st.dialect == Dialect::Sqlite,
+                                        !connecting,
+                                    ),
+                                    ("db-or", crate::i18n::t("Oracle (em breve)"), false, false),
+                                ],
+                                {
+                                    let model = model.clone();
+                                    move |i, cx| {
+                                        let d = [
+                                            Dialect::Postgres,
+                                            Dialect::Mysql,
+                                            Dialect::SqlServer,
+                                            Dialect::Sqlite,
+                                        ][i];
+                                        model.update(cx, |m, cx| {
+                                            m.set_dialect(d);
+                                            cx.notify();
+                                        });
+                                    }
+                                },
+                            )))
+                        .child(form)
+                        .child(
+                            div()
+                                .id("db-status")
+                                .max_h(px(72.))
+                                .overflow_y_scroll()
+                                .mx(px(18.))
+                                .mt(px(4.))
+                                .px(px(12.))
+                                .py(px(10.))
+                                .rounded(px(8.))
+                                .bg(g.input)
+                                .flex()
+                                .items_center()
+                                .gap(px(8.))
+                                .text_size(px(12.5))
+                                .text_color(g.text_muted)
+                                .child(
+                                    Icon::new(IconName::ShieldCheck)
+                                        .size(px(14.))
+                                        .flex_none()
+                                        .text_color(g.ok),
+                                )
+                                .child(status_line),
+                        )
+                        .when(!conflicts.is_empty(), |d| {
+                            d.child(div().px(px(18.)).text_size(TEXT_XS)
+                                .text_color(rgb(crate::glass::DIAG_WARNING))
+                                .child(conflicts.clone()))
+                        })
+                        .when(!st.warnings.is_empty(), |d| {
+                            let mut list = div()
+                                .id("db-warn")
+                                .flex()
+                                .flex_col()
+                                .max_h(px(64.))
+                                .overflow_y_scroll()
+                                .px(px(18.))
+                                .pt(px(8.))
+                                .text_size(TEXT_XS)
+                                .text_color(rgb(crate::glass::DIAG_WARNING));
+                            for w in &st.warnings {
+                                list = list.child(w.clone());
+                            }
+                            d.child(list)
+                        })
+                        .child(
+                            div()
+                                .flex()
+                                .items_center()
+                                .gap(SP_SM)
+                                .px(px(18.))
+                                .py(px(16.))
+                                .child(test_btn)
+                                .child(div().flex_1())
+                                .child(dialog_btn(&g, "db-cancel", crate::i18n::t("Cancelar"), None, false, false, true)
+                                    .on_click(|_, window, cx| window.close_dialog(cx)))
+                                .child(connect_btn)
+                                .when(can_apply, |d| {
+                                    d.child(apply_btn("db-replace", replace_label, true, false))
+                                        .child(apply_btn("db-insert", crate::i18n::t("Inserir").to_string(), false, true))
+                                }),
+                        )
+                },
+            )
         });
     }
 
+    fn import_conflicts(&self, incoming: &str, cx: &App) -> String {
+        let Some(doc) = self.doc().filter(|_| !incoming.is_empty()) else {
+            return String::new();
+        };
+        let conflicts = dbml_analysis::import_conflicts(&doc.editor.read(cx).value(), incoming);
+        if conflicts.is_empty() {
+            String::new()
+        } else {
+            crate::i18n::t("Já existem no modelo: {}.").replace("{}", &conflicts.join(", "))
+        }
+    }
+
     fn import_sql_ddl(&mut self, _: &ImportSqlDdl, window: &mut Window, cx: &mut Context<Self>) {
+        use sql_import::SqlDialect;
         let model = cx.new(|_| crate::import_sql::ImportSqlModel::new(self.import_dialect));
         let sql_editor = cx.new(|cx| EditorState::new(window, cx).line_number(true));
         let shell_entity = cx.entity().clone();
@@ -1515,46 +2211,33 @@ impl Shell {
             let model = model.clone();
             let sql_editor = sql_editor.clone();
             let shell_entity = shell_entity.clone();
-            dialog
-                .w(px(760.))
-                .title("Import SQL DDL")
+            dialog_bare(dialog, &g, 820.)
+                .margin_top(px(76.))
                 .content(move |content, _, cx| {
                     let st = model.read(cx).clone();
                     let can_apply = st.can_apply();
+                    let conflicts = shell_entity.read(cx).import_conflicts(&st.dbml, cx);
+                    let (n_tables, n_refs) = st.counts();
                     let preview_text = if st.dbml.is_empty() {
-                        "// DBML preview will appear here…".to_string()
+                        crate::i18n::t("// A prévia em DBML aparece aqui…").to_string()
                     } else {
                         st.dbml.clone()
-                    };
-
-                    let dialect_btn = |id: &'static str, label: &'static str, d: sql_import::SqlDialect| {
-                        let active = st.dialect == d;
-                        let model = model.clone();
-                        let shell_entity = shell_entity.clone();
-                        let b = Button::new(id).small().label(label);
-                        let b = if active { b.primary() } else { b.outline() };
-                        b.on_click(move |_, _, cx| {
-                            shell_entity.update(cx, |s, _| s.import_dialect = d);
-                            model.update(cx, |m, cx| {
-                                m.set_dialect(d);
-                                cx.notify();
-                            });
-                        })
                     };
 
                     let pick_btn = {
                         let sql_editor = sql_editor.clone();
                         let model = model.clone();
-                        Button::new("imp-pick-file")
-                            .small()
-                            .outline()
-                            .label("Choose .sql file…")
+                        dialog_btn(&g, "imp-pick-file", crate::i18n::t("Escolher arquivo .sql…"), Some(IconName::FileUp), false, true, true)
+                            .h(px(30.))
+                            .px(px(12.))
+                            .text_size(px(12.5))
+                            .text_color(g.text)
                             .on_click(move |_, window, cx| {
                                 let rx = cx.prompt_for_paths(PathPromptOptions {
                                     files: true,
                                     directories: false,
                                     multiple: false,
-                                    prompt: Some("Select SQL file".into()),
+                                    prompt: Some(crate::i18n::t("Selecione o arquivo SQL").into()),
                                 });
                                 let sql_editor = sql_editor.clone();
                                 let model = model.clone();
@@ -1583,8 +2266,11 @@ impl Shell {
                     let apply_btn = |id: &'static str, label: String, replace: bool, primary: bool| {
                         let model = model.clone();
                         let shell_entity = shell_entity.clone();
-                        let mut b = Button::new(id).small().label(label).disabled(!can_apply);
-                        b = if primary { b.primary() } else { b.outline() };
+                        let enabled = can_apply && (replace || conflicts.is_empty());
+                        let b = dialog_btn(&g, id, label, None, primary, !primary, enabled);
+                        if !enabled {
+                            return b;
+                        }
                         b.on_click(move |_, window, cx| {
                             if replace && has_existing && !model.read(cx).confirm_replace {
                                 model.update(cx, |m, cx| {
@@ -1612,108 +2298,180 @@ impl Shell {
                     };
 
                     let replace_label = if st.confirm_replace {
-                        "Confirm Replace?".to_string()
+                        crate::i18n::t("Confirmar substituição?").to_string()
                     } else {
-                        "Replace".to_string()
+                        crate::i18n::t("Substituir").to_string()
                     };
 
-                    content.child(
+                    // painel de 300px: cabeçalho de 30px (ícone, título, meta) + corpo
+                    let pane = |icon: IconName, title: &'static str, meta: &'static str, body: AnyElement| {
                         div()
+                            .flex_1()
+                            .min_w_0()
+                            .h(px(300.))
                             .flex()
                             .flex_col()
-                            .gap(SP_MD)
+                            .rounded(px(10.))
+                            .border_1()
+                            .border_color(g.edge_strong)
+                            .bg(g.surface)
+                            .overflow_hidden()
                             .child(
                                 div()
+                                    .h(px(30.))
+                                    .flex_none()
                                     .flex()
-                                    .flex_wrap()
                                     .items_center()
-                                    .justify_between()
-                                    .gap(SP_SM)
-                                    .child(
-                                        div()
-                                            .flex()
-                                            .flex_wrap()
-                                            .items_center()
-                                            .gap(px(6.))
-                                            .child(dialect_btn("imp-pg", "PostgreSQL", sql_import::SqlDialect::Postgres))
-                                            .child(dialect_btn("imp-my", "MySQL", sql_import::SqlDialect::Mysql))
-                                            .child(dialect_btn("imp-sq", "SQLite", sql_import::SqlDialect::Sqlite))
-                                            .child(dialect_btn("imp-ms", "SQL Server", sql_import::SqlDialect::SqlServer))
-                                            .child(dialect_btn("imp-or", "Oracle", sql_import::SqlDialect::Oracle)),
-                                    )
-                                    .child(pick_btn),
+                                    .gap(px(7.))
+                                    .px(px(10.))
+                                    .border_b_1()
+                                    .border_color(g.edge_soft)
+                                    .text_size(px(11.5))
+                                    .text_color(g.text_faint)
+                                    .child(Icon::new(icon).size(px(12.)))
+                                    .child(title)
+                                    .child(div().flex_1())
+                                    .child(meta),
                             )
-                            .child(
-                                div()
-                                    .flex()
-                                    .gap(SP_SM)
-                                    .h(px(280.))
-                                    .child(
-                                        div()
-                                            .flex_1()
-                                            .h_full()
-                                            .rounded(px(6.))
-                                            .border_1()
-                                            .border_color(g.edge)
-                                            .overflow_hidden()
-                                            .child(Editor::new(&sql_editor)),
-                                    )
-                                    .child(
-                                        div()
-                                            .id("imp-preview-scroll")
-                                            .flex_1()
-                                            .h_full()
-                                            .p(SP_SM)
-                                            .rounded(px(6.))
-                                            .border_1()
-                                            .border_color(g.edge)
-                                            .bg(g.sidebar)
-                                            .overflow_y_scroll()
-                                            .font_family("JetBrains Mono")
-                                            .text_size(TEXT_XS)
-                                            .text_color(if st.dbml.is_empty() { g.text_faint } else { g.text })
-                                            .child(preview_text),
-                                    ),
-                            )
-                            .when(st.too_large, |d| {
-                                d.child(
+                            .child(div().flex_1().min_h_0().child(body))
+                    };
+
+                    content
+                        .child(dialog_header(
+                            &g,
+                            crate::i18n::t("Importar SQL DDL"),
+                            crate::i18n::t("Cole instruções CREATE TABLE. A prévia em DBML atualiza enquanto você digita."),
+                        ))
+                        .child(
+                            div()
+                                .flex()
+                                .items_center()
+                                .gap(px(10.))
+                                .px(px(18.))
+                                .py(px(14.))
+                                .child(segmented(
+                                    &g,
+                                    &[
+                                        ("imp-pg", "PostgreSQL", st.dialect == SqlDialect::Postgres, true),
+                                        ("imp-my", "MySQL", st.dialect == SqlDialect::Mysql, true),
+                                        ("imp-sq", "SQLite", st.dialect == SqlDialect::Sqlite, true),
+                                        ("imp-ms", "SQL Server", st.dialect == SqlDialect::SqlServer, true),
+                                        ("imp-or", "Oracle", st.dialect == SqlDialect::Oracle, true),
+                                    ],
+                                    {
+                                        let (model, shell_entity) = (model.clone(), shell_entity.clone());
+                                        move |i, cx| {
+                                            let d = [
+                                                SqlDialect::Postgres,
+                                                SqlDialect::Mysql,
+                                                SqlDialect::Sqlite,
+                                                SqlDialect::SqlServer,
+                                                SqlDialect::Oracle,
+                                            ][i];
+                                            shell_entity.update(cx, |s, _| s.import_dialect = d);
+                                            model.update(cx, |m, cx| {
+                                                m.set_dialect(d);
+                                                cx.notify();
+                                            });
+                                        }
+                                    },
+                                ))
+                                .child(div().flex_1())
+                                .child(pick_btn),
+                        )
+                        .child(
+                            div()
+                                .flex()
+                                .gap(px(10.))
+                                .px(px(18.))
+                                .child(pane(
+                                    IconName::FileCode,
+                                    "SQL",
+                                    "",
+                                    Editor::new(&sql_editor).h_full().into_any_element(),
+                                ))
+                                .child(pane(
+                                    IconName::Eye,
+                                    crate::i18n::t("Prévia DBML"),
+                                    crate::i18n::t("somente leitura"),
                                     div()
+                                        .id("imp-preview-scroll")
+                                        .size_full()
+                                        .p(SP_SM)
+                                        .overflow_y_scroll()
+                                        .font_family(crate::glass::FONT_MONO)
                                         .text_size(TEXT_XS)
-                                        .text_color(rgb(crate::glass::DIAG_WARNING))
-                                        .child("Input exceeds 5 MB limit; please split the dump into smaller files."),
-                                )
-                            })
-                            .when(!st.too_large && !st.warnings.is_empty(), |d| {
-                                let mut list = div()
-                                    .id("imp-warn-scroll")
-                                    .flex()
-                                    .flex_col()
-                                    .gap(px(2.))
-                                    .max_h(px(72.))
-                                    .overflow_y_scroll()
-                                    .text_size(TEXT_XS)
-                                    .text_color(rgb(crate::glass::DIAG_WARNING));
-                                for w in &st.warnings {
-                                    list = list.child(format!("{}:{}: {}", w.line, w.column, w.message));
-                                }
-                                d.child(list)
-                            })
-                            .child(
+                                        .text_color(if st.dbml.is_empty() { g.text_faint } else { g.text })
+                                        .child(preview_text)
+                                        .into_any_element(),
+                                )),
+                        )
+                        .when(st.too_large, |d| {
+                            d.child(
                                 div()
-                                    .flex()
-                                    .justify_end()
-                                    .gap(SP_SM)
-                                    .child(
-                                        Button::new("imp-cancel")
-                                            .small()
-                                            .outline()
-                                            .label("Cancel")
-                                            .on_click(|_, window, cx| window.close_dialog(cx)),
-                                    )
-                                    .child(apply_btn("imp-replace", replace_label, true, false))
-                                    .child(apply_btn("imp-insert", "Insert".to_string(), false, true)),
-                            ),
-                    )
+                                    .px(px(18.))
+                                    .pt(px(10.))
+                                    .text_size(TEXT_XS)
+                                    .text_color(rgb(crate::glass::DIAG_WARNING))
+                                    .child(crate::i18n::t("A entrada excede o limite de 5 MB; divida o dump em arquivos menores.")),
+                            )
+                        })
+                        .when(!conflicts.is_empty(), |d| {
+                            d.child(div().px(px(18.)).text_size(TEXT_XS)
+                                .text_color(rgb(crate::glass::DIAG_WARNING))
+                                .child(conflicts.clone()))
+                        })
+                        .when(!st.too_large && !st.warnings.is_empty(), |d| {
+                            let mut list = div()
+                                .id("imp-warn-scroll")
+                                .flex()
+                                .flex_col()
+                                .gap(px(2.))
+                                .max_h(px(72.))
+                                .overflow_y_scroll()
+                                .px(px(18.))
+                                .pt(px(10.))
+                                .text_size(TEXT_XS)
+                                .text_color(rgb(crate::glass::DIAG_WARNING));
+                            for w in &st.warnings {
+                                list = list.child(format!("{}:{}: {}", w.line, w.column, w.message));
+                            }
+                            d.child(list)
+                        })
+                        .child(
+                            div()
+                                .flex()
+                                .items_center()
+                                .gap(SP_SM)
+                                .px(px(18.))
+                                .pt(px(14.))
+                                .pb(px(16.))
+                                .child(if can_apply {
+                                    div()
+                                        .flex()
+                                        .items_center()
+                                        .gap(px(6.))
+                                        .text_size(px(12.5))
+                                        .text_color(g.text_muted)
+                                        .child(Icon::new(IconName::CircleCheck).size(px(13.)).text_color(g.ok))
+                                        .child(crate::i18n::t(match (n_tables == 1, n_refs == 1) {
+                                            (true, true) => "{} tabela · {} relação detectada",
+                                            (true, false) => "{} tabela · {} relações detectadas",
+                                            (false, true) => "{} tabelas · {} relação detectada",
+                                            (false, false) => "{} tabelas · {} relações detectadas",
+                                        }).replacen("{}", &n_tables.to_string(), 1).replacen("{}", &n_refs.to_string(), 1))
+                                } else {
+                                    div()
+                                        .text_size(px(12.5))
+                                        .text_color(g.text_faint)
+                                        .child(crate::i18n::t("Cole um SQL para ver a prévia"))
+                                })
+                                .child(div().flex_1())
+                                .child(dialog_btn(&g, "imp-cancel", crate::i18n::t("Cancelar"), None, false, false, true)
+                                    .on_click(|_, window, cx| window.close_dialog(cx)))
+                                .child(apply_btn("imp-replace", replace_label, true, false))
+                                .child(apply_btn("imp-insert", crate::i18n::t("Inserir").to_string(), false, true)),
+                        )
                 })
         });
     }
@@ -1773,149 +2531,422 @@ impl Shell {
             return;
         }
         let shell = cx.entity();
+        let g = Glass::of_scaled(self.mode, self.translucent, self.ui_scale);
         window.open_dialog(cx, move |dialog, _, _| {
             let shell = shell.clone();
-            dialog
-                .w(px(460.))
-                .title("Unsaved Changes")
-                .content(move |content, _, _| {
-                    let shell_save = shell.clone();
-                    content.child(
-                        div()
-                            .flex()
-                            .flex_col()
-                            .gap(px(16.))
-                            .child(div().text_size(TEXT_SM).child(
-                                "You have unsaved changes in open documents. Save before quitting?",
-                            ))
-                            .child(
-                                div()
-                                    .flex()
-                                    .justify_end()
-                                    .gap(px(8.))
-                                    .child(
-                                        Button::new("dlg-cancel-quit")
-                                            .ghost()
-                                            .small()
-                                            .label("Cancel")
-                                            .on_click(|_, window, cx| {
-                                                window.close_dialog(cx);
-                                            }),
-                                    )
-                                    .child(
-                                        Button::new("dlg-discard-quit")
-                                            .ghost()
-                                            .small()
-                                            .label("Discard changes")
-                                            .on_click(|_, window, cx| {
-                                                window.close_dialog(cx);
-                                                cx.quit();
-                                            }),
-                                    )
-                                    .child(
-                                        Button::new("dlg-save-quit")
-                                            .primary()
-                                            .small()
-                                            .label("Save All & Quit")
-                                            .on_click(move |_, window, cx| {
-                                                window.close_dialog(cx);
-                                                let ok = shell_save.update(cx, |s, cx| {
-                                                    for d in &mut s.docs {
-                                                        if d.dirty
-                                                            && let Some(p) = &d.path
-                                                        {
-                                                            let t = d
-                                                                .editor
-                                                                .read(cx)
-                                                                .value()
-                                                                .to_string();
-                                                            if std::fs::write(p, &t).is_ok() {
-                                                                let arc: std::sync::Arc<str> =
-                                                                    std::sync::Arc::from(
-                                                                        t.as_str(),
-                                                                    );
-                                                                d.saved_text = arc.clone();
-                                                                d.last_text = arc;
-                                                                d.dirty = false;
-                                                            }
-                                                        }
-                                                    }
-                                                    !s.docs.iter().any(|d| d.dirty)
-                                                });
-                                                if ok {
-                                                    cx.quit();
-                                                }
-                                            }),
-                                    ),
-                            ),
-                    )
-                })
+            dialog_frame(dialog, &g, 460., Some(crate::i18n::t("Alterações não salvas"))).content(move |content, _, _| {
+                let shell_save = shell.clone();
+                content.child(
+                    div()
+                        .flex()
+                        .flex_col()
+                        .gap(px(16.))
+                        .child(div().text_size(TEXT_SM).child(
+                            crate::i18n::t("Você tem alterações não salvas em documentos abertos. Salvar antes de sair?"),
+                        ))
+                        .child(
+                            div()
+                                .flex()
+                                .justify_end()
+                                .gap(px(8.))
+                                .child(
+                                    Button::new("dlg-cancel-quit")
+                                        .ghost()
+                                        .small()
+                                        .label(crate::i18n::t("Cancelar"))
+                                        .on_click(|_, window, cx| {
+                                            window.close_dialog(cx);
+                                        }),
+                                )
+                                .child(
+                                    Button::new("dlg-discard-quit")
+                                        .ghost()
+                                        .small()
+                                        .label(crate::i18n::t("Descartar alterações"))
+                                        .on_click(|_, window, cx| {
+                                            window.close_dialog(cx);
+                                            cx.quit();
+                                        }),
+                                )
+                                .child(
+                                    Button::new("dlg-save-quit")
+                                        .primary()
+                                        .small()
+                                        .label(crate::i18n::t("Salvar tudo e sair"))
+                                        .on_click(move |_, window, cx| {
+                                            window.close_dialog(cx);
+                                            shell_save.update(cx, |s, cx| s.save_next_and_quit(window, cx));
+                                        }),
+                                ),
+                        ),
+                )
+            })
         });
+    }
+
+    fn save_next_and_quit(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(i) = self.docs.iter().position(|doc| doc.dirty) else {
+            cx.quit();
+            return;
+        };
+        let doc = &self.docs[i];
+        if let Some(path) = doc.path.clone() {
+            if self.write(i, path, false, window, cx) { self.save_next_and_quit(window, cx); }
+            return;
+        }
+        let editor = doc.editor.clone();
+        let dir = self.project.clone().unwrap_or_else(|| std::env::current_dir().unwrap_or_default());
+        let rx = cx.prompt_for_new_path(&dir, Some(&doc.title));
+        cx.spawn_in(window, async move |this, cx| {
+            let Ok(Ok(Some(path))) = rx.await else { return };
+            this.update_in(cx, |this, window, cx| {
+                if let Some(i) = this.doc_index(&editor)
+                    && this.write(i, path, false, window, cx)
+                {
+                    this.save_next_and_quit(window, cx);
+                }
+            }).ok();
+        }).detach();
     }
 
     fn open_palette(&mut self, _: &OpenPalette, window: &mut Window, cx: &mut Context<Self>) {
         let state = self.palette.clone();
+        let shell = cx.entity();
+        // tabelas e colunas do documento ativo; só entram na lista quando há busca digitada
+        let tables: Vec<(String, Vec<String>)> = self.doc().map_or_else(Vec::new, |d| {
+            d.diagram
+                .read(cx)
+                .schema()
+                .tables
+                .iter()
+                .map(|t| {
+                    let cols = t.columns.iter().map(|c| c.name.clone()).collect();
+                    (t.qualified_name(), cols)
+                })
+                .collect()
+        });
+        let g = Glass::of_scaled(self.mode, self.translucent, self.ui_scale);
         window.open_dialog(cx, move |dialog, _, _| {
+            let (shell, tables) = (shell.clone(), tables.clone());
             let state = state.clone();
-            dialog
-                .w(px(600.))
-                .margin_top(px(80.))
-                .content(move |content, _, _| {
+            // sem título/botão de fechar e sem padding: a própria paleta ocupa a moldura (Esc fecha)
+            dialog_bare(dialog, &g, 600.)
+                .margin_top(px(64.))
+                .content(move |content, _, cx| {
                     let mut groups: Vec<(&str, Vec<CommandItem>)> = Vec::new();
+                    // ação de cada item, por seção: despachada no `on_confirm`, depois de fechar a
+                    // paleta (o `.action` do item a dispararia antes e o `close_dialog` fecharia o
+                    // diálogo recém-aberto, p.ex. Atalhos, Importar SQL e Conectar ao banco)
+                    let mut acts: Vec<Vec<Box<dyn Action>>> = Vec::new();
                     for e in actions::catalog() {
                         if e.action.partial_eq(&OpenPalette) {
                             continue;
                         }
-                        let item = CommandItem::new().label(e.label).action(e.action);
-                        match groups.iter_mut().find(|(g, _)| *g == e.group) {
-                            Some((_, v)) => v.push(item),
-                            None => groups.push((e.group, vec![item])),
+                        // linha própria: ícone da ação, nome e atalho como chip mono à direita
+                        let (label, ctx, icon) =
+                            (e.label, e.context, action_icon(e.action.as_ref(), e.group));
+                        let act = e.action.boxed_clone();
+                        let item = CommandItem::new().label(label).child(move |window, _| {
+                            div()
+                                .flex_1()
+                                .h(px(18.))
+                                .flex()
+                                .items_center()
+                                .justify_between()
+                                .text_size(TEXT_SM)
+                                .line_height(px(18.))
+                                .child(
+                                    div()
+                                        .flex()
+                                        .items_center()
+                                        .gap(px(10.))
+                                        .child(
+                                            Icon::new(icon).size(px(14.)).text_color(g.text_faint),
+                                        )
+                                        .child(label),
+                                )
+                                .children(
+                                    Kbd::binding_for_action(act.as_ref(), Some(ctx), window)
+                                        .map(|k| shortcut_chip(k, &g)),
+                                )
+                        });
+                        if let Some(i) = groups.iter().position(|(g, _)| *g == e.group) {
+                            groups[i].1.push(item);
+                            acts[i].push(e.action);
+                        } else {
+                            groups.push((e.group, vec![item]));
+                            acts.push(vec![e.action]);
                         }
                     }
+                    // alvo (tabela) de cada item das seções de tabelas/colunas, por seção
+                    let mut targets: Vec<Vec<String>> = vec![Vec::new(); groups.len()];
+                    let query = state.read(cx).query(cx).trim().to_lowercase();
+                    if !query.is_empty() {
+                        let hit = |text: &str| text.to_lowercase().contains(&query);
+                        let found_tables: Vec<&str> = tables
+                            .iter()
+                            .map(|(t, _)| t.as_str())
+                            .filter(|t| hit(t))
+                            .take(PALETTE_HITS)
+                            .collect();
+                        let found_cols: Vec<(&str, String)> = tables
+                            .iter()
+                            .flat_map(|(t, cols)| {
+                                cols.iter().map(move |c| (t.as_str(), format!("{t}.{c}")))
+                            })
+                            .filter(|(_, label)| hit(label))
+                            .take(PALETTE_HITS)
+                            .collect();
+                        let item = |icon: IconName, label: String| {
+                            let shown = label.clone();
+                            CommandItem::new().label(label).child(move |_, _| {
+                                div()
+                                    .flex_1()
+                                    .h(px(18.))
+                                    .flex()
+                                    .items_center()
+                                    .gap(SP_SM)
+                                    .child(Icon::new(icon).size(px(14.)).text_color(g.text_faint))
+                                    .child(
+                                        div()
+                                            .font_family(FONT_MONO)
+                                            .text_size(px(12.5))
+                                            .child(shown.clone()),
+                                    )
+                            })
+                        };
+                        if !found_tables.is_empty() {
+                            targets.push(found_tables.iter().map(|t| (*t).to_string()).collect());
+                            let items = found_tables
+                                .iter()
+                                .map(|t| item(IconName::Table2, (*t).to_string()));
+                            groups.push(("Tabelas", items.collect()));
+                        }
+                        if !found_cols.is_empty() {
+                            targets
+                                .push(found_cols.iter().map(|(t, _)| (*t).to_string()).collect());
+                            let items = found_cols
+                                .iter()
+                                .map(|(_, l)| item(IconName::Columns3, l.clone()));
+                            groups.push(("Colunas", items.collect()));
+                        }
+                    }
+                    let shell = shell.clone();
                     let mut cmd = Command::new(&state)
-                        .placeholder("Search commands…")
-                        .on_confirm(|_, window, cx| window.close_dialog(cx));
+                        .placeholder(crate::i18n::t("Buscar tabelas, colunas, comandos…"))
+                        .bordered(false)
+                        .max_h(px(420.))
+                        .footer(move |state, _, _| {
+                            let n = state.matched_count();
+                            div()
+                                .h(px(34.))
+                                .flex()
+                                .items_center()
+                                .gap(px(16.))
+                                .px(px(14.))
+                                .border_t_1()
+                                .border_color(g.edge_soft)
+                                .text_size(px(11.5))
+                                .text_color(g.text_faint)
+                                .child(crate::i18n::t("↑↓ navegar"))
+                                .child(crate::i18n::t("↵ executar"))
+                                .child(crate::i18n::t("Esc fechar"))
+                                .child(div().flex_1())
+                                .child(crate::i18n::t("{} comandos").replace("{}", &n.to_string()))
+                        })
+                        // raio do item = 11 - 4 (padding da lista) = 7
+                        .rounded(px(11.))
+                        .on_confirm(move |ix, window, cx| {
+                            window.close_dialog(cx);
+                            if let Some(a) = acts.get(ix.section).and_then(|v| v.get(ix.row)) {
+                                window.dispatch_action(a.boxed_clone(), cx);
+                            }
+                            if let Some(table) = targets.get(ix.section).and_then(|v| v.get(ix.row))
+                            {
+                                let table = table.clone();
+                                shell.update(cx, |this, cx| this.go_to_table(&table, window, cx));
+                            }
+                        });
                     for (g, items) in groups {
-                        cmd = cmd.group(CommandGroup::new().label(g).items(items));
+                        cmd = cmd.group(CommandGroup::new().label(crate::i18n::t(g)).items(items));
                     }
                     content.child(cmd)
                 })
         });
-    }
-
-    #[expect(
-        clippy::unused_self,
-        reason = "GPUI cx.listener requires &mut self on action handlers"
-    )]
-    fn show_shortcuts(&mut self, _: &ShowShortcuts, window: &mut Window, cx: &mut Context<Self>) {
-        window.open_dialog(cx, |dialog, _, _| {
-            dialog
-                .w(px(520.))
-                .title("Keyboard Shortcuts")
-                .content(|content, window, _| {
-                    let mut list = div().flex().flex_col().gap(px(6.));
-                    for e in actions::catalog() {
-                        list = list.child(
-                            div()
-                                .flex()
-                                .justify_between()
-                                .items_center()
-                                .text_size(TEXT_SM)
-                                .child(e.label)
-                                .children(Kbd::binding_for_action(
-                                    e.action.as_ref(),
-                                    Some(e.context),
-                                    window,
-                                )),
-                        );
-                    }
-                    content.child(list)
-                })
+        // o foco vai para o campo de busca (digitar filtra, setas navegam)
+        let state = self.palette.clone();
+        window.defer(cx, move |window, cx| {
+            state.update(cx, |s, cx| s.focus(window, cx));
         });
     }
 
-    fn toggle_theme(&mut self, _: &ToggleTheme, _: &mut Window, cx: &mut Context<Self>) {
-        self.mode = self.mode.toggled();
+    /// Seleciona a tabela no canvas e, com o editor aberto, rola o editor até ela.
+    fn go_to_table(&mut self, table: &str, window: &mut Window, cx: &mut Context<Self>) {
+        self.with_diagram(cx, |d| d.focus_table(table));
+        if !self.editor_open {
+            return;
+        }
+        let Some(doc) = self.doc() else { return };
+        let text = doc.editor.read(cx).value().to_string();
+        if let Some(block) = crate::ide::table_block(&text, table) {
+            self.reveal(block.start, window, cx);
+        }
+    }
+
+    fn show_shortcuts(&mut self, _: &ShowShortcuts, window: &mut Window, cx: &mut Context<Self>) {
+        let g = Glass::of_scaled(self.mode, self.translucent, self.ui_scale);
+        let filter = cx.new(|cx| InputState::new(window, cx).placeholder(crate::i18n::t("Filtrar atalhos")));
+        window.open_dialog(cx, move |dialog, _, _| {
+            let filter = filter.clone();
+            dialog_bare(dialog, &g, 800.).content(move |content, window, cx| {
+                let query = filter.read(cx).value().trim().to_lowercase();
+                // grupos na ordem do catálogo; só ações com atalho, filtradas pela busca
+                let mut groups: Vec<(&str, Vec<(&str, Kbd)>)> = Vec::new();
+                for e in actions::catalog() {
+                    if e.binding.is_none() || !e.label.to_lowercase().contains(&query) {
+                        continue;
+                    }
+                    let Some(k) =
+                        Kbd::binding_for_action(e.action.as_ref(), Some(e.context), window)
+                    else {
+                        continue;
+                    };
+                    match groups.iter_mut().find(|(n, _)| *n == e.group) {
+                        Some((_, v)) => v.push((e.label, k)),
+                        None => groups.push((e.group, vec![(e.label, k)])),
+                    }
+                }
+                // duas colunas: cada grupo vai para a coluna com menos linhas
+                let col = || div().flex_1().flex().flex_col();
+                let (mut left, mut right, mut n_left, mut n_right) = (col(), col(), 0, 0);
+                for (name, items) in groups {
+                    let n = items.len() + 2;
+                    let mut d = div().flex().flex_col().child(
+                        div()
+                            .pt(px(14.))
+                            .pb(px(6.))
+                            .text_size(px(11.))
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .text_color(g.text_faint)
+                            .child(crate::i18n::t(name).to_uppercase()),
+                    );
+                    for (label, k) in items {
+                        d = d.child(
+                            div()
+                                .h(px(28.))
+                                .flex()
+                                .items_center()
+                                .gap(px(4.))
+                                .border_b_1()
+                                .border_color(g.edge_soft)
+                                .text_size(TEXT_SM)
+                                .child(div().flex_1().child(label))
+                                .child(shortcut_chip(k, &g)),
+                        );
+                    }
+                    if n_left <= n_right {
+                        (left, n_left) = (left.child(d), n_left + n);
+                    } else {
+                        (right, n_right) = (right.child(d), n_right + n);
+                    }
+                }
+                content
+                    .child(
+                        div()
+                            .h(px(52.))
+                            .flex()
+                            .items_center()
+                            .gap(px(10.))
+                            .pl(px(18.))
+                            .pr(px(12.))
+                            .border_b_1()
+                            .border_color(g.edge_soft)
+                            .child(
+                                Icon::new(IconName::Keyboard)
+                                    .size(px(16.))
+                                    .text_color(g.accent),
+                            )
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .text_size(px(15.))
+                                    .font_weight(FontWeight::SEMIBOLD)
+                                    .child(crate::i18n::t("Atalhos de teclado")),
+                            )
+                            .child(
+                                div()
+                                    .w(px(200.))
+                                    .h(px(28.))
+                                    .px(px(8.))
+                                    .rounded(px(7.))
+                                    .bg(g.input)
+                                    .border_1()
+                                    .border_color(g.edge_soft)
+                                    .flex()
+                                    .items_center()
+                                    .child(
+                                        Input::new(&filter).small().appearance(false).prefix(
+                                            Icon::new(IconName::Search)
+                                                .size(px(12.))
+                                                .text_color(g.text_faint),
+                                        ),
+                                    ),
+                            )
+                            .child(dialog_close(&g)),
+                    )
+                    .child(
+                        div()
+                            .id("shortcuts-list")
+                            .max_h(px(560.))
+                            .overflow_y_scroll()
+                            .flex()
+                            .gap(px(28.))
+                            .px(px(18.))
+                            .pb(px(18.))
+                            .child(left)
+                            .child(right),
+                    )
+            })
+        });
+    }
+
+    fn set_theme(
+        &mut self,
+        mode: Mode,
+        translucent: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.mode = mode;
+        self.translucent = translucent;
+        window.set_background_appearance(crate::platform::window_background(translucent));
+        self.apply_appearance(cx);
+    }
+
+    fn toggle_theme(&mut self, _: &ToggleTheme, window: &mut Window, cx: &mut Context<Self>) {
+        self.set_theme(self.mode.toggled(), self.translucent, window, cx);
+    }
+
+    fn theme_light(&mut self, _: &ThemeLight, window: &mut Window, cx: &mut Context<Self>) {
+        self.set_theme(Mode::Light, self.translucent, window, cx);
+    }
+
+    fn theme_dark(&mut self, _: &ThemeDark, window: &mut Window, cx: &mut Context<Self>) {
+        self.set_theme(Mode::Dark, self.translucent, window, cx);
+    }
+
+
+    fn lang_portuguese(&mut self, _: &LangPortuguese, _: &mut Window, cx: &mut Context<Self>) {
+        self.lang_pref = Some(crate::i18n::Lang::PtBr);
+        crate::i18n::set(crate::i18n::Lang::PtBr);
+        for doc in &self.docs { doc.diagram.update(cx, |_, cx| cx.notify()); }
+        self.apply_appearance(cx);
+    }
+
+    fn lang_english(&mut self, _: &LangEnglish, _: &mut Window, cx: &mut Context<Self>) {
+        self.lang_pref = Some(crate::i18n::Lang::En);
+        crate::i18n::set(crate::i18n::Lang::En);
+        for doc in &self.docs { doc.diagram.update(cx, |_, cx| cx.notify()); }
         self.apply_appearance(cx);
     }
 
@@ -1953,6 +2984,7 @@ impl Shell {
                 cx.notify();
             });
         }
+        self.schedule_autosave(self.active, window, cx);
         cx.notify();
     }
 
@@ -1977,6 +3009,7 @@ impl Shell {
             editor.update(cx, |e, cx| e.replace_all(new_text, window, cx));
             self.suppress_history = false;
         }
+        let edges_changed = *diagram.read(cx).edges() != snap.edges;
         diagram.update(cx, |d, cx| {
             d.apply_snapshot(
                 schema,
@@ -1985,8 +3018,13 @@ impl Shell {
                 snap.selected_enum,
                 snap.multi,
             );
+            d.set_edges(snap.edges);
             cx.notify();
         });
+        if edges_changed && let Some(doc) = self.docs.get(self.active) {
+            Self::save_edges(doc, cx);
+        }
+        self.schedule_autosave(self.active, window, cx);
         cx.notify();
     }
 
@@ -2074,8 +3112,14 @@ impl Shell {
                     self.with_diagram(cx, |d| d.rename(&old, &value));
                 } else {
                     window
-                        .push_notification("Invalid table name: use letters, numbers, and _.", cx);
+                        .push_notification(crate::i18n::t("Nome de tabela inválido: use letras, números e _."), cx);
                 }
+            }
+            EditTarget::TableNote(table) => {
+                let opt = (!value.is_empty()).then_some(value.as_str());
+                self.edit_text(false, window, cx, |t| {
+                    patched(t, dbml_edit::set_table_note(t, &table, opt))
+                });
             }
             EditTarget::ColName(table, old) if value != old => {
                 if ident {
@@ -2084,7 +3128,7 @@ impl Shell {
                     });
                 } else {
                     window
-                        .push_notification("Invalid column name: use letters, numbers, and _.", cx);
+                        .push_notification(crate::i18n::t("Nome de coluna inválido: use letras, números e _."), cx);
                 }
             }
             EditTarget::ColType(table, col) if !value.is_empty() => {
@@ -2127,7 +3171,7 @@ impl Shell {
                     });
                     self.with_diagram(cx, |d| d.rename_enum(&old, &value));
                 } else {
-                    window.push_notification("Invalid enum name: use letters, numbers, and _.", cx);
+                    window.push_notification(crate::i18n::t("Nome de enum inválido: use letras, números e _."), cx);
                 }
             }
             EditTarget::EnumVal(en, old) if value != old => {
@@ -2137,7 +3181,7 @@ impl Shell {
                     });
                 } else {
                     window
-                        .push_notification("Invalid enum value: use letters, numbers, and _.", cx);
+                        .push_notification(crate::i18n::t("Valor de enum inválido: use letras, números e _."), cx);
                 }
             }
             EditTarget::NewEnumVal(en) if !value.is_empty() => {
@@ -2147,7 +3191,7 @@ impl Shell {
                     });
                 } else {
                     window
-                        .push_notification("Invalid enum value: use letters, numbers, and _.", cx);
+                        .push_notification(crate::i18n::t("Valor de enum inválido: use letras, números e _."), cx);
                 }
             }
             _ => {}
@@ -2163,16 +3207,18 @@ impl Shell {
             dbml_edit::add_column_text(t, &table, &name, "int")
         });
         self.inspector_open = true;
+        self.open_col = Some((table.clone(), Some(name.clone())));
         self.start_edit(EditTarget::ColName(table, name.clone()), name, window, cx);
     }
 
     fn new_table(&mut self, _: &NewTable, window: &mut Window, cx: &mut Context<Self>) {
         let Some(doc) = self.doc() else { return };
         let text = doc.editor.read(cx).value().to_string();
-        let name = dbml_edit::unique_table_name(&text, "table");
+        let name = dbml_edit::unique_table_name(&text, NEW_TABLE_NAME);
         self.edit_text(false, window, cx, |t| Some(dbml_edit::add_table(t, &name)));
         self.with_diagram(cx, |d| d.place_new(&name));
         self.inspector_open = true;
+        self.open_col = Some((name.clone(), None));
         self.start_edit(EditTarget::Table(name.clone()), name, window, cx);
     }
 
@@ -2267,7 +3313,7 @@ impl Shell {
         let Some(doc) = self.doc() else { return };
         let names = doc.diagram.read(cx).selection();
         if names.is_empty() {
-            window.push_notification("Select tables (Shift+click) to group.", cx);
+            window.push_notification(crate::i18n::t("Selecione tabelas (Shift+clique) para agrupar."), cx);
             return;
         }
         self.edit_text(true, window, cx, |t| {
@@ -2297,6 +3343,94 @@ impl Shell {
         });
     }
 
+    /// Move a coluna uma posição (`delta` -1/+1) dentro da tabela, com undo.
+    fn move_column(
+        &mut self,
+        table: &str,
+        col: &str,
+        delta: isize,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.edit_text(false, window, cx, |t| {
+            patched(t, dbml_edit::move_column(t, table, col, delta))
+        });
+    }
+
+    fn duplicate_table(&mut self, _: &DuplicateTable, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(doc) = self.doc() else { return };
+        let Some(src) = doc
+            .diagram
+            .read(cx)
+            .selected()
+            .map(schema::Table::qualified_name)
+        else {
+            return;
+        };
+        let mut copy = None;
+        self.edit_text(false, window, cx, |t| {
+            let (patch, name) = dbml_edit::duplicate_table(t, &src).ok()?;
+            copy = Some(name);
+            Some(patch.apply(t))
+        });
+        let Some(copy) = copy else { return };
+        // a cópia nasce deslocada da original; apply_snapshot posiciona e seleciona
+        self.with_diagram(cx, |d| {
+            let mut pos = d.positions().clone();
+            if let Some(&(x, y)) = pos.get(&src) {
+                pos.insert(copy.clone(), (x + 32., y + 32.));
+            }
+            let schema = d.schema().clone();
+            d.apply_snapshot(schema, pos, Some(copy), None, Vec::new());
+        });
+    }
+
+    fn reveal_in_dbml(&mut self, _: &RevealInDbml, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(doc) = self.doc() else { return };
+        let Some(name) = doc
+            .diagram
+            .read(cx)
+            .selected()
+            .map(schema::Table::qualified_name)
+        else {
+            return;
+        };
+        let text = doc.editor.read(cx).value().to_string();
+        let Some(range) = dbml_edit::table_range(&text, &name) else {
+            return;
+        };
+        if !self.editor_open {
+            self.code_only = false; // abre em Split, não em Code
+        }
+        self.reveal(range.start, window, cx);
+    }
+
+    fn edit_table_note(&mut self, _: &EditTableNote, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(doc) = self.doc() else { return };
+        let Some((qname, note)) = doc
+            .diagram
+            .read(cx)
+            .selected()
+            .map(|t| (t.qualified_name(), t.note.clone().unwrap_or_default()))
+        else {
+            return;
+        };
+        self.inspector_open = true;
+        self.start_edit(EditTarget::TableNote(qname), note, window, cx);
+    }
+
+    fn assign_group(
+        &mut self,
+        table: &str,
+        group: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.edit_text(true, window, cx, |t| {
+            Some(dbml_edit::group_tables(t, &[table], group))
+        });
+    }
+
     fn set_color(
         &mut self,
         table: &str,
@@ -2312,11 +3446,12 @@ impl Shell {
     fn save_prefs(&self) {
         crate::settings::save(&crate::settings::Settings {
             mode: Some(self.mode),
+            lang: self.lang_pref,
+            translucent: Some(self.translucent),
             sidebar_w: self.widths.0,
             editor_w: self.widths.1,
             inspector_w: self.widths.2,
             col_type_w: self.col_type_w,
-            translucent_cards: self.translucent_cards,
             ui_scale: self.ui_scale,
             inspector_auto_hide: self.inspector_auto_hide,
             sidebar_open: self.sidebar_open,
@@ -2325,7 +3460,7 @@ impl Shell {
     }
 
     fn apply_appearance(&mut self, cx: &mut Context<Self>) {
-        apply_theme_scaled(self.mode, self.ui_scale, cx);
+        apply_theme_scaled(self.mode, self.translucent, self.ui_scale, cx);
         self.save_prefs();
         self.save_session(cx);
         cx.notify();
@@ -2335,7 +3470,7 @@ impl Shell {
         self.ui_scale = (scale * 100.0).round() / 100.0;
         self.apply_appearance(cx);
         window.push_notification(
-            format!("UI Scale: {}%", (self.ui_scale * 100.0).round() as i32),
+            crate::i18n::t("Escala da interface: {}%").replace("{}", &((self.ui_scale * 100.0).round() as i32).to_string()),
             cx,
         );
     }
@@ -2363,9 +3498,9 @@ impl Shell {
         self.inspector_auto_hide = !self.inspector_auto_hide;
         self.save_prefs();
         let msg = if self.inspector_auto_hide {
-            "Inspector: auto-collapse when nothing selected (enabled)"
+            crate::i18n::t("Inspetor: recolher automaticamente sem seleção (ativado)")
         } else {
-            "Inspector: always visible (disabled)"
+            crate::i18n::t("Inspetor: sempre visível (desativado)")
         };
         window.push_notification(msg, cx);
         cx.notify();
@@ -2375,19 +3510,6 @@ impl Shell {
         let d = crate::settings::Settings::default();
         self.widths = (d.sidebar_w, d.editor_w, d.inspector_w);
         self.col_type_w = d.col_type_w;
-        self.panels_gen += 1;
-        self.save_prefs();
-        self.save_session(cx);
-        cx.notify();
-    }
-
-    fn toggle_card_transparency(
-        &mut self,
-        _: &ToggleCardTransparency,
-        _: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        self.translucent_cards = !self.translucent_cards;
         self.save_prefs();
         self.save_session(cx);
         cx.notify();
@@ -2398,11 +3520,14 @@ impl Shell {
     }
 
     fn toggle_sidebar(&mut self, _: &ToggleSidebar, _: &mut Window, cx: &mut Context<Self>) {
-        if self.sidebar_open && !self.editor_open {
+        if self.sidebar_open || self.editor_open {
             self.sidebar_open = false;
+            self.editor_open = false;
+            self.code_only = false;
         } else {
             self.sidebar_open = true;
             self.editor_open = false;
+            self.code_only = false;
         }
         self.save_prefs();
         self.save_session(cx);
@@ -2440,6 +3565,10 @@ impl Shell {
         self.with_diagram(cx, |d| d.zoom_by(1. / 1.25));
     }
 
+    fn reset_zoom(&mut self, _: &ResetZoom, _: &mut Window, cx: &mut Context<Self>) {
+        self.with_diagram(cx, Diagram::reset_zoom);
+    }
+
     fn tool_select(&mut self, _: &ToolSelect, _: &mut Window, cx: &mut Context<Self>) {
         self.with_diagram(cx, |d| d.tool = Tool::Select);
     }
@@ -2451,10 +3580,93 @@ impl Shell {
     fn deselect(&mut self, _: &Deselect, _: &mut Window, cx: &mut Context<Self>) {
         self.with_diagram(cx, super::canvas::Diagram::deselect);
     }
+
+    fn toggle_edge_straight(
+        &mut self,
+        _: &ToggleEdgeStraight,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(doc) = self.doc() {
+            doc.diagram.update(cx, |d, cx| d.edit_edge(false, cx));
+        }
+    }
+
+    fn reset_edge_curve(&mut self, _: &ResetEdgeCurve, _: &mut Window, cx: &mut Context<Self>) {
+        if let Some(doc) = self.doc() {
+            doc.diagram.update(cx, |d, cx| d.edit_edge(true, cx));
+        }
+    }
 }
 
-/// Ações disparadas de camadas fora do shell (paleta de comandos, menus, diálogos)
-/// não passam pelos handlers do elemento; estes handlers globais as encaminham ao shell.
+fn connection_hint(message: &str, sqlite: bool) -> &'static str {
+    let empty = "Conectado, mas nenhuma tabela foi encontrada. Verifique o banco e o schema.";
+    if message == crate::i18n::t(empty) {
+        return empty;
+    }
+    let message = message.to_ascii_lowercase();
+    if ["authenticat", "login failed", "access denied for user", "password", "28p01", "18456"]
+        .iter().any(|reason| message.contains(reason))
+    {
+        "O banco recusou a autenticação. Confira o usuário e a senha."
+    } else if ["timeout", "timed out", "time out", "connection refused", "could not resolve"]
+        .iter().any(|reason| message.contains(reason))
+    {
+        "O banco não respondeu. Confira o host, a porta e se o serviço está rodando."
+    } else if message.contains("could not read the catalog") {
+        "Não foi possível ler o esquema. Verifique as permissões de leitura do catálogo."
+    } else if sqlite {
+        "Não foi possível abrir o banco SQLite. Confira o caminho e as permissões do arquivo."
+    } else {
+        "Não foi possível conectar. Confira os dados da conexão e tente novamente."
+    }
+}
+
+fn file_in_use(error: &std::io::Error) -> bool {
+    cfg!(windows) && matches!(error.raw_os_error(), Some(32 | 1224))
+}
+
+fn export_write_hint(error: &std::io::Error) -> &'static str {
+    if file_in_use(error) {
+        return "O arquivo está em uso. Feche-o no outro aplicativo ou exporte com outro nome.";
+    }
+    match error.kind() {
+        std::io::ErrorKind::PermissionDenied => {
+            "Sem permissão para gravar neste local. Escolha outra pasta."
+        }
+        std::io::ErrorKind::StorageFull => "O disco está cheio. Libere espaço ou escolha outra pasta.",
+        _ => "Não foi possível gravar o arquivo. Tente outro nome ou outra pasta.",
+    }
+}
+
+fn embed_svg_fonts(mut svg: String) -> String {
+    use base64::{Engine as _, engine::general_purpose::STANDARD};
+    use std::fmt::Write as _;
+
+    let mut style = String::from("<style>");
+    for ((family, weight), font) in [
+        ("Geist", 400),
+        ("Geist", 500),
+        ("Geist", 600),
+        ("Geist Mono", 400),
+        ("Geist Mono", 500),
+    ]
+    .into_iter()
+    .zip(crate::FONTS)
+    {
+        let data = STANDARD.encode(font);
+        let _ = write!(
+            style,
+            "@font-face{{font-family:'{family}';font-weight:{weight};src:url(data:font/ttf;base64,{data}) format('truetype')}}"
+        );
+    }
+    style.push_str("</style>");
+    if let Some((root, _)) = svg.split_once('>') {
+        svg.insert_str(root.len() + 1, &style);
+    }
+    svg
+}
+
 /// Formatos de exportação de imagem.
 #[derive(Clone, Copy)]
 enum ImageKind {
@@ -2479,6 +3691,11 @@ impl ImageKind {
             Self::Svg => "SVG",
         }
     }
+}
+
+/// Texto resultante de um patch do `dbml-edit`; erro vira `None` (no-op = texto igual).
+fn patched(text: &str, patch: Result<dbml_edit::Patch, dbml_edit::EditError>) -> Option<String> {
+    patch.ok().map(|p| p.apply(text))
 }
 
 macro_rules! forward_actions {
@@ -2529,8 +3746,15 @@ pub fn register_global_actions(win: AnyWindowHandle, shell: &Entity<Shell>, cx: 
         OpenPalette => open_palette,
         ShowShortcuts => show_shortcuts,
         ToggleTheme => toggle_theme,
-        ToggleCardTransparency => toggle_card_transparency,
+        ThemeLight => theme_light,
+        ThemeDark => theme_dark,
+        LangPortuguese => lang_portuguese,
+        LangEnglish => lang_english,
         ToggleEditor => toggle_editor,
+        ShowDiagramView => show_diagram_view,
+        ShowSplitView => show_split_view,
+        ShowCodeView => show_code_view,
+        FilterExplorer => filter_explorer,
         ToggleSidebar => toggle_sidebar,
         ToggleInspector => toggle_inspector,
         ToggleLegend => toggle_legend,
@@ -2538,12 +3762,18 @@ pub fn register_global_actions(win: AnyWindowHandle, shell: &Entity<Shell>, cx: 
         Relayout => relayout,
         ZoomIn => zoom_in,
         ZoomOut => zoom_out,
+        ResetZoom => reset_zoom,
         ToolSelect => tool_select,
         ToolHand => tool_hand,
         Deselect => deselect,
+        ToggleEdgeStraight => toggle_edge_straight,
+        ResetEdgeCurve => reset_edge_curve,
         GroupSelection => group_selection,
         NewTable => new_table,
         NewEnum => new_enum,
+        DuplicateTable => duplicate_table,
+        RevealInDbml => reveal_in_dbml,
+        EditTableNote => edit_table_note,
         DeleteSelection => delete_selection,
         RenameSelected => rename_selected,
         ResetPanels => reset_panels,
@@ -2555,142 +3785,238 @@ pub fn register_global_actions(win: AnyWindowHandle, shell: &Entity<Shell>, cx: 
     );
 }
 
+#[derive(Clone, Copy)]
+enum ResizeEdge {
+    Sidebar,
+    Editor,
+    Inspector,
+}
+
+#[derive(Clone)]
+struct ResizeDrag;
+impl Render for ResizeDrag {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        Empty
+    }
+}
+
 impl Render for Shell {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let g = Glass::of_scaled(self.mode, self.translucent, self.ui_scale);
+        let mut g = Glass::of_scaled(self.mode, self.translucent, self.ui_scale);
+        g.editor_open = self.editor_open;
         // responsivo: painéis colapsam apenas em larguras extremamente reduzidas
         let width = f32::from(window.viewport_size().width);
         let has_selection = self.doc().is_some_and(|d| {
             let diag = d.diagram.read(cx);
-            diag.selected().is_some() || !diag.selection().is_empty()
+            diag.selected().is_some()
+                || !diag.selection().is_empty()
+                || diag.selected_enum().is_some()
+                || diag.selected_ref().is_some()
         });
         let show_sidebar = self.sidebar_open && !self.editor_open && width >= 500.;
         let show_editor = self.editor_open && width >= 500.;
-        let show_inspector =
-            self.inspector_open && (!self.inspector_auto_hide || has_selection) && width >= 600.;
-        let titlebar = self.titlebar(&g, window.is_maximized(), width < 1000., cx);
-        let rail = self.rail(&g);
-        let right_rail = self.right_rail(&g, cx);
+        let show_inspector = self.inspector_open
+            && (!self.inspector_auto_hide || has_selection)
+            && !self.docs.is_empty()
+            && width >= 600.;
+        // "Code": só o editor; canvas e inspector nem são montados
+        let code_view = self.view() == View::Code && show_editor;
+        let show_inspector = show_inspector && !code_view;
+        let panel_duration = if cx.has_active_drag() {
+            std::time::Duration::ZERO
+        } else {
+            motion::SLOW
+        };
+        let sidebar_progress = motion::value(
+            "sidebar-motion",
+            f32::from(show_sidebar),
+            panel_duration,
+            window,
+            cx,
+        );
+        let editor_progress = motion::value(
+            "editor-motion",
+            f32::from(show_editor),
+            panel_duration,
+            window,
+            cx,
+        );
+        let inspector_progress = motion::value(
+            "inspector-motion",
+            f32::from(show_inspector),
+            panel_duration,
+            window,
+            cx,
+        );
+        let code_progress = motion::value(
+            "code-view-motion",
+            f32::from(code_view),
+            panel_duration,
+            window,
+            cx,
+        );
+        let editor_width =
+            self.widths.1 + ((width - f32::from(RAIL_W)).max(0.) - self.widths.1) * code_progress;
+        self.sync_table_highlight(cx);
+        let titlebar = self.titlebar(
+            &g,
+            window.is_maximized(),
+            width < 1000.,
+            (show_inspector, has_selection),
+            cx,
+        );
+        let rail = self.rail(&g, cx);
         // o canvas primeiro: ele aplica o ajuste à tela que a barra de status exibe
-        let translucent_cards = self.translucent_cards;
         let canvas = self.doc().map(|d| d.diagram.clone()).inspect(|e| {
             e.update(cx, |d, cx| {
-                if d.glass.map(|x| x.mode) != Some(g.mode)
-                    || d.translucent_cards != translucent_cards
+                if d.glass.map(|x| (x.mode, x.translucent, x.editor_open))
+                    != Some((g.mode, g.translucent, g.editor_open))
                 {
                     d.glass = Some(g);
-                    d.translucent_cards = translucent_cards;
                     cx.notify();
                 }
             });
         });
-        let sidebar = self.sidebar(&g, cx);
+        let canvas_id = canvas.as_ref().map(Entity::entity_id);
+        if self.last_canvas != canvas_id {
+            self.last_canvas = canvas_id;
+            self.canvas_epoch = self.canvas_epoch.wrapping_add(1);
+        }
+        let sidebar = self.sidebar(&g, window, cx);
         let inspector = self.inspector(&g, window, cx);
-        let editor = self.editor_panel(&g);
+        let editor = self.editor_panel(&g, cx);
+        let origin = self
+            .doc()
+            .and_then(|d| d.path.clone())
+            .or_else(|| self.project.clone());
+        if self.git_branch.0 != origin {
+            let branch = origin.as_deref().and_then(git_branch);
+            self.git_branch = (origin, branch);
+        }
         let statusbar = self.statusbar(&g, width < 1000., cx);
-        let work: AnyElement = match canvas {
-            Some(canvas) => {
-                let panels_id = SharedString::from(format!(
-                    "main-panels-{}-{}-{}-{}",
-                    self.panels_gen, show_sidebar, show_editor, show_inspector
-                ));
-                let mut resizable = h_resizable(panels_id);
-
-                let has_sb = show_sidebar;
-                let has_ed = show_editor;
-                let has_insp = show_inspector;
-                let weak = cx.entity().downgrade();
-                resizable = resizable.on_resize(move |state, _, cx| {
-                    let sizes = state.read(cx).sizes().clone();
-                    weak.update(cx, |s, _| {
-                        let mut ix = 0;
-                        if has_sb && sizes.len() > ix {
-                            let w = f32::from(sizes[ix]);
-                            if w >= 120. {
-                                s.widths.0 = w;
-                            }
-                            ix += 1;
-                        }
-                        if has_ed && sizes.len() > ix {
-                            let w = f32::from(sizes[ix]);
-                            if w >= 120. {
-                                s.widths.1 = w;
-                            }
-                            ix += 1;
-                        }
-                        // ix é o canvas
-                        ix += 1;
-                        if has_insp && sizes.len() > ix {
-                            let w = f32::from(sizes[ix]);
-                            if w >= 120. {
-                                s.widths.2 = w;
-                            }
-                        }
-                        s.save_prefs();
-                    })
-                    .ok();
-                });
-
-                if show_sidebar {
-                    resizable = resizable.child(
-                        resizable_panel()
-                            .size(px(self.widths.0))
-                            .size_range(px(180.)..px(440.))
-                            .child(sidebar),
-                    );
-                }
-
-                if show_editor {
-                    resizable = resizable.child(
-                        resizable_panel()
-                            .size(px(self.widths.1))
-                            .size_range(px(280.)..px(900.))
-                            .child(editor),
-                    );
-                }
-
-                resizable = resizable.child(
-                    resizable_panel()
-                        .child(div().id("canvas").size_full().bg(g.surface).child(canvas)),
-                );
-
-                if show_inspector {
-                    resizable = resizable.child(
-                        resizable_panel()
-                            .size(px(self.widths.2))
-                            .size_range(px(240.)..px(800.))
-                            .child(inspector),
-                    );
-                }
-
-                resizable.into_any_element()
-            }
-            None => div()
-                .size_full()
-                .flex()
-                .when(show_sidebar, |d| {
-                    d.child(
-                        div()
-                            .w(px(self.widths.0))
-                            .h_full()
-                            .border_r_1()
-                            .border_color(g.edge)
-                            .child(sidebar),
-                    )
+        let handle = |id: &'static str, edge: HandleEdge, target: ResizeEdge| {
+            resize_handle(id, Axis::Horizontal)
+                .inside(edge)
+                .on_drag(target, |_, _, _, cx| {
+                    cx.stop_propagation();
+                    cx.new(|_| ResizeDrag)
                 })
-                .when(show_editor, |d| {
-                    d.child(
-                        div()
-                            .w(px(self.widths.1))
-                            .h_full()
-                            .border_r_1()
-                            .border_color(g.edge)
-                            .child(editor),
-                    )
-                })
-                .child(Self::empty_state(&g))
-                .into_any_element(),
         };
+        let work = div()
+            .id("work")
+            .size_full()
+            .flex()
+            .on_drag_move(
+                cx.listener(move |this, e: &DragMoveEvent<ResizeEdge>, _, cx| {
+                    let x = f32::from(e.event.position.x);
+                    let left = f32::from(e.bounds.left());
+                    let right = f32::from(e.bounds.right());
+                    match *e.drag(cx) {
+                        ResizeEdge::Sidebar => {
+                            let w = (x - left).clamp(180., 440.);
+                            if (this.widths.0 - w).abs() >= 0.5 {
+                                this.widths.0 = w;
+                                this.save_prefs();
+                                cx.notify();
+                            }
+                        }
+                        ResizeEdge::Editor => {
+                            let start = left + if show_sidebar { this.widths.0 } else { 0. };
+                            let w = (x - start).clamp(280., 900.);
+                            if (this.widths.1 - w).abs() >= 0.5 {
+                                this.widths.1 = w;
+                                this.save_prefs();
+                                cx.notify();
+                            }
+                        }
+                        ResizeEdge::Inspector => {
+                            let w = (right - x).clamp(240., 800.);
+                            if (this.widths.2 - w).abs() >= 0.5 {
+                                this.widths.2 = w;
+                                this.save_prefs();
+                                cx.notify();
+                            }
+                        }
+                    }
+                }),
+            )
+            .when(sidebar_progress > 0., |d| {
+                d.child(
+                    div()
+                        .relative()
+                        .flex_none()
+                        .w(px(self.widths.0 * sidebar_progress))
+                        .h_full()
+                        .overflow_hidden()
+                        .opacity(sidebar_progress)
+                        .child(div().w(px(self.widths.0)).h_full().child(sidebar))
+                        .child(handle(
+                            "resize-sidebar",
+                            HandleEdge::Trailing,
+                            ResizeEdge::Sidebar,
+                        )),
+                )
+            })
+            .when(editor_progress > 0., |d| {
+                d.child(
+                    div()
+                        .relative()
+                        .flex_none()
+                        .w(px(editor_width * editor_progress))
+                        .h_full()
+                        .overflow_hidden()
+                        .opacity(editor_progress)
+                        .child(div().w(px(editor_width)).h_full().child(editor))
+                        .when(!code_view, |d| {
+                            d.child(handle(
+                                "resize-editor",
+                                HandleEdge::Trailing,
+                                ResizeEdge::Editor,
+                            ))
+                        }),
+                )
+            })
+            .when(code_progress < 1. || !code_view, |d| {
+                d.child(match canvas {
+                    Some(canvas) => div()
+                        .id("canvas")
+                        .flex_1()
+                        .min_w_0()
+                        .h_full()
+                        .bg(g.surface)
+                        .child(canvas)
+                        .with_animation(
+                            ("canvas-file", self.canvas_epoch),
+                            motion::animation(motion::BASE),
+                            Styled::opacity,
+                        )
+                        .into_any_element(),
+                    None => div()
+                        .flex_1()
+                        .min_w_0()
+                        .h_full()
+                        .child(self.empty_state(&g, cx))
+                        .into_any_element(),
+                })
+            })
+            .when(inspector_progress > 0., |d| {
+                d.child(
+                    div()
+                        .relative()
+                        .flex_none()
+                        .w(px(self.widths.2 * inspector_progress))
+                        .h_full()
+                        .overflow_hidden()
+                        .opacity(inspector_progress)
+                        .child(div().w(px(self.widths.2)).h_full().child(inspector))
+                        .child(handle(
+                            "resize-inspector",
+                            HandleEdge::Leading,
+                            ResizeEdge::Inspector,
+                        )),
+                )
+            })
+            .into_any_element();
         div()
             .id("shell")
             .key_context(actions::CTX)
@@ -2729,8 +4055,15 @@ impl Render for Shell {
             .on_action(cx.listener(Self::add_preset_soft_delete))
             .on_action(cx.listener(Self::show_shortcuts))
             .on_action(cx.listener(Self::toggle_theme))
-            .on_action(cx.listener(Self::toggle_card_transparency))
+            .on_action(cx.listener(Self::theme_light))
+            .on_action(cx.listener(Self::theme_dark))
+            .on_action(cx.listener(Self::lang_portuguese))
+            .on_action(cx.listener(Self::lang_english))
             .on_action(cx.listener(Self::toggle_editor))
+            .on_action(cx.listener(Self::show_diagram_view))
+            .on_action(cx.listener(Self::show_split_view))
+            .on_action(cx.listener(Self::show_code_view))
+            .on_action(cx.listener(Self::filter_explorer))
             .on_action(cx.listener(Self::toggle_sidebar))
             .on_action(cx.listener(Self::toggle_inspector))
             .on_action(cx.listener(Self::toggle_legend))
@@ -2738,11 +4071,17 @@ impl Render for Shell {
             .on_action(cx.listener(Self::relayout))
             .on_action(cx.listener(Self::zoom_in))
             .on_action(cx.listener(Self::zoom_out))
+            .on_action(cx.listener(Self::reset_zoom))
             .on_action(cx.listener(Self::tool_select))
             .on_action(cx.listener(Self::tool_hand))
             .on_action(cx.listener(Self::deselect))
+            .on_action(cx.listener(Self::toggle_edge_straight))
+            .on_action(cx.listener(Self::reset_edge_curve))
             .on_action(cx.listener(Self::new_table))
             .on_action(cx.listener(Self::new_enum))
+            .on_action(cx.listener(Self::duplicate_table))
+            .on_action(cx.listener(Self::reveal_in_dbml))
+            .on_action(cx.listener(Self::edit_table_note))
             .on_action(cx.listener(Self::delete_selection))
             .on_action(cx.listener(Self::rename_selected))
             .on_action(cx.listener(Self::reset_panels))
@@ -2765,8 +4104,7 @@ impl Render for Shell {
                     .min_h_0()
                     .flex()
                     .child(rail)
-                    .child(div().flex_1().min_w_0().h_full().child(work))
-                    .child(right_rail),
+                    .child(div().flex_1().min_w_0().h_full().child(work)),
             )
             .child(statusbar)
     }
@@ -2774,9 +4112,67 @@ impl Render for Shell {
 
 #[cfg(test)]
 mod tests {
-    use super::Shell;
+    use super::{Shell, git_branch, patched};
+
+    #[test]
+    fn export_write_errors_provide_a_recovery_action() {
+        use std::io::{Error, ErrorKind};
+
+        assert!(super::export_write_hint(&Error::from(ErrorKind::PermissionDenied))
+            .contains("Escolha outra pasta"));
+        #[cfg(windows)]
+        assert!(super::export_write_hint(&Error::from_raw_os_error(1224))
+            .contains("exporte com outro nome"));
+    }
+
+    #[test]
+    fn svg_embeds_geist_faces_and_keeps_text_editable() {
+        let svg = super::embed_svg_fonts("<svg><text>orders</text></svg>".into());
+        assert!(svg.starts_with("<svg><style>"));
+        assert!(svg.contains("font-family:'Geist Mono';font-weight:500"));
+        assert_eq!(svg.matches("data:font/ttf;base64,").count(), crate::FONTS.len());
+        assert!(svg.ends_with("</style><text>orders</text></svg>"));
+    }
+
     use std::ffi::OsStr;
     use std::path::PathBuf;
+
+    #[test]
+    fn new_table_name_is_valid_and_unique() {
+        let name = dbml_edit::unique_table_name("", super::NEW_TABLE_NAME);
+        let text = dbml_edit::add_table("", &name);
+        assert_eq!(name, "new_table");
+        assert!(dbml_analysis::analyze(&text).table(&name).is_some());
+        assert_ne!(dbml_edit::unique_table_name(&text, super::NEW_TABLE_NAME), name);
+    }
+
+    #[test]
+    fn git_branch_reads_head_walking_up() {
+        let root = std::env::temp_dir().join(format!("dbm-git-{}", std::process::id()));
+        let sub = root.join("a/b");
+        std::fs::create_dir_all(&sub).unwrap();
+        std::fs::create_dir_all(root.join(".git")).unwrap();
+        std::fs::write(root.join(".git/HEAD"), "ref: refs/heads/feat/x\n").unwrap();
+        assert_eq!(git_branch(&sub.join("x.dbml")).as_deref(), Some("feat/x"));
+        std::fs::write(root.join(".git/HEAD"), "0123456789abcdef\n").unwrap();
+        assert_eq!(git_branch(&sub).as_deref(), Some("0123456"));
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn patched_applies_note_and_move() {
+        let t = "Table a {\n  x int\n  y int\n}\n";
+        let n = patched(t, dbml_edit::set_table_note(t, "a", Some("hi"))).unwrap();
+        assert!(n.contains("Note: 'hi'"));
+        let m = patched(t, dbml_edit::move_column(t, "a", "y", -1)).unwrap();
+        assert!(m.find("y int").unwrap() < m.find("x int").unwrap());
+        // limites e tabela inexistente não alteram o texto
+        assert_eq!(
+            patched(t, dbml_edit::move_column(t, "a", "x", -1)).unwrap(),
+            t
+        );
+        assert!(patched(t, dbml_edit::move_column(t, "zz", "x", 1)).is_none());
+    }
 
     #[test]
     fn resolve_export_dir_prefers_project_then_home_then_userprofile() {
@@ -2821,6 +4217,12 @@ mod tests {
             "Self::add_preset_bigint_pk",
             "Self::add_preset_timestamps",
             "Self::add_preset_soft_delete",
+            "Self::show_code_view",
+            "Self::filter_explorer",
+            "Self::duplicate_table",
+            "Self::reveal_in_dbml",
+            "Self::theme_light",
+            "Self::theme_dark",
         ] {
             assert!(
                 src.contains(&format!(".on_action(cx.listener({handler}))")),

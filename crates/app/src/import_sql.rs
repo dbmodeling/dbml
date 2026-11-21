@@ -57,6 +57,13 @@ impl ImportSqlModel {
         self.warnings = outcome.warnings;
     }
 
+    /// (tabelas, relações) da prévia, para o resumo do rodapé.
+    #[must_use]
+    pub fn counts(&self) -> (usize, usize) {
+        let n = |prefix: &str| self.dbml.lines().filter(|l| l.starts_with(prefix)).count();
+        (n("Table "), n("Ref"))
+    }
+
     #[must_use]
     pub fn can_apply(&self) -> bool {
         !self.too_large && !self.sql.trim().is_empty() && !self.dbml.trim().is_empty()
@@ -84,6 +91,16 @@ mod tests {
 
         model.set_dialect(SqlDialect::Mysql);
         assert!(model.dbml.contains("id serial [pk]"));
+    }
+
+    #[test]
+    fn import_model_counts_tables_and_refs() {
+        let mut model = ImportSqlModel::new(SqlDialect::Postgres);
+        model.set_sql(
+            "CREATE TABLE a (id int PRIMARY KEY);\n\
+             CREATE TABLE b (id int PRIMARY KEY, a_id int REFERENCES a(id));",
+        );
+        assert_eq!(model.counts(), (2, 1));
     }
 
     #[test]

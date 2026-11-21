@@ -23,6 +23,8 @@ vscode-extension/dist/
 # WebAssembly gerado localmente (gerado via cargo build / wasm-bindgen)
 **/wasm/*.wasm
 *.wasm
+# A CLI incorpora esses arquivos no binário durante o build do Cargo.
+!/crates/cli/web/assets/*.wasm
 
 # Ferramentas de IA e caches locais
 .claude/*

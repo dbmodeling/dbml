@@ -1,6 +1,5 @@
 use crate::state::{AppState, compute_hash};
-use notify::{Config, Event, RecommendedWatcher, RecursiveMode, Watcher};
-use std::sync::mpsc::channel;
+use notify::{Config, RecommendedWatcher, RecursiveMode, Watcher};
 use std::time::Duration;
 
 /// Starts a background filesystem watcher for external edits to the active `.dbml` file.
@@ -14,73 +13,81 @@ pub fn start_file_watcher(state: AppState) -> anyhow::Result<()> {
         .clone()
         .unwrap_or_else(|| std::path::PathBuf::from("."));
 
-    tokio::task::spawn_blocking(move || {
-        let (tx, rx) = channel();
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut watcher = RecommendedWatcher::new(
+        move |event| {
+            let _ = tx.send(event);
+        },
+        Config::default(),
+    )?;
+    watcher.watch(&watch_dir, RecursiveMode::NonRecursive)?;
 
-        let mut watcher = match RecommendedWatcher::new(tx, Config::default()) {
-            Ok(w) => w,
-            Err(e) => {
-                eprintln!("Warning: Could not initialize file watcher: {e}");
-                return;
+    tokio::spawn(async move {
+        let _watcher = watcher;
+        while let Some(event) = rx.recv().await {
+            if let Err(error) = event {
+                eprintln!("Watcher error: {error}");
+                continue;
             }
-        };
+            tokio::time::sleep(Duration::from_millis(60)).await;
+            while rx.try_recv().is_ok() {}
 
-        if let Err(e) = watcher.watch(&watch_dir, RecursiveMode::NonRecursive) {
-            eprintln!(
-                "Warning: Failed to watch directory '{}': {e}",
-                watch_dir.display()
-            );
-            return;
-        }
-
-        // Loop de eventos com debounce simples
-        while let Ok(res) = rx.recv() {
-            match res {
-                Ok(Event { .. }) => {
-                    // Debounce para aguardar conclusão de escritas em lote de editores externos
-                    std::thread::sleep(Duration::from_millis(60));
-
-                    // Limpa eventos pendentes na fila
-                    while rx.try_recv().is_ok() {}
-
-                    let state = state.clone();
-                    tokio::spawn(async move {
-                        let file_path = state.file_path.read().await.clone();
-                        if let Ok(new_content) = std::fs::read_to_string(&file_path) {
-                            let current_hash = compute_hash(&new_content);
-                            let last_hash = *state.last_saved_hash.read().await;
-
-                            // Se a hash for diferente, é uma alteração externa legítima!
-                            if current_hash != last_hash {
-                                {
-                                    let mut hash_lock = state.last_saved_hash.write().await;
-                                    *hash_lock = current_hash;
-                                }
-                                {
-                                    let mut content_lock = state.content.write().await;
-                                    content_lock.clone_from(&new_content);
-                                }
-
-                                let msg = serde_json::json!({
-                                    "type": "external_change",
-                                    "source": new_content
-                                })
-                                .to_string();
-
-                                let _ = state.tx.send(msg);
-                                println!(
-                                    "  [sync] External change detected and broadcast to browser."
-                                );
-                            }
-                        }
-                    });
-                }
-                Err(e) => {
-                    eprintln!("Watcher error: {e}");
-                }
+            let _guard = state.write_lock.lock().await;
+            let path = state.file_path.read().await.clone();
+            let Ok(source) = tokio::fs::read_to_string(&path).await else {
+                continue;
+            };
+            let hash = compute_hash(&source);
+            let mut saved_hash = state.last_saved_hash.write().await;
+            if hash == *saved_hash {
+                continue;
             }
+            *saved_hash = hash;
+            state.content.write().await.clone_from(&source);
+            let message = serde_json::json!({
+                "type": "external_change",
+                "source": source,
+                "documentId": path.to_string_lossy(),
+            });
+            let _ = state.tx.send(message.to_string());
         }
     });
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::start_file_watcher;
+    use crate::state::AppState;
+    use std::sync::{Arc, mpsc};
+    use std::time::Duration;
+    use tokio::sync::{Mutex, RwLock, broadcast};
+
+    #[test]
+    fn watcher_does_not_block_runtime_shutdown() {
+        let (done, result) = mpsc::channel();
+        std::thread::spawn(move || {
+            let runtime = tokio::runtime::Runtime::new().unwrap();
+            let dir = std::env::temp_dir();
+            let (tx, _) = broadcast::channel(1);
+            let state = AppState {
+                target_path: dir.clone(),
+                project_dir: Some(dir.clone()),
+                file_path: Arc::new(RwLock::new(dir.clone())),
+                layout_path: Arc::new(RwLock::new(dir)),
+                content: Arc::new(RwLock::new(String::new())),
+                layout: Arc::new(RwLock::new(None)),
+                last_saved_hash: Arc::new(RwLock::new(0)),
+                tx,
+                write_lock: Arc::new(Mutex::new(())),
+            };
+            runtime.block_on(async { start_file_watcher(state).unwrap() });
+            drop(runtime);
+            done.send(()).unwrap();
+        });
+        result
+            .recv_timeout(Duration::from_secs(3))
+            .expect("watcher blocked runtime shutdown");
+    }
 }

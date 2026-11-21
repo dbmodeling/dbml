@@ -1,3 +1,4 @@
+import { t } from './i18n';
 import type { IntrospectRequest, IntrospectResult } from './types';
 
 export type DbEngine = IntrospectRequest['dialect'];
@@ -49,18 +50,18 @@ export function buildRequest(
 
 export type ConnectStatus = 'idle' | 'connecting' | 'tested' | 'failed' | 'ready';
 
-/** `Connected to X. Schemas: a, b (+3 more).` */
+/** `Conectado a X. Schemas: a, b (+3 a mais).` */
 export function summarizeTest(server: string, schemas: string[]): string {
   const SHOWN = 8;
-  if (schemas.length === 0) return `Connected to ${server}.`;
+  if (schemas.length === 0) return t('Conectado a {}.', server);
   const shown = schemas.slice(0, SHOWN).join(', ');
   const more = schemas.length - SHOWN;
   return more > 0
-    ? `Connected to ${server}. Schemas: ${shown} (+${more} more).`
-    : `Connected to ${server}. Schemas: ${shown}.`;
+    ? t('Conectado a {}. Schemas: {} (+{} a mais).', server, shown, more)
+    : t('Conectado a {}. Schemas: {}.', server, shown);
 }
 
-/** Estado do modal "Connect to Database"; a senha nunca é guardada aqui. */
+/** Estado do modal "Conectar ao banco"; a senha nunca é guardada aqui. */
 export class ConnectDbModel {
   engine: DbEngine;
   trustCert = false;
@@ -97,7 +98,7 @@ export class ConnectDbModel {
   finish(result: IntrospectResult): void {
     this.confirmReplace = false;
     if (result.tables === 0 || !result.dbml.trim()) {
-      this.fail('Connected, but no tables were found. Check the database and schema.');
+      this.fail(t('Conectado, mas nenhuma tabela foi encontrada. Verifique o banco e o schema.'));
       return;
     }
     this.dbml = result.dbml;
@@ -107,7 +108,7 @@ export class ConnectDbModel {
     this.status = 'ready';
   }
 
-  /** Resultado de "Test connection": não gera DBML, então nada pode ser aplicado. */
+  /** Resultado de "Testar conexão": não gera DBML, então nada pode ser aplicado. */
   finishTest(server: string, schemas: string[]): void {
     this.reset();
     this.error = summarizeTest(server, schemas);

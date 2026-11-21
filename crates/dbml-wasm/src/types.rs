@@ -390,6 +390,10 @@ pub struct RoutedEdge {
     pub points: Vec<NodeCoordinate>,
     /// SVG path string (`M ... L ... Q ...`) with 8px rounded corners.
     pub svg_path: String,
+    /// Caminho desenhado sem estilo: curva automática, ou rota que desvia dos outros cartões.
+    pub auto_path: String,
+    /// Ponto médio de `auto_path` (alça de edição da relação).
+    pub auto_mid: NodeCoordinate,
     /// Cardinality symbol near the start endpoint.
     pub start_label: String,
     /// World position of `start_label`.

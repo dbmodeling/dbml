@@ -34,7 +34,8 @@ fn render(svg: &str, fonts: &[&[u8]], scale: f32) -> Result<tiny_skia::Pixmap, R
         for f in fonts {
             db.load_font_data((*f).to_vec());
         }
-        db.set_sans_serif_family("Inter");
+        db.set_sans_serif_family("Geist");
+        db.set_monospace_family("Geist Mono");
     }
     let tree = usvg::Tree::from_str(svg, &opt).map_err(|e| RasterError::Svg(e.to_string()))?;
     let size = tree.size();
@@ -54,7 +55,7 @@ fn render(svg: &str, fonts: &[&[u8]], scale: f32) -> Result<tiny_skia::Pixmap, R
     Ok(pixmap)
 }
 
-/// Rasterises `svg` to PNG at `scale`× (2 = retina). `fonts` are TTF/OTF bytes (family `Inter`).
+/// Rasterises `svg` to PNG at `scale`× (2 = retina). `fonts` are TTF/OTF bytes (family `Geist`).
 ///
 /// # Errors
 /// Returns [`RasterError`] when the SVG is invalid, empty or too large, or encoding fails.
@@ -99,7 +100,7 @@ mod tests {
     use crate::{Theme, to_svg};
     use std::collections::HashMap;
 
-    const INTER: &[u8] = include_bytes!("../../app/assets/fonts/Inter-Regular.ttf");
+    const INTER: &[u8] = include_bytes!("../../app/assets/fonts/Geist-Regular.ttf");
 
     fn sample() -> (schema::Schema, HashMap<String, (f32, f32)>) {
         let col = |n: &str, pk| schema::Column {
@@ -129,16 +130,17 @@ mod tests {
         let svg = to_svg(
             &s,
             &HashMap::from([("a<b".into(), (0.0, 0.0))]),
+            &HashMap::new(),
             &Theme::dark(),
         );
         assert!(svg.contains("a&lt;b") && !svg.contains("a<b"));
-        assert!(to_svg(&sample().0, &p, &Theme::light()).contains("viewBox"));
+        assert!(to_svg(&sample().0, &p, &HashMap::new(), &Theme::light()).contains("viewBox"));
     }
 
     #[test]
     fn png_should_have_signature_and_diagram_size() {
         let (s, p) = sample();
-        let svg = to_svg(&s, &p, &Theme::dark());
+        let svg = to_svg(&s, &p, &HashMap::new(), &Theme::dark());
         let png = svg_to_png(&svg, &[INTER], 2.0).unwrap();
         assert_eq!(&png[..8], b"\x89PNG\r\n\x1a\n");
         let img = resvg::tiny_skia::Pixmap::decode_png(&png).unwrap();
@@ -160,7 +162,13 @@ mod tests {
     #[test]
     fn jpeg_should_have_magic_bytes() {
         let (s, p) = sample();
-        let jpg = svg_to_jpeg(&to_svg(&s, &p, &Theme::light()), &[INTER], 1.0, 90).unwrap();
+        let jpg = svg_to_jpeg(
+            &to_svg(&s, &p, &HashMap::new(), &Theme::light()),
+            &[INTER],
+            1.0,
+            90,
+        )
+        .unwrap();
         assert_eq!(&jpg[..3], &[0xFF, 0xD8, 0xFF]);
     }
 
