@@ -25,7 +25,8 @@ vscode-extension/dist/
 *.wasm
 
 # Ferramentas de IA e caches locais
-.claude/
+.claude/*
+!.claude/agents/
 .agent/
 .scratch/
 openspec/
@@ -46,5 +47,10 @@ Thumbs.db
 coverage/
 .vitest/
 .cortex/
-.agents/
+.agents/*
 skills/
+!.agents/skills/
+.agents/skills/*
+!.agents/skills/check/
+!.agents/skills/release/
+!.claude/skills

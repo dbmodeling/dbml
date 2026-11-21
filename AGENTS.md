@@ -74,3 +74,10 @@ What this script does in order:
 For domain modeling skills, architecture, and local tickets:
 - Domain and ADRs: see `docs/agents/domain.md` (`GLOSSARY.md` and `openspec/adr/`).
 - Local issue tracker (`.scratch/`): see `docs/agents/issue-tracker.md` and `docs/agents/triage-labels.md`.
+
+---
+
+## 5. Tooling (Claude Code, Codex, Antigravity)
+
+- MCP servers used in this project: **context7** (version-pinned docs for GPUI, rowan, axum, wasm-bindgen; always check docs for the pinned version) and **Playwright** (web targets only: `dbml run` / `packages/canvas-web` on localhost; it cannot drive the GPUI desktop app or the VS Code webview).
+- Claude Code reads them from `.mcp.json`. Codex and Antigravity use global config; setup commands and agent roles (search / mechanical / research / implement / review) are in `docs/08-agentes.md`.
