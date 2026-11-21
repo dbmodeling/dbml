@@ -75,6 +75,7 @@ pub(crate) struct Column<'a> {
     pub(crate) references: Option<Fk<'a>>,
     pub(crate) enum_values: Option<Vec<String>>,
     pub(crate) comment: Option<String>,
+    pub(crate) check: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

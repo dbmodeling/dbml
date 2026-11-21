@@ -284,6 +284,7 @@ async fn read_schema(
             auto_increment: extra.contains("auto_increment"),
             default: default.filter(|d| !d.is_empty()),
             comment: opt(c, "cm", target)?.filter(|c| !c.is_empty()),
+            check: None,
         });
     }
 

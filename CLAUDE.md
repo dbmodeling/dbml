@@ -45,7 +45,7 @@ ponytail (menor solução completa). Detalhes em `docs/07-skills.md`.
 
 ## Agentes e modelos
 A sessão principal **orquestra e delega por padrão** (o usuário pediu isso explicitamente) a
-agentes de `.claude/agents/` com modelo fixo. Detalhes e regras de escalonamento em
+agentes de `.claude/agents/` com modelo fixo. Detalhes, regras de escalonamento, quando **não** delegar e equivalentes em Codex/Antigravity em
 `docs/08-agentes.md`.
 
 | Atividade | Agente | Modelo |
@@ -54,13 +54,13 @@ agentes de `.claude/agents/` com modelo fixo. Detalhes e regras de escalonamento
 | Mudança mecânica já especificada | `mecanico` | Haiku |
 | Pesquisa em docs/código de crates (`research`) | `pesquisador` | Sonnet |
 | Implementar ticket/tarefa (`implement`) | `implementador` | Sonnet (escalar p/ Opus `medium` em `dbml-edit`/CST, canvas, ou após 2 falhas) |
-| Design, ADRs, revisar plano | `arquiteto` | Opus · medium |
+| Design, ADRs, revisar plano | sessão principal | — |
 | Revisão de código (`code-review`) | `revisor` | Opus · medium |
-| Bug difícil / performance | `depurador` | Opus · medium |
+| Bug difícil / performance | sessão principal | — |
 
 **Opus nunca em `high`** (ou acima) por iniciativa própria: só se a tarefa falhou em Opus
 `medium` **e** o usuário pedir o `high` explicitamente. Ao escalar um agente Sonnet para
-Opus, passar `effort: medium` na chamada. Fable só com pedido explícito do usuário. Conversa, entrevistas (`grill-me`) e decisões ficam
+Opus, passar `effort: medium` na chamada. Conversa, entrevistas (`grill-me`) e decisões ficam
 na sessão principal. Todo prompt de subagente leva objetivo, arquivos, decisões e formato de
 resposta — ele não vê esta conversa.
 

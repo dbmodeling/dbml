@@ -236,6 +236,7 @@ name = "app"
 version = "0.1.4"
 dependencies = [
  "anyhow",
+ "base64 0.22.1",
  "db-introspect",
  "dbml-analysis",
  "dbml-edit",
@@ -1542,6 +1543,7 @@ dependencies = [
  "percent-encoding",
  "rusqlite",
  "schema",
+ "sql-import",
  "sqlx",
  "tiberius",
  "tokio",
@@ -1589,6 +1591,7 @@ dependencies = [
 name = "dbml-edit"
 version = "0.1.4"
 dependencies = [
+ "dbml-analysis",
  "dbml-syntax",
  "insta",
  "proptest",
@@ -1672,6 +1675,7 @@ dependencies = [
  "layout",
  "resvg 0.46.0",
  "schema",
+ "serde",
 ]
 
 [[package]]

@@ -4,7 +4,7 @@ use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
-use tokio::sync::{RwLock, broadcast};
+use tokio::sync::{Mutex, RwLock, broadcast};
 
 static TMP_SEQ: AtomicU64 = AtomicU64::new(0);
 
@@ -48,6 +48,7 @@ pub struct AppState {
     pub layout: Arc<RwLock<Option<String>>>,
     pub last_saved_hash: Arc<RwLock<u64>>,
     pub tx: broadcast::Sender<String>,
+    pub write_lock: Arc<Mutex<()>>,
 }
 
 fn scan_dbml_dir(dir: &Path) -> Vec<PathBuf> {
@@ -123,6 +124,7 @@ impl AppState {
             layout: Arc::new(RwLock::new(layout)),
             last_saved_hash: Arc::new(RwLock::new(hash)),
             tx,
+            write_lock: Arc::new(Mutex::new(())),
         })
     }
 
@@ -209,14 +211,10 @@ impl AppState {
     pub async fn save_content(&self, new_content: String) -> anyhow::Result<()> {
         let new_hash = compute_hash(&new_content);
 
-        // Atualiza a hash em memória antes de gravar para que o watcher ignore o próprio eco
-        {
-            let mut hash_lock = self.last_saved_hash.write().await;
-            *hash_lock = new_hash;
-        }
-
+        let mut hash_lock = self.last_saved_hash.write().await;
         let fp = self.file_path.read().await.clone();
         atomic_write(&fp, &new_content).await?;
+        *hash_lock = new_hash;
 
         {
             let mut content_lock = self.content.write().await;

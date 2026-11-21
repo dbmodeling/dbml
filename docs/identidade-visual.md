@@ -1,51 +1,56 @@
 # Identidade visual — DB Modeling
 
-## Conceito
-**Duas tabelas ligadas por uma relação.** O gesto central do produto (modelar tabelas e
-conectá-las coluna a coluna) é a própria marca: dois cartões com cabeçalho, ligados por uma
-relação ortogonal com portas — o mesmo desenho que o canvas usa. Sóbrio, técnico, legível em
-16 px, sem metáforas genéricas de "banco de dados" (cilindros).
+<img src="../crates/app/assets/brand/icon-128.png" alt="Marca do DB Modeling" width="72" height="72" />
 
-## Arquivos (`crates/app/assets/brand/`)
+A marca representa duas tabelas brancas conectadas por uma relação, sobre um
+quadrado arredondado com base laranja `#e56731` e brilho suave. O mesmo laranja
+destaca ações e seleções na interface.
+
+## Arquivos da marca
+
 | Arquivo | Uso |
 |---|---|
-| `icon.svg` | Fonte do ícone do app (512×512, quadrado arredondado em vidro azul-noite) |
-| `icon-{16,24,32,48,64,128,256,1024}.png` | Rasterizações (geradas) |
-| `icon.ico` | Ícone do `.exe` no Windows (embutido via `crates/app/build.rs` + `app.rc`) |
-| `mark.svg` | Marca simplificada monocromática (`currentColor`), para 16–32 px e usos sobre cor |
+| [icon.svg](../crates/app/assets/brand/icon.svg) | Matriz vetorial de 512 × 512 |
+| [icon-128.png](../crates/app/assets/brand/icon-128.png) | Versão raster para documentação e templates |
+| [icon.ico](../crates/app/assets/brand/icon.ico) | Ícone do executável Windows |
+| [mark.svg](../crates/app/assets/brand/mark.svg) | Glifo sem fundo, monocromático via `currentColor` |
+| [favicon.svg](../favicon.svg) | Ícone usado na apresentação do repositório |
 
-Regenerar PNG/ICO depois de editar o SVG:
-`cargo run --manifest-path tools/render-icons/Cargo.toml`
+Após alterar a matriz SVG, regenere os PNGs e o ICO com
+`cargo run --manifest-path tools/render-icons/Cargo.toml` e confira as cópias do
+ícone na raiz e em [vscode-extension/media](../vscode-extension/media/).
+Use o glifo quando o contexto pedir uma marca monocromática e mantenha a
+proporção original ao redimensionar.
 
-## Construção do ícone
-- Base: quadrado 480 com raio 112 (proporção de ícone de app moderno), degradê diagonal
-  `#2a4fd6 → #14287a → #0a1230`, brilho superior branco 28% → 0 e aresta interna branca 22%
-  (o "vidro").
-- Cartões: vidro claro (branco 24% → 8%) com borda branca 45%; cabeçalhos `#5b9bff`
-  (tabela de origem) e `#a5c4ff` (tabela de destino); linhas de coluna em branco 75%/45%.
-- Relação: traço `#8fb6ff` de 14 px com canto arredondado; portas brancas de raio 12.
-- Área de respiro: nada a menos de 72 px da borda do quadrado.
+## Paleta do workbench
 
-## Cores
+As cores abaixo são as bases dos temas sólidos. O modo translúcido usa
+variações de opacidade definidas nos tokens.
+
 | Papel | Escuro | Claro |
 |---|---|---|
-| Destaque (lima, fixo) | `#c6f240` | `#5f7d00` |
-| Superfície (canvas) | `#141518` | `#f7f7f8` |
-| Cartão de tabela | `#1f2024` | `#ffffff` |
-| Texto | `#e6e7ea` | `#1f2328` |
-| Texto secundário | `#a3a6ad` | `#57606a` |
-| Erro / aviso / ok | `#f2555a` / `#e5b454` / `#4cc27a` | `#cf222e` / `#9a6700` / `#1a7f37` |
+| Destaque | `#e56731` | `#e56731` |
+| Barra superior | `#0e0f11` | `#f3f3f1` |
+| Superfície do diagrama | `#0a0b0c` | `#fbfbfa` |
+| Cartão de tabela | `#17181b` | `#ffffff` |
+| Texto | `#ececee` | `#17181b` |
+| Texto secundário | `#a3a5ab` | `#55585f` |
 
-Um só visual (sem destaques ou estilos de diagrama alternativos; valores em `glass.rs`):
-cartões com raio 12 e sombra suave, seleção com anel/halo do destaque.
-O ícone da marca é sempre azul-noite.
+Para tabelas e grupos, a paleta compartilhada é azul `#589aed`, ciano
+`#00b1ba`, verde `#4eb068`, lima `#8ea432`, âmbar `#c09000`, laranja
+`#df784e`, rosa `#d771a4` e violeta `#9f85e5`.
+
+Os tokens ficam em [glass.rs](../crates/app/src/glass.rs) e
+[glass.ts](../packages/canvas-web/src/glass.ts). A paleta do diagrama é
+definida em [layout](../crates/core/layout/src/lib.rs).
 
 ## Tipografia
-**Inter** (OFL, embarcada): Regular para texto, Medium para rótulos, SemiBold para títulos e
-o nome do produto. Escala: 11,5 / 12,5 / 13,5 / 15 px. Nome do produto sempre "DB Modeling"
-(D e B maiúsculos, sem hífen).
 
-## Não fazer
-- Esticar, girar ou recolorir o ícone completo (use `mark.svg` para versões monocromáticas).
-- Colocar o ícone sobre fundos azuis parecidos sem a aresta clara.
-- Usar cilindros de "banco de dados" ou ícones genéricos no lugar da marca.
+**Geist** atende à interface com pesos 400, 500 e 600. **Geist Mono** atende
+à edição DBML e aos dados monoespaçados com pesos 400 e 500. Desktop e Web
+embutem as fontes sob a licença OFL.
+
+## Referências
+
+Veja o [guia do workbench](05-ux.md) para capturas dos temas claro e escuro e
+do editor no modo dividido.

@@ -695,6 +695,11 @@ fn table_item<'a>(
         return Ok(Item::Constraint(TableConstraint::ForeignKey(fk)));
     }
     if c.at_kw("check") || c.at_kw("exclude") {
+        warns.push(ImportWarning {
+            line,
+            column: col,
+            message: "table constraint cannot be represented in DBML and was skipped".into(),
+        });
         return Ok(Item::Ignored);
     }
     if c.at_kw("like") {
@@ -856,6 +861,7 @@ fn column<'a>(
         references: None,
         enum_values,
         comment: None,
+        check: None,
     };
     while c.peek().is_some() {
         column_constraint(c, &mut col, dialect, warns)?;
@@ -969,6 +975,23 @@ fn column_constraint<'a>(
         ) && let Some(values) = in_list_check(inner, &col.name)
         {
             col.enum_values = Some(values);
+            let check = render(inner);
+            if !check.contains('`')
+                && !check.contains("--")
+                && !check.contains("/*")
+                && col.check.is_none()
+            {
+                col.check = Some(check);
+            } else {
+                warns.push(ImportWarning {
+                    line,
+                    column: pos_col,
+                    message: format!(
+                        "CHECK on column `{}` cannot be represented in DBML and was skipped",
+                        col.name
+                    ),
+                });
+            }
             warns.push(ImportWarning {
                 line,
                 column: pos_col,
@@ -977,6 +1000,25 @@ fn column_constraint<'a>(
                     col.name
                 ),
             });
+        } else {
+            let check = render(inner);
+            if check.is_empty()
+                || check.contains('`')
+                || check.contains("--")
+                || check.contains("/*")
+                || col.check.is_some()
+            {
+                warns.push(ImportWarning {
+                    line,
+                    column: pos_col,
+                    message: format!(
+                        "CHECK on column `{}` cannot be represented in DBML and was skipped",
+                        col.name
+                    ),
+                });
+            } else {
+                col.check = Some(check);
+            }
         }
     } else if c.eat_kw("identity") {
         // T-SQL `IDENTITY(1,1)`

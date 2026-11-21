@@ -4,13 +4,13 @@ import { COLUMN_PRESET_ACTIONS, catalog } from '../src/actions';
 describe('column preset actions', () => {
   it('are in the Edit group of the command palette with stable labels', () => {
     const labels = catalog()
-      .filter((e) => e.label.startsWith('Add Column Preset:'))
+      .filter((e) => e.label.startsWith('Adicionar predefinição de coluna:'))
       .map((e) => [e.group, e.label]);
     expect(labels).toEqual([
-      ['Edit', 'Add Column Preset: UUID PK'],
-      ['Edit', 'Add Column Preset: BigInt PK'],
-      ['Edit', 'Add Column Preset: Timestamps'],
-      ['Edit', 'Add Column Preset: Soft Delete'],
+      ['Editar', 'Adicionar predefinição de coluna: UUID PK'],
+      ['Editar', 'Adicionar predefinição de coluna: BigInt PK'],
+      ['Editar', 'Adicionar predefinição de coluna: Timestamps'],
+      ['Editar', 'Adicionar predefinição de coluna: Soft Delete'],
     ]);
   });
 

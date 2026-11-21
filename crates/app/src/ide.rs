@@ -1,6 +1,7 @@
 //! Adaptadores do editor: destaque de sintaxe, diagnósticos e autocomplete DBML.
 //! A lógica de linguagem vive em `dbml-syntax`/`dbml-analysis`; aqui só há a ponte.
 
+use crate::glass::{Glass, Mode};
 use dbml_syntax::{SyntaxKind, parse};
 use gpui_kit::component::input::{
     CompletionProvider, EditorState, FoldRange, InputEdit, InputHighlighter, Rope, RopeExt,
@@ -33,19 +34,6 @@ const KEYWORDS: [&str; 9] = [
     "as",
     "records",
 ];
-const SETTINGS: [&str; 10] = [
-    "pk",
-    "primary",
-    "key",
-    "unique",
-    "not",
-    "null",
-    "increment",
-    "default",
-    "ref",
-    "note",
-];
-
 impl DbmlHighlighter {
     fn rebuild(&mut self, text: &str) {
         self.spans.clear();
@@ -67,6 +55,10 @@ impl DbmlHighlighter {
         let mut brace_stack = Vec::new();
         let mut in_brackets = false;
         let mut prev_sig: Option<SyntaxKind> = None;
+        // fim do último `#`: o valor colado nele é cor hexadecimal
+        let mut hash_end: Option<usize> = None;
+        // o token anterior foi um nome de atributo (`not null`: os dois são atributo)
+        let mut prev_attr = false;
         #[expect(
             clippy::redundant_closure_for_method_calls,
             reason = "rowan is not a direct dependency of app; method call syntax avoids adding it"
@@ -80,38 +72,65 @@ impl DbmlHighlighter {
             let lower = tok.text().to_ascii_lowercase();
             let style = match tok.kind() {
                 SyntaxKind::Comment => Some("comment"),
-                SyntaxKind::Str => Some("string"),
-                SyntaxKind::Number => Some("number"),
+                SyntaxKind::Other if tok.text() == "#" => {
+                    hash_end = Some(r.end);
+                    Some("number")
+                }
+                SyntaxKind::Ident | SyntaxKind::Number if hash_end == Some(r.start) => {
+                    hash_end = Some(r.end);
+                    Some("number")
+                }
+                // conteúdo de `[...]` (settings): nomes dos atributos em destaque próprio
                 SyntaxKind::LBracket => {
                     in_brackets = true;
-                    Some("punctuation.bracket")
+                    Some("punct")
                 }
                 SyntaxKind::RBracket => {
                     in_brackets = false;
-                    Some("punctuation.bracket")
+                    Some("punct")
                 }
+                // nome do atributo: logo após `[` ou `,`, ou colado a outro nome (`not null`);
+                // o que vem depois de `:` é valor
+                SyntaxKind::Ident
+                    if in_brackets
+                        && (matches!(prev_sig, Some(SyntaxKind::LBracket | SyntaxKind::Comma))
+                            || (prev_sig == Some(SyntaxKind::Ident) && prev_attr)) =>
+                {
+                    Some("attr")
+                }
+                SyntaxKind::Str => Some("string"),
+                SyntaxKind::Number => Some("number"),
                 SyntaxKind::LBrace => {
                     brace_stack.push(r.start);
-                    Some("punctuation.bracket")
+                    Some("punct")
                 }
                 SyntaxKind::RBrace => {
                     if let Some(s) = brace_stack.pop() {
                         self.folds.push(s..r.end);
                     }
-                    Some("punctuation.bracket")
+                    Some("punct")
                 }
-                SyntaxKind::Other if matches!(tok.text(), ">" | "<" | "-") => Some("operator"),
-                SyntaxKind::Ident if in_brackets && SETTINGS.contains(&lower.as_str()) => {
-                    Some("keyword")
+                SyntaxKind::LParen | SyntaxKind::RParen | SyntaxKind::Comma | SyntaxKind::Colon => {
+                    Some("punct")
                 }
+                SyntaxKind::Other if matches!(tok.text(), ">" | "<" | "-") => Some("punct"),
                 SyntaxKind::Ident
                     if KEYWORDS.contains(&lower.as_str())
                         && prev_sig != Some(SyntaxKind::Ident) =>
                 {
                     Some("keyword")
                 }
-                SyntaxKind::Ident if parent == Some(SyntaxKind::Table) => Some("type"),
-                SyntaxKind::Ident if parent == Some(SyntaxKind::Column) && !in_brackets => {
+                // nome da declaração: identificadores antes da `{` de abertura
+                SyntaxKind::Ident
+                    if brace_stack.is_empty()
+                        && matches!(
+                            parent,
+                            Some(SyntaxKind::Table | SyntaxKind::Enum | SyntaxKind::TableGroup)
+                        ) =>
+                {
+                    Some("name")
+                }
+                SyntaxKind::Ident if parent == Some(SyntaxKind::Column) => {
                     // 1º identificador da linha = nome da coluna, o seguinte = tipo
                     if prev_sig.is_none_or(|k| k == SyntaxKind::Newline) {
                         Some("property")
@@ -127,6 +146,7 @@ impl DbmlHighlighter {
             if tok.kind() == SyntaxKind::Newline {
                 prev_sig = None;
             } else if !tok.kind().is_trivia() {
+                prev_attr = style == Some("attr");
                 prev_sig = Some(tok.kind());
             }
         }
@@ -170,6 +190,23 @@ impl InputHighlighter for DbmlHighlighter {
         }
         cuts.sort_unstable();
         cuts.dedup();
+        // o highlighter não vê o modo do app; o resolver segue o tema claro/escuro,
+        // então a cor de "property" (texto comum) diz se o fundo é escuro
+        let dark = resolver
+            .style("property")
+            .and_then(|s| s.color)
+            .is_none_or(|c| c.l > 0.5);
+        let g = Glass::of_scaled(if dark { Mode::Dark } else { Mode::Light }, false, 1.0);
+        let own = |name: &str| match name {
+            "keyword" => Some(g.syn_kw),
+            "name" => Some(g.syn_name),
+            "type.builtin" => Some(g.syn_type),
+            "attr" => Some(g.syn_attr),
+            "number" => Some(g.syn_num),
+            "comment" => Some(g.syn_comment),
+            "punct" => Some(g.syn_punct),
+            _ => None,
+        };
         cuts.windows(2)
             .map(|w| {
                 let at = w[0];
@@ -177,7 +214,14 @@ impl InputHighlighter for DbmlHighlighter {
                     .spans
                     .iter()
                     .find(|(r, _)| r.start <= at && at < r.end)
-                    .and_then(|(_, name)| resolver.style(name))
+                    .and_then(|(_, name)| {
+                        own(name)
+                            .map(|c| HighlightStyle {
+                                color: Some(c),
+                                ..Default::default()
+                            })
+                            .or_else(|| resolver.style(name))
+                    })
                     .unwrap_or_default();
                 if let Some((_, color)) =
                     self.diags.iter().find(|(r, _)| r.start <= at && at < r.end)
@@ -208,6 +252,35 @@ impl InputHighlighter for DbmlHighlighter {
             })
             .collect()
     }
+}
+
+/// Intervalo (em bytes) do bloco `Table <qname> { … }`, sem espaços nas pontas.
+pub fn table_block(text: &str, qname: &str) -> Option<Range<usize>> {
+    let root = parse(text).syntax();
+    #[expect(
+        clippy::redundant_closure_for_method_calls,
+        reason = "rowan is not a direct dependency of app; method call syntax avoids adding it"
+    )]
+    let node = root
+        .children()
+        .filter(|n| n.kind() == SyntaxKind::Table)
+        .find(|n| {
+            // cabeçalho `Table [schema.]nome [as alias] [opções] {`
+            let name: String = n
+                .children_with_tokens()
+                .filter_map(|e| e.into_token())
+                .filter(|t| !t.kind().is_trivia())
+                .take_while(|t| !matches!(t.kind(), SyntaxKind::LBrace | SyntaxKind::LBracket))
+                .skip(1)
+                .take_while(|t| !t.text().eq_ignore_ascii_case("as"))
+                .map(|t| dbml_syntax::unquote(t.text()).to_string())
+                .collect();
+            name == qname
+        })?;
+    let r = usize::from(node.text_range().start())..usize::from(node.text_range().end());
+    let block = &text[r.clone()];
+    let start = r.start + (block.len() - block.trim_start().len());
+    Some(start..start + block.trim().len())
 }
 
 /// Autocomplete DBML.
@@ -280,4 +353,41 @@ pub fn refresh_diagnostics(
     _: &mut Context<EditorState>,
 ) -> Vec<dbml_analysis::Diagnostic> {
     dbml_analysis::lint(&editor.value())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[::core::prelude::v1::test]
+    fn classifies_names_types_and_settings() {
+        let src = "// c\nTable users {\n  id int [pk, default: 1]\n  c int [color: #e56731]\n}\n";
+        let mut h = DbmlHighlighter::default();
+        h.rebuild(src);
+        let kind = |word: &str| {
+            let at = src.find(word).unwrap();
+            h.spans.iter().find(|(r, _)| r.start == at).map(|(_, k)| *k)
+        };
+        assert_eq!(kind("Table"), Some("keyword"));
+        assert_eq!(kind("users"), Some("name"));
+        assert_eq!(kind("int"), Some("type.builtin"));
+        assert_eq!(kind("pk"), Some("attr"));
+        assert_eq!(kind("// c"), Some("comment"));
+        assert_eq!(kind("{"), Some("punct"));
+        assert_eq!(kind("["), Some("punct"));
+        assert_eq!(kind("1"), Some("number"));
+        // cor hexadecimal: `#` e o valor viram número
+        assert_eq!(kind("#"), Some("number"));
+        assert_eq!(kind("e56731"), Some("number"));
+    }
+
+    #[::core::prelude::v1::test]
+    fn table_block_finds_qualified_and_aliased_tables() {
+        let src =
+            "// c\nTable users {\n  id int\n}\n\nTable \"app\".\"orders\" as o {\n  id int\n}\n";
+        let b = |q| table_block(src, q).map(|r| &src[r]);
+        assert_eq!(b("users"), Some("Table users {\n  id int\n}"));
+        assert!(b("app.orders").is_some_and(|t| t.ends_with('}')));
+        assert_eq!(b("nope"), None);
+    }
 }

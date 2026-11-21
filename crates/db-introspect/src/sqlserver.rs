@@ -294,6 +294,7 @@ async fn read_conn(
                     _ => d,
                 }),
             comment: so(r, "cmt", target)?.filter(|c| !c.is_empty()),
+            check: None,
         });
     }
 

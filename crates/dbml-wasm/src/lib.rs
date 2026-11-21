@@ -531,6 +531,13 @@ pub fn compute_scene_internal(
             24.0,
         );
         let svg_path = build_rounded_svg_path(&route_pts);
+        let segs = layout::relation_segments(p_a.x, ay, p_b.x, by, &obstacles);
+        let auto_path = layout::segments_svg_path(&segs);
+        let m = &segs[segs.len() / 2];
+        let auto_mid = NodeCoordinate {
+            x: (m[0].x + 3.0 * m[1].x + 3.0 * m[2].x + m[3].x) / 8.0,
+            y: (m[0].y + 3.0 * m[1].y + 3.0 * m[2].y + m[3].y) / 8.0,
+        };
         let points = route_pts
             .into_iter()
             .map(|p| NodeCoordinate { x: p.x, y: p.y })
@@ -559,6 +566,8 @@ pub fn compute_scene_internal(
             sb,
             points,
             svg_path,
+            auto_path,
+            auto_mid,
             start_label: start_label.to_string(),
             start_label_pos: NodeCoordinate {
                 x: ax + sa * 10.0 - 4.0,
@@ -895,7 +904,14 @@ fn export_sql_ddl_str(
     dialect: &str,
 ) -> Result<String, dbml_analysis::SqlExportError> {
     let parsed = dialect.parse::<dbml_analysis::SqlDialect>()?;
-    Ok(dbml_analysis::export_sql_ddl(source, parsed))
+    dbml_analysis::try_export_sql_ddl(source, parsed)
+}
+
+/// Identifies DBML objects that conflict with an import in append mode.
+#[must_use]
+#[wasm_bindgen]
+pub fn import_conflicts(existing: &str, incoming: &str) -> Vec<String> {
+    dbml_analysis::import_conflicts(existing, incoming)
 }
 
 /// Imports SQL DDL written for `dialect` (`postgres`, `mysql`, `sqlite`) into DBML.

@@ -164,6 +164,9 @@ fn column(out: &mut String, c: &Column) {
     if let Some(d) = &c.default {
         settings.push(format!("default: {}", default_value(d)));
     }
+    if let Some(check) = &c.check {
+        settings.push(format!("check: `{check}`"));
+    }
     if let Some(n) = &c.comment {
         settings.push(format!("note: {}", literal(n)));
     }

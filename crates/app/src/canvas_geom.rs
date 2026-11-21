@@ -21,9 +21,24 @@ pub fn point_hits_polyline(p: (f32, f32), pts: &[layout::Pos], tolerance: f32) -
     })
 }
 
+/// Testa a curva cúbica por segmentos em coordenadas de mundo.
+pub fn point_hits_curve(p: (f32, f32), curve: &[layout::Pos; 4], tolerance: f32) -> bool {
+    let mut points = Vec::with_capacity(65);
+    for i in 0..=64 {
+        let t = i as f32 / 64.0;
+        let u = 1.0 - t;
+        let weights = [u * u * u, 3.0 * u * u * t, 3.0 * u * t * t, t * t * t];
+        points.push(layout::Pos {
+            x: curve.iter().zip(weights).map(|(p, w)| p.x * w).sum(),
+            y: curve.iter().zip(weights).map(|(p, w)| p.y * w).sum(),
+        });
+    }
+    point_hits_polyline(p, &points, tolerance)
+}
+
 #[cfg(test)]
 mod tests {
-    use super::point_hits_polyline;
+    use super::{point_hits_curve, point_hits_polyline};
     use layout::Pos;
 
     #[test]
@@ -36,6 +51,13 @@ mod tests {
         assert!(point_hits_polyline((25.0, 4.0), &pts, 5.0));
         assert!(point_hits_polyline((53.0, 30.0), &pts, 5.0));
         assert!(!point_hits_polyline((25.0, 10.0), &pts, 5.0));
+    }
+
+    #[test]
+    fn hits_curve_and_misses_point_away_from_it() {
+        let curve = diagram_export::relation_curve(0.0, 0.0, 400.0, 100.0);
+        assert!(point_hits_curve((330.0, 50.0), &curve, 1.0));
+        assert!(!point_hits_curve((330.0, 70.0), &curve, 1.0));
     }
 
     #[test]

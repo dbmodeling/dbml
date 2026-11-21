@@ -14,14 +14,18 @@
 </div>
 
 <p align="center">
-  <img src="docs/img/canvas-escuro.png" alt="Canvas in dark theme" width="49%" />
-  <img src="docs/img/canvas-claro.png" alt="Canvas in light theme" width="49%" />
+  <img src="docs/img/canvas-escuro.png" alt="Web CLI workbench in dark theme" width="49%" />
+  <img src="docs/img/canvas-claro.png" alt="Web CLI workbench in light theme" width="49%" />
 </p>
 <p align="center">
-  <img src="docs/img/editor-dbml.png" alt="Integrated DBML editor with autocomplete and visual inspector" width="99%" />
+  <img src="docs/img/editor-dbml.png" alt="Web CLI workbench with the DBML editor and diagram side by side" width="99%" />
 </p>
 
 ---
+
+The screenshots show the Web CLI workbench. The VS Code extension shares this interface. The desktop app renders its workbench in GPUI.
+
+[Architecture](docs/03-arquitetura.md) · [Workbench guide](docs/05-ux.md) · [Visual identity](docs/identidade-visual.md)
 
 ## Why DB Modeling
 
@@ -41,9 +45,9 @@ Most visual database modeling tools either lock your schemas inside a cloud web 
 ## Highlights
 
 - **Strict DBML as the single source of truth** — `.dbml` files stay 100% pure and compatible with `dbdiagram.io`. Positions and colors are saved in a deterministic `<file>.dbml.layout.json` sidecar with sorted keys for clean Git diffs.
-- **1:1 Experience across Desktop, Browser, and VS Code** — Shared Rust core (`schema`, `dbml-syntax`, `dbml-analysis`, `dbml-edit`, `layout`) compiled to native GPUI and WebAssembly (`dbml-wasm` + `canvas-web`), with the same Topbar, Sidebar, Canvas, Inspector, DBML Editor, Command Palette (`Ctrl+K`), and Shortcuts (`Ctrl+/`).
+- **Shared modeling workflow across Desktop, Browser, and VS Code** — Shared Rust core (`schema`, `dbml-syntax`, `dbml-analysis`, `dbml-edit`, `layout`) compiled to native GPUI and WebAssembly (`dbml-wasm` + `canvas-web`), with the same Topbar, Sidebar, Canvas, Inspector, DBML Editor, Command Palette (`Ctrl+K`), and Shortcuts (`Ctrl+/`).
 - **Bidirectional real-time editing** — Edit in the DBML editor or visually on the canvas (tables, columns, `PK`/`NOT NULL`/`UNIQUE`, groups, drag-to-connect `Ref:` foreign keys). Visual edits generate minimal textual patches (`dbml-edit`) preserving comments and formatting.
-- **Deterministic Layout & Orthogonal Routing** — Sugiyama hierarchical layout with rounded orthogonal relation lines, cardinality badges (`1` and `*`), and obstacle avoidance.
+- **Deterministic layout and relation routing** — Automatic placement, column-to-column relations, cardinality labels and obstacle avoidance.
 - **High-resolution Export** — Export diagrams to **PNG (2x)** and **SVG** with optional title, color legend, and light/dark themes.
 
 ---
@@ -59,7 +63,7 @@ Most visual database modeling tools either lock your schemas inside a cloud web 
 - **Interactive Web CLI (`dbml`):** Start a local HTTP + WebSocket server with live reload and two-way persistence:
   ```bash
   dbml path/to/schema.dbml
-  # Options: --port 3000 --no-open --readonly --theme dark
+  # Options: --port 3000 --no-open --no-watch
   ```
 - **VS Code Extension:** Open any `.dbml` file using the **DB Modeling** custom editor (`vscode-extension/`).
 
@@ -83,7 +87,7 @@ cargo run -p app --release -- path/to/schema.dbml
 
 # Interactive Web CLI (crates/cli)
 cargo run -p dbml-cli -- path/to/schema.dbml
-# Options: --port 3000 --no-open --readonly --theme dark
+# Options: --port 3000 --no-open --no-watch
 
 # Import SQL DDL (postgres, mysql, sqlite) into DBML:
 cargo run -p dbml-cli -- import schema.sql --dialect postgres -o schema.dbml

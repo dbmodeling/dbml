@@ -44,6 +44,11 @@ export function export_sql_ddl(source: string, dialect: string): string;
 export function format_dbml(source: string): string;
 
 /**
+ * Identifies DBML objects that conflict with an import in append mode.
+ */
+export function import_conflicts(existing: string, incoming: string): string[];
+
+/**
  * Imports SQL DDL written for `dialect` (`postgres`, `mysql`, `sqlite`) into DBML.
  *
  * Returns `{ dbml, warnings: [{ line, column, message }] }`. Unsupported or malformed
@@ -82,6 +87,7 @@ export interface InitOutput {
     readonly compute_scene: (a: number, b: number, c: any) => [number, number, number];
     readonly export_sql_ddl: (a: number, b: number, c: number, d: number) => [number, number, number, number];
     readonly format_dbml: (a: number, b: number) => [number, number];
+    readonly import_conflicts: (a: number, b: number, c: number, d: number) => [number, number];
     readonly import_sql_ddl: (a: number, b: number, c: number, d: number) => [number, number, number];
     readonly parse_and_analyze: (a: number, b: number) => [number, number, number];
     readonly swap_dbml_lines: (a: number, b: number, c: number, d: number) => [number, number, number];
@@ -92,6 +98,7 @@ export interface InitOutput {
     readonly __wbindgen_externrefs: WebAssembly.Table;
     readonly __externref_table_dealloc: (a: number) => void;
     readonly __wbindgen_free: (a: number, b: number, c: number) => void;
+    readonly __externref_drop_slice: (a: number, b: number) => void;
     readonly __wbindgen_start: () => void;
 }
 

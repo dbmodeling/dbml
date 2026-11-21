@@ -276,6 +276,9 @@ fn table(t: &RTable<'_>, dialect: SqlDialect, enum_names: &[String]) -> String {
         if let Some(d) = &c.default {
             settings.push(format!("default: {}", default_value(d, &ty)));
         }
+        if let Some(check) = &c.check {
+            settings.push(format!("check: `{check}`"));
+        }
         if let Some(n) = &c.comment {
             settings.push(format!("note: {}", literal(n)));
         }

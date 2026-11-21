@@ -56,4 +56,30 @@ describe('Diagram Export', () => {
     expect(svg).toContain('path d="M');
     expect(svg).toContain('class="table-box"');
   });
+
+  it('preserves the canvas grid, moved group, schema labels and enum cards', () => {
+    const accented = { ...schema.tables[0], schema: 'auth', color: '#589aed' };
+    const svg = exportToSvg(
+      { ...schema, tables: [accented], refs: [] },
+      { 'auth.users': { x: 200, y: 100 }, 'enum:status': { x: 600, y: 100 } },
+      {
+        groups: [{ name: 'Identity', tables: ['auth.users'], x: 0, y: 0, w: 10, h: 10, color: '#589aed', count: 1 }],
+        tables: [{ name: 'auth.users', x: 0, y: 0, w: 260, h: 112, tint: '#589aed', fk_columns: [] }],
+        enums: [{ name: 'status', x: 0, y: 0, w: 220, h: 78, values: ['Active'], referenced_by: ['auth.users'] }],
+        edges: [],
+        positions: {},
+      },
+      'light',
+      {},
+      { zoom: 0.5, selection: ['auth.users'] }
+    );
+
+    expect(svg).toContain('id="dot-grid" width="48"');
+    expect(svg).toContain('@font-face');
+    expect(svg).toContain('x="176.5" y="68.5" width="307"');
+    expect(svg).toContain('>auth</text>');
+    expect(svg).toContain('transform="translate(600 100)"');
+    expect(svg).toContain('>Active</text>');
+    expect(svg).toContain('class="column-badge middle" text-anchor="end" fill="#6b6e75">UQ</text>');
+  });
 });

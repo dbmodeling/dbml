@@ -37,7 +37,7 @@ cat > "${STAGE_DIR}/usr/share/applications/${PKG_NAME}.desktop" <<EOF
 [Desktop Entry]
 Version=1.0
 Type=Application
-Name=DB Modeling
+Name=dbmodeling
 GenericName=Visual Database Modeler (DBML)
 Comment=Visual relational database schema modeling with DBML
 Exec=${PKG_NAME} %F

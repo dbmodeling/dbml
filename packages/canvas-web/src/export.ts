@@ -1,12 +1,17 @@
+import { t } from './i18n';
 /**
  * Módulo de Exportação do DB Modeling Canvas.
  * Suporta exportação para PNG, JPEG, SVG vetorial (com grupos e polilinhas ortogonais)
  * e sintaxe Mermaid erDiagram.
  */
 
-import { Schema, RefKind, SceneGeometry, qualifiedEndpointTable, qualifiedTableName } from './types';
+import { Schema, RefKind, SceneGeometry, EdgeStyle, RoutedEdge, edgeKey, qualifiedEndpointTable, qualifiedTableName } from './types';
 import { Point } from './viewport';
-import { CARD_W, HEADER_H, ROW_H, cardH, getGlass, Mode, TABLE_COLORS } from './glass';
+import { CARD_W, HEADER_H, ROW_H, cardH, getGlass, hexWithAlpha, Mode } from './glass';
+import { iconSvg, IconName } from './icons';
+import { curvedEdge, edgeDrawing } from './edge-path';
+import { FONT_FACE_CSS } from './fonts';
+import { canvasGridStep, canvasGroups } from './scene-style';
 
 function mermaidCardinality(kind: RefKind): string {
   switch (kind) {
@@ -53,6 +58,11 @@ export function exportToMermaid(schema: Schema): string {
   return lines.join('\n');
 }
 
+/** Ícone Lucide aninhado no SVG exportado, posicionado em (x, y). */
+function svgIcon(name: IconName, x: number, y: number, size: number, color: string): string {
+  return iconSvg(name, size, escapeXml(color)).replace('<svg ', `<svg x="${x}" y="${y}" `);
+}
+
 function escapeXml(str: string): string {
   return str
     .replace(/&/g, '&amp;')
@@ -62,199 +72,218 @@ function escapeXml(str: string): string {
     .replace(/'/g, '&apos;');
 }
 
-/**
- * Exporta a cena como uma string SVG vetorial independente, reproduzindo fielmente
- * o estilo `Glass`, grupos, arestas ortogonais e cartões de tabela.
- */
+interface CanvasAppearance {
+  zoom?: number;
+  selection?: readonly string[];
+  selectedRef?: string;
+  selectedEnum?: string | null;
+  top?: string | null;
+}
+
+const F = 'Geist, system-ui, sans-serif';
+const M = "'Geist Mono', ui-monospace, monospace";
+
+/** Exporta o diagrama completo, nas coordenadas e com a aparência do canvas. */
 export function exportToSvg(
   schema: Schema,
   positions: Record<string, Point>,
   scene?: SceneGeometry | null,
-  mode: Mode = 'dark'
+  mode: Mode = 'dark',
+  edges: Record<string, EdgeStyle> = {},
+  appearance: CanvasAppearance = {}
 ): string {
-  const g = getGlass(mode, 1.0);
-  let minX = Infinity;
-  let minY = Infinity;
-  let maxX = -Infinity;
-  let maxY = -Infinity;
-
-  for (const table of schema.tables) {
-    const pos = positions[table.name];
-    if (!pos) continue;
-    const tableH = cardH(table.columns.length);
-    minX = Math.min(minX, pos.x);
-    minY = Math.min(minY, pos.y);
-    maxX = Math.max(maxX, pos.x + CARD_W);
-    maxY = Math.max(maxY, pos.y + tableH);
-  }
-
-  if (scene?.groups) {
-    for (const grp of scene.groups) {
-      minX = Math.min(minX, grp.x);
-      minY = Math.min(minY, grp.y);
-      maxX = Math.max(maxX, grp.x + grp.w);
-      maxY = Math.max(maxY, grp.y + grp.h);
+  const g = getGlass(mode, 1);
+  const dark = mode === 'dark';
+  const sel = new Set(appearance.selection);
+  const zoom = appearance.zoom && Number.isFinite(appearance.zoom) && appearance.zoom > 0 ? appearance.zoom : 1;
+  const step = canvasGridStep(zoom) / zoom;
+  const ctx = typeof document === 'undefined' ? null : document.createElement('canvas').getContext('2d');
+  const measure = (text: string, size: number, family = M, weight = 400) => {
+    if (!ctx) return Array.from(text).length * size * 0.6;
+    ctx.font = `${weight} ${size}px ${family}`;
+    return ctx.measureText(text).width;
+  };
+  const fitText = (text: string, available: number, size: number, family: string, weight: number) => {
+    if (measure(text, size, family, weight) <= available) return text;
+    if (measure('…', size, family, weight) > available) return '';
+    const chars = Array.from(text);
+    let low = 0, high = chars.length;
+    while (low < high) {
+      const mid = Math.ceil((low + high) / 2);
+      if (measure(chars.slice(0, mid).join('') + '…', size, family, weight) <= available) low = mid;
+      else high = mid - 1;
     }
-  }
+    return chars.slice(0, low).join('') + '…';
+  };
+  let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+  const include = (x: number, y: number, w = 0, h = 0) => {
+    minX = Math.min(minX, x);
+    minY = Math.min(minY, y);
+    maxX = Math.max(maxX, x + w);
+    maxY = Math.max(maxY, y + h);
+  };
+  const text = (x: number, y: number, value: string | number, cls: string, attrs = '') =>
+    `<text x="${x}" y="${y}" class="${cls}" ${attrs}>${escapeXml(String(value))}</text>`;
+  const card = (w: number, h: number, selected: boolean, outline = g.edgeSoft) => {
+    const ring = selected ? `<rect x="-2" y="-2" width="${w + 4}" height="${h + 4}" rx="14" fill="none" stroke="${g.accent}" stroke-opacity=".18" stroke-width="2"/>` : '';
+    return `${ring}<rect x=".5" y=".5" width="${w - 1}" height="${h - 1}" rx="12" class="table-box" stroke="${selected ? g.accent : outline}"/>`;
+  };
+  const header = (w: number, h: number, icon: IconName, tint: string) =>
+    `<path d="M1 ${h + .5}H${w - 1}" stroke="${g.edgeSoft}"/>${svgIcon(icon, 13, 1 + (h - 14) / 2, 14, tint)}`;
 
-  if (minX === Infinity) {
-    minX = 0;
-    minY = 0;
-    maxX = 800;
-    maxY = 600;
-  }
-
-  const padding = 48;
-  const viewBoxX = Math.floor(minX - padding);
-  const viewBoxY = Math.floor(minY - padding);
-  const width = Math.ceil(maxX - minX + padding * 2);
-  const height = Math.ceil(maxY - minY + padding * 2);
-
-  const svgParts: string[] = [];
-  svgParts.push(
-    `<svg xmlns="http://www.w3.org/2000/svg" viewBox="${viewBoxX} ${viewBoxY} ${width} ${height}" width="${width}" height="${height}">`
-  );
-  svgParts.push(`  <defs>
-    <style>
-      .bg { fill: ${g.surface}; }
-      .table-box { fill: ${g.card}; stroke: ${g.edge}; stroke-width: 1; rx: 12; ry: 12; }
-      .header-box { fill: transparent; }
-      .header-title { fill: ${g.text}; font-family: Inter, system-ui, sans-serif; font-size: 14px; font-weight: 600; }
-      .col-name { fill: ${g.text}; font-family: Inter, system-ui, sans-serif; font-size: 13px; }
-      .col-name-pk { fill: ${g.text}; font-family: Inter, system-ui, sans-serif; font-size: 13px; font-weight: 500; }
-      .col-type { fill: ${g.textMuted}; font-family: Inter, system-ui, sans-serif; font-size: 11.5px; }
-      .pk-chip { fill: ${g.accent}; font-family: Inter, system-ui, sans-serif; font-size: 10px; font-weight: 600; }
-      .nn-chip { fill: ${g.textMuted}; font-family: Inter, system-ui, sans-serif; font-size: 10px; }
-      .ref-edge { stroke: ${g.textMuted}; stroke-opacity: 0.55; stroke-width: 1.5; fill: none; }
-      .ref-label { fill: ${g.textMuted}; font-family: Inter, system-ui, sans-serif; font-size: 10px; }
-      .group-box { fill-opacity: 0.06; stroke-opacity: 0.4; stroke-width: 1; rx: 14; ry: 14; }
-      .group-label { font-family: Inter, system-ui, sans-serif; font-size: 12px; font-weight: 600; }
-    </style>
-  </defs>`);
-
-  svgParts.push(
-    `  <rect x="${viewBoxX}" y="${viewBoxY}" width="${width}" height="${height}" class="bg" />`
-  );
-
-  // 1. Molduras de grupos
-  if (scene?.groups) {
-    for (const grp of scene.groups) {
-      svgParts.push(
-        `  <g>` +
-          `<rect x="${grp.x}" y="${grp.y}" width="${grp.w}" height="${grp.h}" fill="${grp.color}" stroke="${grp.color}" class="group-box" />` +
-          `<rect x="${grp.x + 10}" y="${grp.y + 8}" width="${grp.name.length * 8 + 38}" height="22" rx="6" fill="${grp.color}" fill-opacity="0.16" />` +
-          `<circle cx="${grp.x + 19}" cy="${grp.y + 19}" r="3.5" fill="${grp.color}" />` +
-          `<text x="${grp.x + 28}" y="${grp.y + 23}" fill="${grp.color}" class="group-label">${escapeXml(grp.name)} (${grp.count})</text>` +
-          `</g>`
-      );
-    }
-  }
-
-  // 2. Arestas (polilinhas ortogonais do Wasm quando disponíveis, ou fallback)
-  if (scene?.edges && scene.edges.length > 0) {
-    for (const edge of scene.edges) {
-      svgParts.push(`  <path d="${edge.svg_path}" class="ref-edge" />`);
-      svgParts.push(
-        `  <circle cx="${edge.ax}" cy="${edge.ay}" r="3" fill="${g.textMuted}" fill-opacity="0.55" />`
-      );
-      svgParts.push(
-        `  <circle cx="${edge.bx}" cy="${edge.by}" r="3" fill="${g.textMuted}" fill-opacity="0.55" />`
-      );
-      svgParts.push(
-        `  <text x="${edge.start_label_pos.x}" y="${edge.start_label_pos.y + 10}" class="ref-label">${edge.start_label}</text>`
-      );
-      svgParts.push(
-        `  <text x="${edge.end_label_pos.x}" y="${edge.end_label_pos.y + 10}" class="ref-label">${edge.end_label}</text>`
-      );
-    }
-  } else {
-    for (const ref of schema.refs) {
-      const fromQ = qualifiedEndpointTable(ref.from);
-      const toQ = qualifiedEndpointTable(ref.to);
-      const fromPos = positions[fromQ];
-      const toPos = positions[toQ];
-      if (!fromPos || !toPos) continue;
-
-      const fromTable = schema.tables.find((t) => qualifiedTableName(t) === fromQ);
-      const toTable = schema.tables.find((t) => qualifiedTableName(t) === toQ);
-      if (!fromTable || !toTable) continue;
-
-      const fromIdx = fromTable.columns.findIndex((c) => c.name === ref.from.column);
-      const toIdx = toTable.columns.findIndex((c) => c.name === ref.to.column);
-
-      const fromY =
-        fromPos.y + HEADER_H + 4 + (fromIdx >= 0 ? fromIdx + 0.5 : 0.5) * ROW_H;
-      const toY = toPos.y + HEADER_H + 4 + (toIdx >= 0 ? toIdx + 0.5 : 0.5) * ROW_H;
-
-      const fromRight = fromPos.x + CARD_W < toPos.x;
-      const startX = fromRight ? fromPos.x + CARD_W : fromPos.x;
-      const endX = fromRight ? toPos.x : toPos.x + CARD_W;
-      const midX = (startX + endX) / 2;
-
-      const d = `M ${startX} ${fromY} L ${midX} ${fromY} L ${midX} ${toY} L ${endX} ${toY}`;
-      svgParts.push(`  <path d="${d}" class="ref-edge" />`);
-    }
-  }
-
-  // 3. Cartões de Tabelas
-  for (const table of schema.tables) {
-    const pos = positions[table.name];
-    if (!pos) continue;
-
-    const tableH = cardH(table.columns.length);
-    const visual = scene?.tables.find((tv) => tv.name === table.name);
-    const tint =
-      visual?.tint ||
-      table.color ||
-      (() => {
-        const grpIdx = schema.groups.findIndex((gr) => gr.tables.includes(table.name));
-        return grpIdx >= 0 ? TABLE_COLORS[grpIdx % TABLE_COLORS.length][1] : null;
-      })();
-
-    svgParts.push(`  <g transform="translate(${pos.x}, ${pos.y})">`);
-    svgParts.push(`    <rect width="${CARD_W}" height="${tableH}" class="table-box" />`);
-    if (tint) {
-      svgParts.push(
-        `    <rect width="${CARD_W}" height="${HEADER_H}" rx="12" fill="${tint}" fill-opacity="0.08" />`
-      );
-      svgParts.push(
-        `    <rect width="${CARD_W}" height="3" rx="2" fill="${tint}" />`
-      );
-    }
-    svgParts.push(
-      `    <line x1="0" y1="${HEADER_H}" x2="${CARD_W}" y2="${HEADER_H}" stroke="${g.edgeSoft}" />`
-    );
-    svgParts.push(
-      `    <text x="42" y="27" class="header-title">${escapeXml(table.name)}</text>`
-    );
-    svgParts.push(
-      `    <text x="${CARD_W - 16}" y="26" text-anchor="end" class="col-type">${table.columns.length}</text>`
-    );
-
-    table.columns.forEach((col, idx) => {
-      const colY = HEADER_H + 4 + idx * ROW_H + 19;
-      if (col.pk) {
-        svgParts.push(`    <text x="12" y="${colY}" class="pk-chip">PK</text>`);
-      }
-      svgParts.push(
-        `    <text x="34" y="${colY}" class="${col.pk ? 'col-name-pk' : 'col-name'}">${escapeXml(col.name)}</text>`
-      );
-      const typeX = col.not_null ? CARD_W - 34 : CARD_W - 12;
-      svgParts.push(
-        `    <text x="${typeX}" y="${colY}" text-anchor="end" class="col-type">${escapeXml(col.ty)}</text>`
-      );
-      if (col.not_null) {
-        svgParts.push(
-          `    <text x="${CARD_W - 12}" y="${colY}" text-anchor="end" class="nn-chip">NN</text>`
-        );
-      }
+  const parts: string[] = [];
+  const tables = new Map(schema.tables.map(table => [qualifiedTableName(table), table]));
+  const visuals = new Map(scene?.tables.map(visual => [visual.name, visual]));
+  const fromColumnY = (table: string, column: string, y: number) =>
+    y + HEADER_H + 4 + (Math.max(0, tables.get(table)?.columns.findIndex(c => c.name === column) ?? 0) + .5) * ROW_H;
+  const routed: Array<Pick<RoutedEdge, 'from_table' | 'to_table' | 'from_col' | 'to_col' |
+    'ay' | 'by' | 'auto_path' | 'auto_mid' | 'svg_path' | 'start_label' | 'end_label'>> = scene
+    ? scene.edges
+    : schema.refs.flatMap(ref => {
+      const from = qualifiedEndpointTable(ref.from), to = qualifiedEndpointTable(ref.to);
+      const a = positions[from], b = positions[to];
+      if (!a || !b || !tables.has(from) || !tables.has(to)) return [];
+      return [{
+        from_table: from, to_table: to, from_col: ref.from.column, to_col: ref.to.column,
+        ay: fromColumnY(from, ref.from.column, a.y), by: fromColumnY(to, ref.to.column, b.y),
+        svg_path: '',
+        start_label: ref.kind === 'OneToMany' || ref.kind === 'OneToOne' ? '1' : 'N',
+        end_label: ref.kind === 'ManyToOne' || ref.kind === 'OneToOne' ? '1' : 'N',
+      }];
     });
 
-    svgParts.push(`  </g>`);
+  for (const edge of routed) {
+    const a = positions[edge.from_table], b = positions[edge.to_table];
+    if (!a || !b) continue;
+    const key = edgeKey(edge);
+    const style = edges[key];
+    const curve = curvedEdge(a.x, edge.ay, b.x, edge.by, style);
+    const d = escapeXml(edgeDrawing(edge, curve, style).path);
+    const controls = !style && edge.auto_path ? edge.auto_path.match(/-?\d+(?:\.\d+)?(?:e[+-]?\d+)?/gi) : null;
+    if (controls) {
+      for (let i = 0; i + 1 < controls.length; i += 2) include(Number(controls[i]), Number(controls[i + 1]));
+    } else {
+      include(curve.c1.x, curve.c1.y);
+      include(curve.c2.x, curve.c2.y);
+    }
+    const lit = appearance.selectedRef === key || sel.has(edge.from_table) || sel.has(edge.to_table);
+    const color = lit ? g.accent : g.relStroke;
+    if (lit) parts.push(`<path d="${d}" fill="none" stroke="${color}" stroke-opacity=".16" stroke-width="8" stroke-linecap="round" stroke-linejoin="round"/>`);
+    parts.push(`<path d="${d}" class="ref-edge" stroke="${color}" stroke-width="${lit ? 1.8 : 1.4}"/>`,
+      `<circle cx="${curve.x1}" cy="${edge.ay}" r="3" fill="${color}"/>`,
+      `<circle cx="${curve.x2}" cy="${edge.by}" r="3.5" fill="${g.card}" stroke="${color}" stroke-width="1.5"/>`);
+    const label = `text-anchor="middle" fill="${lit ? g.accent : g.textFaint}"`;
+    parts.push(text(curve.x1 + Math.sign(curve.d1) * 11, edge.ay - 6, edge.start_label, 'ref-label', label),
+      text(curve.x2 + Math.sign(curve.d2) * 11, edge.by - 6, edge.end_label, 'ref-label', label));
   }
 
-  svgParts.push(`</svg>`);
-  return svgParts.join('\n');
+  for (const group of canvasGroups(scene?.groups ?? [], schema, positions)) {
+    const { x, y, w, h, name, count, color } = group;
+    include(x, y, w, h);
+    const fg = escapeXml(color);
+    const pillX = x + 44 + measure(name, 12, F, 600);
+    const pillW = measure(String(count), 10.5, M, 500) + 12;
+    parts.push(`<g><rect x="${x + .5}" y="${y + .5}" width="${w - 1}" height="${h - 1}" rx="20" fill="${escapeXml(hexWithAlpha(color, dark ? .06 : .07))}" stroke="${escapeXml(hexWithAlpha(color, dark ? .18 : .22))}"/>`,
+      svgIcon('Layers', x + 17, y + 14.5, 13, color),
+      text(x + 37, y + 21, name, 'group-label middle', `fill="${fg}"`),
+      `<rect x="${pillX}" y="${y + 13}" width="${pillW}" height="16" rx="8" fill="${escapeXml(hexWithAlpha(color, .14))}"/>`,
+      text(pillX + pillW / 2, y + 21, count, 'group-count middle', `fill="${fg}" text-anchor="middle"`), '</g>');
+  }
+
+  const order = [...(scene?.tables.map(tv => tv.name) ?? tables.keys())]
+    .sort((a, b) => Number(a === appearance.top) - Number(b === appearance.top));
+  const fkColumns = new Set(routed.map(edge => `${edge.from_table}.${edge.from_col}`));
+  for (const key of order) {
+    const table = tables.get(key), p = positions[key];
+    if (!table || !p) continue;
+    const visual = visuals.get(key);
+    const h = cardH(table.columns.length);
+    include(p.x, p.y, CARD_W, h);
+    parts.push(`<g transform="translate(${p.x} ${p.y})">`, card(CARD_W, h, sel.has(key)),
+      header(CARD_W, HEADER_H, 'Table2', visual?.tint || (!scene && table.color) || g.accent));
+    const countX = CARD_W - 13;
+    let titleRight = countX - measure(String(table.columns.length), 10.5) - 9;
+    if (table.schema) {
+      const badgeW = measure(table.schema, 10, M, 500) + 10;
+      parts.push(`<rect x="${titleRight - badgeW}" y="15" width="${badgeW}" height="16" rx="4" fill="${g.input}"/>`,
+        text(titleRight - badgeW / 2, 23, table.schema, 'schema middle', 'text-anchor="middle"'));
+      titleRight -= badgeW + 9;
+    }
+    parts.push(text(36, 23, fitText(table.name, titleRight - 36, 13, F, 600), 'header-title middle'),
+      text(countX, 23, table.columns.length, 'count middle', 'text-anchor="end"'));
+    const indexed = new Set(table.indexes?.flatMap(ix => ix.columns.filter(ic => ic.kind === 'column').map(ic => ic.value)));
+    table.columns.forEach((col, i) => {
+      const y = 1 + HEADER_H + 4 + (i + .5) * ROW_H;
+      const fk = col.fk || (visual ? visual.fk_columns.includes(col.name) : fkColumns.has(`${key}.${col.name}`));
+      const icon = col.pk ? 'KeyRound' : fk ? 'Link' : 'Dot';
+      parts.push(svgIcon(icon, 14, y - 6, 12, col.pk ? g.accent : fk ? g.link : g.textFaint));
+      let right = CARD_W - 13;
+      parts.push(text(right, y, col.ty, 'col-type middle', 'text-anchor="end"'));
+      right -= measure(col.ty, 11) + 8;
+      const badges = [col.unique && 'UQ', col.not_null && 'NN', indexed.has(col.name) && 'IDX'];
+      for (const badge of badges) {
+        if (!badge) continue;
+        parts.push(text(right, y, badge, 'column-badge middle', `text-anchor="end" fill="${badge === 'IDX' ? g.idx : g.textFaint}"`));
+        right -= measure(badge, 9, M, 600) + 8;
+      }
+      const name = fitText(col.name, right - 35, 12.5, F, col.pk ? 500 : 400);
+      parts.push(text(35, y, name, col.pk ? 'col-name pk middle' : 'col-name middle'));
+    });
+    parts.push('</g>');
+  }
+
+  for (const en of scene?.enums ?? []) {
+    const p = positions[`enum:${en.name}`] || en;
+    const h = 52 + Math.max(1, en.values.length) * 26;
+    const selected = appearance.selectedEnum === en.name;
+    const outline = en.referenced_by.some(name => sel.has(name)) ? g.accent : g.edge;
+    include(p.x, p.y, en.w, h);
+    parts.push(`<g transform="translate(${p.x} ${p.y})">`, card(en.w, h, selected, outline),
+      header(en.w, 40, 'List', g.accent),
+      text(36, 21, fitText(en.name, en.w - 80, 13, F, 600), 'header-title middle'),
+      text(en.w - 13, 21, 'ENUM', 'column-badge middle', `text-anchor="end" fill="${g.textFaint}"`));
+    en.values.forEach((value, i) => {
+      const y = 58 + i * 26;
+      parts.push(svgIcon('Dot', 14, y - 6, 12, g.accent),
+        text(36, y, value, 'enum-value middle'));
+    });
+    if (!en.values.length) parts.push(text(13, 58, t('(vazio)'), 'enum-value middle', 'opacity=".7"'));
+    parts.push('</g>');
+  }
+
+  if (!Number.isFinite(minX)) include(0, 0, 800, 600);
+  const padding = 40;
+  const x = Math.floor(minX - padding), y = Math.floor(minY - padding);
+  const width = Math.ceil(maxX + padding - x), height = Math.ceil(maxY + padding - y);
+  return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="${x} ${y} ${width} ${height}" width="${width}" height="${height}">
+<defs>
+<style>
+${FONT_FACE_CSS}
+.middle { dominant-baseline: central; }
+.table-box { fill: ${g.card}; filter: url(#card-shadow); }
+.header-title,.col-name { fill: ${g.text}; font-family: ${F}; }
+.header-title { font-size: 13px; font-weight: 600; }
+.col-name { font-size: 12.5px; }
+.col-name.pk { font-weight: 500; }
+.col-type,.count,.schema,.enum-value,.column-badge,.group-count,.ref-label { font-family: ${M}; }
+.col-type,.count { fill: ${g.textFaint}; }
+.col-type { font-size: 11px; }
+.count,.group-count { font-size: 10.5px; }
+.schema,.ref-label { font-weight: 500; font-size: 10px; }
+.schema,.enum-value { fill: ${g.textMuted}; }
+.enum-value { font-size: 12px; }
+.column-badge { font-size: 9px; font-weight: 600; letter-spacing: .02em; }
+.ref-edge { fill: none; stroke-linejoin: round; }
+.group-label { font: 600 12px ${F}; }
+.group-count { font-weight: 500; }
+</style>
+<pattern id="dot-grid" width="${step}" height="${step}" patternUnits="userSpaceOnUse"><circle cx="${step / 2}" cy="${step / 2}" r="${1 / zoom}" fill="${g.grid}"/></pattern>
+<filter id="card-shadow" x="-25%" y="-40%" width="150%" height="180%"><feDropShadow dx="0" dy="${dark ? 10 : 6}" stdDeviation="${dark ? 15 : 9}" flood-opacity="${dark ? .35 : .05}"/></filter>
+</defs>
+<rect x="${x}" y="${y}" width="${width}" height="${height}" fill="${g.surface}"/>
+<rect x="${x}" y="${y}" width="${width}" height="${height}" fill="url(#dot-grid)"/>
+${parts.join('\n')}
+</svg>`;
 }
 
 /**
@@ -278,7 +307,7 @@ export function exportSvgStringToRasterBlob(
       const ctx = canvas.getContext('2d');
       if (!ctx) {
         URL.revokeObjectURL(url);
-        reject(new Error('Não foi possível criar contexto 2D para rasterização.'));
+        reject(new Error(t('Não foi possível criar contexto 2D para rasterização.')));
         return;
       }
       ctx.scale(scale, scale);

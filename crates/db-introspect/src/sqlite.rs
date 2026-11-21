@@ -107,6 +107,16 @@ fn read_conn(conn: &Connection, target: &str) -> Result<Introspected, Error> {
         .collect::<Result<_, _>>()
         .map_err(e)?;
 
+    let ddl = masters
+        .iter()
+        .filter_map(|(_, ddl)| ddl.as_deref())
+        .collect::<Vec<_>>()
+        .join(";\n");
+    let imported = sql_import::import_sql_ddl(&ddl, sql_import::SqlDialect::Sqlite);
+    db.warnings
+        .extend(imported.warnings.into_iter().map(|warning| warning.message));
+    let checks = dbml_analysis::analyze(&imported.dbml);
+
     let mut pk_cols: HashMap<String, Vec<String>> = HashMap::new();
     let mut raw_fks: Vec<(String, Vec<FkRow>)> = Vec::new();
 
@@ -144,7 +154,15 @@ fn read_conn(conn: &Connection, target: &str) -> Result<Introspected, Error> {
                 auto_increment: false,
                 default,
                 comment: None,
+                check: None,
             });
+        }
+        if let Some(table) = checks.tables.iter().find(|table| table.name == *name) {
+            for column in &mut columns {
+                if let Some(source) = table.columns.iter().find(|c| c.name == column.name) {
+                    column.check.clone_from(&source.check);
+                }
+            }
         }
         pks.sort_by_key(|(order, _)| *order);
         let mut indexes = Vec::new();
@@ -283,7 +301,20 @@ fn read_conn(conn: &Connection, target: &str) -> Result<Introspected, Error> {
 
 #[cfg(test)]
 mod tests {
-    use super::file_path;
+    use super::{file_path, read_conn};
+
+    #[test]
+    fn preserves_column_checks_and_warns_on_table_checks() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE t (amount INTEGER CHECK (amount > 0), CHECK (amount < 100));",
+        )
+        .unwrap();
+        let db = read_conn(&conn, "memory").unwrap();
+        let text = crate::to_dbml(&db);
+        assert!(text.contains("check: `amount>0`"), "{text}");
+        assert!(db.warnings.iter().any(|w| w.contains("constraint")));
+    }
 
     #[test]
     fn extracts_the_file_path() {

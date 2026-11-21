@@ -23,6 +23,7 @@ Ir {
                     references: None,
                     enum_values: None,
                     comment: None,
+                    check: None,
                 },
                 Column {
                     name: "email",
@@ -35,6 +36,7 @@ Ir {
                     references: None,
                     enum_values: None,
                     comment: None,
+                    check: None,
                 },
                 Column {
                     name: "name",
@@ -47,6 +49,7 @@ Ir {
                     references: None,
                     enum_values: None,
                     comment: None,
+                    check: None,
                 },
                 Column {
                     name: "balance",
@@ -63,6 +66,7 @@ Ir {
                     references: None,
                     enum_values: None,
                     comment: None,
+                    check: None,
                 },
                 Column {
                     name: "active",
@@ -79,6 +83,7 @@ Ir {
                     references: None,
                     enum_values: None,
                     comment: None,
+                    check: None,
                 },
                 Column {
                     name: "created_at",
@@ -95,6 +100,7 @@ Ir {
                     references: None,
                     enum_values: None,
                     comment: None,
+                    check: None,
                 },
                 Column {
                     name: "tags",
@@ -107,6 +113,7 @@ Ir {
                     references: None,
                     enum_values: None,
                     comment: None,
+                    check: None,
                 },
                 Column {
                     name: "uid",
@@ -123,6 +130,7 @@ Ir {
                     references: None,
                     enum_values: None,
                     comment: None,
+                    check: None,
                 },
             ],
             constraints: [],
@@ -149,6 +157,7 @@ Ir {
                     references: None,
                     enum_values: None,
                     comment: None,
+                    check: None,
                 },
                 Column {
                     name: "user_id",
@@ -183,6 +192,7 @@ Ir {
                     ),
                     enum_values: None,
                     comment: None,
+                    check: None,
                 },
                 Column {
                     name: "status",
@@ -199,6 +209,7 @@ Ir {
                     references: None,
                     enum_values: None,
                     comment: None,
+                    check: None,
                 },
                 Column {
                     name: "note",
@@ -215,6 +226,7 @@ Ir {
                     references: None,
                     enum_values: None,
                     comment: None,
+                    check: None,
                 },
             ],
             constraints: [],
@@ -241,6 +253,7 @@ Ir {
                     references: None,
                     enum_values: None,
                     comment: None,
+                    check: None,
                 },
                 Column {
                     name: "order_id",
@@ -253,6 +266,7 @@ Ir {
                     references: None,
                     enum_values: None,
                     comment: None,
+                    check: None,
                 },
                 Column {
                     name: "sku",
@@ -265,6 +279,7 @@ Ir {
                     references: None,
                     enum_values: None,
                     comment: None,
+                    check: None,
                 },
                 Column {
                     name: "qty",
@@ -281,6 +296,7 @@ Ir {
                     references: None,
                     enum_values: None,
                     comment: None,
+                    check: None,
                 },
             ],
             constraints: [
@@ -435,6 +451,11 @@ Ir {
         },
     ],
     warnings: [
+        ImportWarning {
+            line: 19,
+            column: 5,
+            message: "table constraint cannot be represented in DBML and was skipped",
+        },
         ImportWarning {
             line: 41,
             column: 1,

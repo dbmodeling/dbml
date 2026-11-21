@@ -11,20 +11,20 @@ class DbmlWorkspaceTreeProvider implements vscode.TreeDataProvider<vscode.Uri> {
   }
 
   getTreeItem(uri: vscode.Uri): vscode.TreeItem {
-    const item = new vscode.TreeItem(vscode.workspace.asRelativePath(uri, false));
+    const item = new vscode.TreeItem(vscode.workspace.asRelativePath(uri, (vscode.workspace.workspaceFolders?.length ?? 0) > 1));
     item.resourceUri = uri;
     item.iconPath = new vscode.ThemeIcon('database');
     item.tooltip = uri.fsPath;
     item.command = {
       command: 'dbmodeling.openCanvas',
-      title: 'Open in DB Modeling',
+      title: 'Abrir no DB Modeling',
       arguments: [uri],
     };
     return item;
   }
 
   async getChildren(): Promise<vscode.Uri[]> {
-    const uris = await vscode.workspace.findFiles('**/*.dbml', '**/node_modules/**', 500);
+    const uris = await vscode.workspace.findFiles('**/*.dbml', '**/node_modules/**');
     return uris.sort((a, b) => a.fsPath.localeCompare(b.fsPath));
   }
 }
@@ -33,7 +33,7 @@ async function openInCanvas(uri: vscode.Uri, column?: vscode.ViewColumn): Promis
   await vscode.commands.executeCommand('vscode.openWith', uri, DbmlCustomEditorProvider.viewType, column);
 }
 
-/** Abre o Workbench: arquivo ativo → primeiro `.dbml` do workspace → exemplo oficial do desktop. */
+/** Abre o Workbench: arquivo ativo → primeiro `.dbml` → escolha do usuário. */
 async function openWorkbench(context: vscode.ExtensionContext): Promise<void> {
   const active = vscode.window.activeTextEditor?.document.uri;
   if (active && active.path.toLowerCase().endsWith('.dbml')) {
@@ -43,14 +43,13 @@ async function openWorkbench(context: vscode.ExtensionContext): Promise<void> {
   if (files.length > 0) {
     return openInCanvas(files[0]);
   }
+  const choice = await vscode.window.showQuickPick(['Criar novo esquema', 'Abrir exemplo'], {
+    placeHolder: 'Nenhum esquema DBML encontrado',
+  });
+  if (choice === 'Criar novo esquema') return newFile();
+  if (choice !== 'Abrir exemplo') return;
   const bytes = await vscode.workspace.fs.readFile(vscode.Uri.joinPath(context.extensionUri, 'media', 'sample.dbml'));
   const sample = new TextDecoder().decode(bytes);
-  const folder = vscode.workspace.workspaceFolders?.[0]?.uri;
-  if (folder) {
-    const target = vscode.Uri.joinPath(folder, 'example.dbml');
-    await vscode.workspace.fs.writeFile(target, bytes);
-    return openInCanvas(target);
-  }
   const doc = await vscode.workspace.openTextDocument({ language: 'dbml', content: sample });
   return openInCanvas(doc.uri);
 }
@@ -110,7 +109,7 @@ export function activate(context: vscode.ExtensionContext): void {
   // Botão sempre visível na barra de status do VS Code
   const status = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 100);
   status.text = '$(database) DB Modeling';
-  status.tooltip = 'Open DB Modeling';
+  status.tooltip = 'Abrir DB Modeling';
   status.command = 'dbmodeling.openWorkbench';
   status.show();
   context.subscriptions.push(status);

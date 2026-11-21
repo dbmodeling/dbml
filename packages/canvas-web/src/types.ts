@@ -99,6 +99,8 @@ export interface TextPatch {
   byte_start: number;
   byte_end: number;
   new_text: string;
+  expected_source?: string;
+  expected_file?: string;
   updated_source?: string;
   created_table?: string;
   created_column?: [string, string];
@@ -126,6 +128,9 @@ export interface RoutedEdge {
   sb: number;
   points: NodeCoordinate[];
   svg_path: string;
+  /** Sem estilo: curva automática, ou rota que desvia dos outros cartões (Wasm). */
+  auto_path?: string;
+  auto_mid?: NodeCoordinate;
   start_label: string;
   start_label_pos: NodeCoordinate;
   end_label: string;
@@ -174,11 +179,18 @@ export interface SceneGeometry {
   edges: RoutedEdge[];
 }
 
+export interface EdgeStyle { straight?: boolean; dx?: number; dy?: number }
+
+export function edgeKey(e: Pick<RoutedEdge, 'from_table' | 'from_col' | 'to_table' | 'to_col'>): string {
+  return `${e.from_table}.${e.from_col}->${e.to_table}.${e.to_col}`;
+}
+
 /** Formato do arquivo sidecar `<schema>.dbml.layout.json` */
 export interface SidecarLayout {
   version?: number;
   tables: Record<string, { x: number; y: number }>;
   colors?: Record<string, string>;
+  edges?: Record<string, EdgeStyle>;
   viewport?: {
     zoom: number;
     pan_x: number;
@@ -186,7 +198,7 @@ export interface SidecarLayout {
   };
 }
 
-/** Presets de coluna (ids iguais a `ColumnPreset::id` em `crates/dbml-edit`). */
+/** Presets de coluna (ids iguais a `ColumnPreset::id` em `crates/core/dbml-edit`). */
 export type ColumnPresetId = 'uuid_pk' | 'bigint_pk' | 'timestamps' | 'soft_delete';
 
 /** Comandos semânticos emitidos pela UI (idênticos ao enum `Command` em `crates/dbml-wasm/src/types.rs`) */
@@ -270,13 +282,25 @@ export interface TestConnectionResult {
   schemas: string[];
 }
 
+export interface DocumentMetadata {
+  title?: string;
+  files?: WorkspaceFileEntry[];
+  session?: SessionSnapshot;
+  documentId?: string;
+  saved?: boolean;
+  savedSource?: string;
+  autosave?: boolean;
+}
+
 export interface HostTransport {
+  checkDatabaseSupport?(): Promise<void>;
   /** Só confere as credenciais e lista os schemas (sem ler tabelas). */
   testConnection?(req: IntrospectRequest): Promise<TestConnectionResult>;
   /** Lê o catálogo de um banco (somente leitura) e devolve DBML; ausente quando o host não suporta. */
   introspect?(req: IntrospectRequest): Promise<IntrospectResult>;
   sendPatch(patch: TextPatch): Promise<void>;
-  saveLayout(layout: SidecarLayout): Promise<void>;
+  saveDocument?(source: string, documentId?: string): Promise<void>;
+  saveLayout(layout: SidecarLayout, documentId?: string): Promise<void>;
   exportFile?(filename: string, content: string, isBinary: boolean): Promise<void>;
   openFile?(path: string): Promise<void>;
   createNewFile?(): Promise<void>;
@@ -286,12 +310,12 @@ export interface HostTransport {
     callback: (
       source: string,
       layout?: SidecarLayout,
-      meta?: { title?: string; files?: WorkspaceFileEntry[]; session?: SessionSnapshot }
+      meta?: DocumentMetadata
     ) => void
   ): void;
   onWorkspaceFilesUpdated?(
     callback: (files: WorkspaceFileEntry[], activeTitle?: string) => void
   ): void;
-  onFileChangedExternally?(callback: (newSource: string) => void): void;
+  onFileChangedExternally?(callback: (newSource: string, documentId?: string) => void): void;
   onError?(callback: (diagnostics: Diagnostic[]) => void): void;
 }

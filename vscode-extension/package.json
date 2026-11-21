@@ -32,7 +32,7 @@
         "dbmodeling.cliPath": {
           "type": "string",
           "default": "dbml",
-          "description": "Path of the dbml CLI used by \"Connect to Database\" (read-only schema import)."
+          "description": "Caminho da CLI dbml usada por \"Conectar ao banco\" (importação somente leitura do esquema)."
         }
       }
     },
@@ -56,7 +56,7 @@
       "dbmodeling-sidebar": [
         {
           "id": "dbmodeling.workspaceView",
-          "name": "DBML Schemas",
+          "name": "Esquemas DBML",
           "icon": "media/mark.svg",
           "contextualTitle": "DB Modeling"
         }
@@ -65,13 +65,13 @@
     "viewsWelcome": [
       {
         "view": "dbmodeling.workspaceView",
-        "contents": "Model your database visually with full desktop workbench parity.\n[Open DB Modeling](command:dbmodeling.openWorkbench)\n[New DBML Schema](command:dbmodeling.newFile)\nNo .dbml files found in this workspace."
+        "contents": "Modele seu banco de dados visualmente, com a mesma bancada do app desktop.\n[Abrir DB Modeling](command:dbmodeling.openWorkbench)\n[Novo esquema DBML](command:dbmodeling.newFile)\nNenhum arquivo .dbml encontrado neste workspace."
       }
     ],
     "customEditors": [
       {
         "viewType": "dbmodeling.editor",
-        "displayName": "DB Modeling Canvas",
+        "displayName": "Canvas DB Modeling",
         "selector": [
           {
             "filenamePattern": "*.dbml"
@@ -83,25 +83,25 @@
     "commands": [
       {
         "command": "dbmodeling.openWorkbench",
-        "title": "Open DB Modeling",
+        "title": "Abrir DB Modeling",
         "icon": "$(database)",
         "category": "DB Modeling"
       },
       {
         "command": "dbmodeling.newFile",
-        "title": "New DBML Schema",
+        "title": "Novo esquema DBML",
         "icon": "$(add)",
         "category": "DB Modeling"
       },
       {
         "command": "dbmodeling.refresh",
-        "title": "Refresh List",
+        "title": "Atualizar lista",
         "icon": "$(refresh)",
         "category": "DB Modeling"
       },
       {
         "command": "dbmodeling.openCanvas",
-        "title": "Open in Visual Canvas",
+        "title": "Abrir no canvas visual",
         "icon": "$(graph)",
         "category": "DB Modeling"
       }
