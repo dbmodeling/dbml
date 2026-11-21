@@ -9,12 +9,17 @@
 //! Diagram export without UI dependencies: Mermaid `erDiagram`, vector SVG and PNG/JPEG
 //! rasterisation (ADR-0007: scene → SVG → raster).
 
+#[cfg(feature = "raster")]
 mod constants;
+mod docs;
 mod mermaid;
+#[cfg(feature = "raster")]
 mod raster;
 mod svg;
 
+pub use docs::{to_html, to_markdown};
 pub use mermaid::{CollisionScope, IdentCollision, MermaidExport, to_mermaid, to_mermaid_checked};
+#[cfg(feature = "raster")]
 pub use raster::{
     MAX_PIXELS, Raster, RasterError, svg_to_jpeg, svg_to_jpeg_fit, svg_to_png, svg_to_png_fit,
 };

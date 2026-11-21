@@ -19,6 +19,7 @@ actions!(
         Redo,
         Quit,
         OpenPalette,
+        QuickSearch,
         ShowShortcuts,
         ToggleTheme,
         ThemeLight,
@@ -64,6 +65,8 @@ actions!(
         ExportSqlSqlServer,
         ExportSqlOracle,
         ExportMermaid,
+        ExportDocsHtml,
+        ExportDocsMarkdown,
         ExportPng,
         ExportJpeg,
         ExportSvg,
@@ -75,6 +78,8 @@ actions!(
         AddPresetSoftDelete,
         ToggleEdgeStraight,
         ResetEdgeCurve,
+        ToggleFocusMode,
+        CycleFocusDepth,
     ]
 );
 
@@ -264,6 +269,19 @@ pub fn catalog() -> Vec<Entry> {
         e("alt-up", MoveLineUp, "Editor", "Mover linha para cima"),
         e("alt-down", MoveLineDown, "Editor", "Mover linha para baixo"),
         e("ctrl-k", OpenPalette, "Ajuda", "Paleta de comandos"),
+        e(
+            "ctrl-f",
+            QuickSearch,
+            "Exibir",
+            "Busca rápida (tabelas, colunas, enums)",
+        ),
+        e("f", ToggleFocusMode, "Canvas", "Modo Foco (vizinhança FK)"),
+        e(
+            "shift-f",
+            CycleFocusDepth,
+            "Canvas",
+            "Modo Foco: alternar 1-hop / 2-hop",
+        ),
         e("ctrl-/", ShowShortcuts, "Ajuda", "Atalhos de teclado"),
         e(
             "",
@@ -300,6 +318,18 @@ pub fn catalog() -> Vec<Entry> {
             ExportMermaid,
             GROUP_EXPORT_CODE,
             "Exportar código: Mermaid erDiagram (.mmd)",
+        ),
+        e(
+            "",
+            ExportDocsHtml,
+            GROUP_EXPORT_CODE,
+            "Exportar documentação: HTML (.html)",
+        ),
+        e(
+            "",
+            ExportDocsMarkdown,
+            GROUP_EXPORT_CODE,
+            "Exportar documentação: Markdown (.md)",
         ),
         e("", ExportPng, GROUP_EXPORT_IMAGE, "Exportar imagem: PNG"),
         e("", ExportJpeg, GROUP_EXPORT_IMAGE, "Exportar imagem: JPEG"),

@@ -103,8 +103,10 @@ const ACTION_ICON: Partial<Record<ActionId, IconName>> = {
   Relayout: 'LayoutGrid', ZoomIn: 'ZoomIn', ZoomOut: 'ZoomOut', Deselect: 'SquareDashed', NewTable: 'SquarePlus',
   NewEnum: 'List', DeleteSelection: 'Trash', RenameSelected: 'Pencil', GroupSelection: 'Group', UngroupSelection: 'Group',
   ExportSqlPostgres: 'Database', ExportSqlMysql: 'Database', ExportSqlSqlite: 'Database', ExportSqlSqlServer: 'Database',
-  ExportSqlOracle: 'Database', ExportMermaid: 'GitFork', ExportPng: 'Image', ExportJpeg: 'Image', ExportSvg: 'PenTool',
-  OpenPalette: 'Command', ShowShortcuts: 'Keyboard', AddPresetUuidPk: 'Fingerprint', AddPresetBigIntPk: 'KeyRound',
+  ExportSqlOracle: 'Database', ExportMermaid: 'GitFork', ExportDocsHtml: 'FileCode', ExportDocsMarkdown: 'FileCode',
+  ExportPng: 'Image', ExportJpeg: 'Image', ExportSvg: 'PenTool',
+  OpenPalette: 'Command', QuickSearch: 'Search', ToggleFocusMode: 'Scan', CycleFocusDepth: 'Layers',
+  ShowShortcuts: 'Keyboard', AddPresetUuidPk: 'Fingerprint', AddPresetBigIntPk: 'KeyRound',
   AddPresetTimestamps: 'Clock', AddPresetSoftDelete: 'Archive',
 };
 
@@ -120,6 +122,7 @@ const MAIN_MENU: ReadonlyArray<readonly [string, IconName, ActionId[]]> = [
 const EXPORT_CODE_ROWS: ReadonlyArray<readonly [ActionId, string, string]> = [
   ['ExportSqlPostgres', 'PostgreSQL', '.sql'], ['ExportSqlMysql', 'MySQL', '.sql'], ['ExportSqlSqlite', 'SQLite', '.sql'],
   ['ExportSqlSqlServer', 'SQL Server', '.sql'], ['ExportSqlOracle', 'Oracle', '.sql'], ['ExportMermaid', 'Mermaid erDiagram', '.mmd'],
+  ['ExportDocsHtml', 'Documentation (HTML)', '.html'], ['ExportDocsMarkdown', 'Documentation (Markdown)', '.md'],
 ];
 const EXPORT_IMAGE_ROWS: ReadonlyArray<readonly [ActionId, string, string, string]> = [
   ['ExportPng', 'PNG', 'Raster · resolução 2×', '.png'], ['ExportJpeg', 'JPEG', 'Raster · fundo sólido', '.jpg'],
@@ -239,9 +242,15 @@ export class Workbench {
   private pane: Pane = 'schema';
   private editorOpen = false;
   private paletteOpen = false;
+  private quickSearchOpen = false;
   private shortcutsOpen = false;
   private paletteQuery = '';
   private paletteIdx = 0;
+  private quickSearchQuery = '';
+  private quickSearchIdx = 0;
+  private focusMode = false;
+  private focusDepth: 1 | 2 = 1;
+  private highlightedColumn: [string, string] | null = null;
   private connectEngine: DbEngine = 'postgres';
   private importDialect: ImportDialect = 'postgres';
   private focusCol: [string, string] | null = null;
@@ -997,24 +1006,77 @@ export class Workbench {
     return { x: (e.clientX - r.left - this.pan.x) / this.zoom, y: (e.clientY - r.top - this.pan.y) / this.zoom };
   }
 
-  private focusTable(name: string): void {
+  private focusTable(name: string, highlightCol: string | null = null): void {
     const p = this.positions[name];
     const t = this.schema.tables.find((x) => qualifiedTableName(x) === name);
     if (!p || !t) return;
     this.selection = [name];
     this.selectedRef = null;
     this.selectedEnum = null;
+    this.highlightedColumn = highlightCol ? [name, highlightCol] : null;
+    if (highlightCol) {
+      this.openColTable = name;
+      this.openCol = highlightCol;
+    }
     this.top = name;
     this.prefs.inspector = true;
     this.savePrefs();
     this.renderAll(); // seleção e inspector já; a câmera desliza até a tabela
     const r = this.els['surface'].getBoundingClientRect();
+    const targetZoom = this.zoom < 0.85 ? 1 : this.zoom;
     this.glide(() => {
+      this.zoom = targetZoom;
       this.pan = {
-        x: r.width / 2 - (p.x + CARD_W / 2) * this.zoom,
-        y: r.height / 2 - (p.y + cardH(t.columns.length) / 2) * this.zoom,
+        x: r.width / 2 - (p.x + CARD_W / 2) * targetZoom,
+        y: r.height / 2 - (p.y + cardH(t.columns.length) / 2) * targetZoom,
       };
     });
+  }
+
+  private focusEnum(name: string): void {
+    const ev = this.scene?.enums?.find((e) => e.name === name);
+    const p = this.positions[`enum:${name}`] || (ev ? { x: ev.x, y: ev.y } : null);
+    if (!ev || !p) return;
+    this.selection = [];
+    this.selectedRef = null;
+    this.selectedEnum = name;
+    this.highlightedColumn = null;
+    this.prefs.inspector = true;
+    this.savePrefs();
+    this.renderAll();
+    const r = this.els['surface'].getBoundingClientRect();
+    const targetZoom = this.zoom < 0.85 ? 1 : this.zoom;
+    this.glide(() => {
+      this.zoom = targetZoom;
+      this.pan = {
+        x: r.width / 2 - (p.x + ev.w / 2) * targetZoom,
+        y: r.height / 2 - (p.y + ev.h / 2) * targetZoom,
+      };
+    });
+  }
+
+  /** Computes 1-hop or 2-hop FK neighborhood subgraph from current selection (mirrors `Schema::neighborhood`). */
+  private focusSubgraph(): { tables: Set<string>; edges: Set<string> } | null {
+    if (!this.focusMode || this.selection.length === 0 || !this.scene) return null;
+    const visited = new Set<string>(this.selection);
+    let frontier = new Set<string>(this.selection);
+    const edges = new Set<string>();
+    for (let step = 0; step < this.focusDepth; step++) {
+      if (frontier.size === 0) break;
+      const next = new Set<string>();
+      for (const e of this.scene.edges) {
+        const tf = frontier.has(e.from_table);
+        const tt = frontier.has(e.to_table);
+        if (tf || tt) {
+          edges.add(edgeKey(e));
+          if (!visited.has(e.from_table)) next.add(e.from_table);
+          if (!visited.has(e.to_table)) next.add(e.to_table);
+        }
+      }
+      for (const n of next) visited.add(n);
+      frontier = next;
+    }
+    return { tables: visited, edges };
   }
 
   // ───────────────────────── movimento ─────────────────────────
@@ -1302,8 +1364,11 @@ export class Workbench {
       return;
     }
     const sel = new Set(this.selection);
+    const focusSub = this.focusSubgraph();
+    const FOCUS_DIM = 0.18;
     let svg = '';
     for (const e of sc.edges) {
+      const ek = edgeKey(e);
       const isSelRef =
         !!this.selectedRef &&
         this.selectedRef.from_table === e.from_table &&
@@ -1311,22 +1376,25 @@ export class Workbench {
         this.selectedRef.to_table === e.to_table &&
         this.selectedRef.to_col === e.to_col;
       const lit = isSelRef || sel.has(e.from_table) || sel.has(e.to_table);
+      const dim = focusSub && !focusSub.edges.has(ek) ? FOCUS_DIM : 1;
       const col = lit ? g.accent : g.relStroke;
       const a = this.positions[e.from_table], b = this.positions[e.to_table];
       if (!a || !b) continue;
-      const style = this.edges[edgeKey(e)];
+      const style = this.edges[ek];
       const curve = curvedEdge(a.x, e.ay, b.x, e.by, style);
       const drawn = edgeDrawing(e, curve, style);
       const d = drawn.path;
       const lab = lit ? g.accent : g.textFaint;
+      if (dim < 1) svg += `<g opacity="${dim}">`;
       if (lit) svg += `<path class="halo" d="${d}" fill="none" stroke="${g.accent}" stroke-opacity="0.16" stroke-width="8" stroke-linecap="round" stroke-linejoin="round"/>`;
-      svg += `<path class="edge" data-ek="${esc(edgeKey(e))}" d="${d}" fill="none" stroke="${col}" stroke-width="${lit ? 1.8 : 1.4}" stroke-linejoin="round"/>`;
+      svg += `<path class="edge" data-ek="${esc(ek)}" d="${d}" fill="none" stroke="${col}" stroke-width="${lit ? 1.8 : 1.4}" stroke-linejoin="round"/>`;
       svg += `<path class="edge-hit" d="${d}" fill="none" stroke="transparent" stroke-width="${12 / this.zoom}" data-edge="1" data-from-table="${esc(e.from_table)}" data-from-col="${esc(e.from_col)}" data-to-table="${esc(e.to_table)}" data-to-col="${esc(e.to_col)}"/>`;
       if (isSelRef) svg += `<circle class="edge-handle" data-edge-handle="1" cx="${drawn.midpoint.x}" cy="${drawn.midpoint.y}" r="${4 / this.zoom}" fill="${g.accent}" stroke="${g.card}" stroke-width="${1 / this.zoom}"/>`;
       svg += `<circle cx="${curve.x1}" cy="${e.ay}" r="3" fill="${col}"/><circle cx="${curve.x2}" cy="${e.by}" r="3.5" fill="${g.card}" stroke="${col}" stroke-width="1.5"/>`;
       const lf = `font-family="Geist Mono, monospace" font-size="10" font-weight="500" fill="${lab}"`;
       svg += `<text text-anchor="middle" x="${curve.x1 + Math.sign(curve.d1) * 11}" y="${e.ay - 6}" ${lf}>${e.start_label}</text>`;
       svg += `<text text-anchor="middle" x="${curve.x2 + Math.sign(curve.d2) * 11}" y="${e.by - 6}" ${lf}>${e.end_label}</text>`;
+      if (dim < 1) svg += '</g>';
     }
     if (this.drag?.kind === 'link') {
       const d = this.drag;
@@ -1342,7 +1410,8 @@ export class Workbench {
     // molduras de grupo
     for (const gr of canvasGroups(sc.groups, this.schema, this.positions)) {
       const c = gr.color;
-      html += `<div class="group" role="group" aria-label="${esc(translate('Grupo {}', gr.name))}" style="left:${gr.x}px;top:${gr.y}px;width:${gr.w}px;height:${gr.h}px;border-color:${hexWithAlpha(c, dark ? 0.18 : 0.22)};background:${hexWithAlpha(c, dark ? 0.06 : 0.07)}">
+      const gDim = focusSub && !gr.tables.some((tb) => focusSub.tables.has(tb)) ? `opacity:${FOCUS_DIM};` : '';
+      html += `<div class="group" role="group" aria-label="${esc(translate('Grupo {}', gr.name))}" style="${gDim}left:${gr.x}px;top:${gr.y}px;width:${gr.w}px;height:${gr.h}px;border-color:${hexWithAlpha(c, dark ? 0.18 : 0.22)};background:${hexWithAlpha(c, dark ? 0.06 : 0.07)}">
         <div class="gl" data-group="${esc(gr.name)}" style="color:${c}">${ICON('Layers', 13)}${esc(gr.name)}<span class="gpill" style="background:${hexWithAlpha(c, 0.14)}">${gr.count}</span></div></div>`;
     }
     // cartões
@@ -1353,6 +1422,7 @@ export class Workbench {
       if (!t || !p) continue;
       const qname = tv.name;
       const tint = tv.tint;
+      const tDim = focusSub && !focusSub.tables.has(qname) ? `opacity:${FOCUS_DIM};` : '';
       const fk = new Set(tv.fk_columns);
       const idxCols = new Set<string>();
       for (const ix of t.indexes || []) {
@@ -1364,6 +1434,11 @@ export class Workbench {
         .map((c) => {
           const isFk = !!c.fk || fk.has(c.name);
           const hasIdx = idxCols.has(c.name);
+          const isHi = this.highlightedColumn?.[0] === qname && this.highlightedColumn?.[1] === c.name;
+          const colNote = c.note?.trim();
+          const noteBadge = colNote
+            ? `<span class="note-ic" style="color:var(--muted);display:flex;flex:none;cursor:help" title="${esc(colNote)}">${ICON('Info', 11)}</span>`
+            : '';
           const ic = c.pk
             ? `<span style="color:var(--accent)">${ICON('KeyRound', 12)}</span>`
             : isFk
@@ -1375,16 +1450,20 @@ export class Workbench {
             c.unique ? '<span class="badge">UQ</span>' : '',
           ].join('');
           const rowLabel = [`${c.name}: ${c.ty}`, c.pk ? translate('chave primária') : '', isFk ? translate('chave estrangeira') : '', c.not_null ? translate('obrigatória') : '', c.unique ? translate('única') : ''].filter(Boolean).join(', ');
-          return `<div class="row" role="listitem" aria-label="${esc(rowLabel)}" data-col="${esc(c.name)}" data-table="${esc(qname)}"><div class="rail14">${ic}</div>
-            <div class="cn ${c.pk ? 'pk' : ''}">${esc(c.name)}</div>${badges}<div class="ty">${esc(c.ty)}</div>
+          return `<div class="row" role="listitem" aria-label="${esc(rowLabel)}" data-col="${esc(c.name)}" data-table="${esc(qname)}"${isHi ? ' style="background:color-mix(in srgb, var(--accent) 14%, transparent)"' : ''}><div class="rail14">${ic}</div>
+            <div class="cn ${c.pk ? 'pk' : ''}">${esc(c.name)}</div>${noteBadge}${badges}<div class="ty">${esc(c.ty)}</div>
             <div class="port" data-port="1" data-table="${esc(qname)}" data-col="${esc(c.name)}"></div></div>`;
         })
         .join('');
       const schemaBadge = t.schema ? `<span class="sch">${esc(t.schema)}</span>` : '';
+      const tblNote = t.note?.trim();
+      const tblNoteBadge = tblNote
+        ? `<span class="note-ic" style="color:var(--muted);display:flex;flex:none;cursor:help" title="${esc(tblNote)}">${ICON('Info', 12)}</span>`
+        : '';
       const cardLabel = translate(t.columns.length === 1 ? 'Tabela {}, 1 coluna' : 'Tabela {}, {} colunas', qname, t.columns.length) + (sel.has(qname) ? `, ${translate('selecionada')}` : '');
-      html += `<div class="card ${sel.has(qname) ? 'sel' : ''}" role="group" tabindex="0" aria-label="${esc(cardLabel)}" data-table="${esc(qname)}" style="left:${p.x}px;top:${p.y}px;height:${cardH(t.columns.length)}px">
+      html += `<div class="card ${sel.has(qname) ? 'sel' : ''}" role="group" tabindex="0" aria-label="${esc(cardLabel)}" data-table="${esc(qname)}" style="${tDim}left:${p.x}px;top:${p.y}px;height:${cardH(t.columns.length)}px">
         <div class="head"><span style="color:${tint || g.accent};display:flex">${ICON('Table2', 14)}</span>
-        <div class="nm">${esc(t.name)}</div>${schemaBadge}<div class="cnt">${t.columns.length}</div></div>
+        <div class="nm">${esc(t.name)}</div>${schemaBadge}${tblNoteBadge}<div class="cnt">${t.columns.length}</div></div>
         <div class="rows" role="list">${rows}</div>
         <div class="plus" data-addcol="${esc(qname)}" title="${translate("Adicionar coluna")}">${ICON('Plus', 14)}</div></div>`;
     }
@@ -1393,11 +1472,12 @@ export class Workbench {
       const p = this.positions[`enum:${ev.name}`] || { x: ev.x, y: ev.y };
       const on = this.selectedEnum === ev.name;
       const referencedBySelected = !on && ev.referenced_by.some((tb) => sel.has(tb));
+      const eDim = focusSub && !ev.referenced_by.some((tb) => focusSub.tables.has(tb)) ? `opacity:${FOCUS_DIM};` : '';
       const valRows = ev.values.length
         ? ev.values.map((v) => `<div class="ev" role="listitem"><span class="ev-ic">${ICON('Dot', 12)}</span>${esc(v)}</div>`).join('')
         : `<div class="ev" role="listitem" style="color:var(--faint)">${translate("(vazio)")}</div>`;
       const enumLabel = translate(ev.values.length === 1 ? 'Enum {}, 1 valor' : 'Enum {}, {} valores', ev.name, ev.values.length) + (on ? `, ${translate('selecionada')}` : '');
-      html += `<div class="card enum-card ${on ? 'sel' : ''}" role="group" tabindex="0" aria-label="${esc(enumLabel)}" data-enum="${esc(ev.name)}" style="left:${p.x}px;top:${p.y}px;${referencedBySelected ? 'border-color:var(--accent);' : ''}">
+      html += `<div class="card enum-card ${on ? 'sel' : ''}" role="group" tabindex="0" aria-label="${esc(enumLabel)}" data-enum="${esc(ev.name)}" style="${eDim}left:${p.x}px;top:${p.y}px;${referencedBySelected ? 'border-color:var(--accent);' : ''}">
         <div class="head"><span style="color:var(--accent);display:flex">${ICON('List', 14)}</span>
         <div class="nm">${esc(ev.name)}</div><span class="tag">ENUM</span></div>
         <div class="rows" role="list">${valRows}</div></div>`;
@@ -1547,7 +1627,26 @@ export class Workbench {
       ${tb('GroupSelection', 'Group', 'Agrupar seleção · Ctrl+G')}
       <div class="sep"></div>
       ${tb('Relayout', 'LayoutGrid', 'Auto-layout · Ctrl+L')}
+      ${tb('ToggleFocusMode', 'Scan', 'Modo Foco (vizinhança FK) · F', this.focusMode && this.selection.length > 0 ? 'acc' : '')}
       ${tb('ToggleEditor', 'Braces', 'Editor DBML · Ctrl+E', this.editorOpen ? 'acc' : '')}`;
+    const existingFocusBar = this.wb.querySelector('#focus-mode-bar');
+    if (this.focusMode && this.selection.length > 0) {
+      const barHtml = `<span style="font-size:11.5px;font-weight:600;color:var(--accent)">${t('Modo Foco')}</span>
+        <button class="ib sm" style="width:auto;padding:0 7px;font-family:var(--mono);font-size:11px;color:var(--accent);background:color-mix(in srgb,var(--accent) 16%,transparent)" data-act="CycleFocusDepth" title="${t('Alternar 1-hop / 2-hop · Shift+F')}">${this.focusDepth}-hop</button>
+        <button class="ib sm" style="width:auto;padding:0 6px;font-size:11px;color:var(--muted)" data-act="ToggleFocusMode" title="${t('Sair do Modo Foco · Esc')}">Esc</button>`;
+      if (existingFocusBar) {
+        existingFocusBar.innerHTML = barHtml;
+      } else {
+        const bar = document.createElement('div');
+        bar.id = 'focus-mode-bar';
+        bar.className = 'island';
+        bar.style.cssText = 'position:absolute;top:12px;left:50%;transform:translateX(-50%);z-index:20;display:flex;align-items:center;gap:8px;padding:4px 10px';
+        bar.innerHTML = barHtml;
+        this.els['surface'].appendChild(bar);
+      }
+    } else if (existingFocusBar) {
+      existingFocusBar.remove();
+    }
     this.els['zoomi'].innerHTML = `<button class="zbtn" data-act="ZoomOut" title="${t("Diminuir zoom · Ctrl+-")}">${ICON('Minus', 13)}</button>
       <button class="pct" data-act="FitView" title="${t("Ajustar à tela · Shift+1")}">${Math.round(this.zoom * 100)}%</button>
       <button class="zbtn" data-act="ZoomIn" title="${t("Aumentar zoom · Ctrl+=")}">${ICON('Plus', 13)}</button>
@@ -1991,6 +2090,8 @@ export class Workbench {
                 <input class="fld" placeholder="${translate("expressão…")}" ${dt('colcheck', c.name, c.check || '', '')}>
                 <button class="ib sm" data-act="del-col" data-table="${esc(tq)}" data-col="${esc(c.name)}" title="${translate("Excluir coluna")}">${ICON('Trash', 13)}</button>
               </div>
+              <span class="clbl">${translate("Nota")}</span>
+              <input class="fld" placeholder="${translate("adicionar nota…")}" ${dt('colnote', c.name, c.note || '', '')}>
             </div>`
           : '';
         return `<div class="colcard ${open ? 'open' : ''}">
@@ -2074,6 +2175,7 @@ export class Workbench {
         <div class="isec-hd"><span style="color:var(--faint);display:flex">${ICON('ChevronDown', 13)}</span><span>${translate("GERAL")}</span></div>
         <div class="gen-row"><span class="glbl">${translate("Grupo")}</span>${grpHtml}</div>
         <div class="gen-row"><span class="glbl">${translate("Cor")}</span><div class="sw">${sw}</div></div>
+        <div class="gen-row"><span class="glbl">${translate("Nota")}</span><input class="fld" style="flex:1;min-width:0" placeholder="${translate("adicionar nota…")}" data-edit="tablenote" data-table="${esc(tq)}" data-orig="${esc(t.note || '')}" value="${esc(t.note || '')}"></div>
       </div>
       <div class="colsec">
         <div class="isec-hd"><span style="color:var(--faint);display:flex">${ICON('ChevronDown', 13)}</span><span>${translate("COLUNAS")}</span><span class="pill">${t.columns.length}</span><span class="grow"></span><button class="ib sm" data-act="add-col" data-table="${esc(tq)}" title="${translate("Adicionar coluna")}">${ICON('Plus', 14)}</button></div>
@@ -2237,7 +2339,15 @@ export class Workbench {
         this.scheduleRender();
         return;
       }
-      case 'Deselect': this.selection = []; this.selectedRef = null; this.selectedEnum = null; break;
+      case 'Deselect': this.selection = []; this.selectedRef = null; this.selectedEnum = null; this.focusMode = false; this.highlightedColumn = null; break;
+      case 'ToggleFocusMode':
+        if (this.focusMode) this.focusMode = false;
+        else if (this.selection.length > 0) this.focusMode = true;
+        break;
+      case 'CycleFocusDepth':
+        this.focusDepth = this.focusDepth === 1 ? 2 : 1;
+        if (this.selection.length > 0) this.focusMode = true;
+        break;
       case 'GroupSelection':
         if (this.selection.length) this.dispatch({ action: 'group_tables', payload: { tables: [...this.selection] } });
         return;
@@ -2281,11 +2391,14 @@ export class Workbench {
       case 'ResetUiZoom': this.prefs.uiScale = 1; break;
       case 'ToggleAutoCollapseInspector': this.prefs.autoHide = !this.prefs.autoHide; break;
       case 'OpenPalette': this.openPalette(); return;
+      case 'QuickSearch': this.openQuickSearch(); return;
       case 'ShowShortcuts': this.openShortcuts(); return;
       case 'ExportSvg': this.doExport('svg'); return;
       case 'ExportPng': this.doExport('png'); return;
       case 'ExportJpeg': this.doExport('jpeg'); return;
       case 'ExportMermaid': this.doExport('mermaid'); return;
+      case 'ExportDocsHtml': this.doExportDocs('html'); return;
+      case 'ExportDocsMarkdown': this.doExportDocs('md'); return;
       case 'ExportSqlPostgres': this.doExportSql('postgres'); return;
       case 'ExportSqlMysql': this.doExportSql('mysql'); return;
       case 'ExportSqlSqlite': this.doExportSql('sqlite'); return;
@@ -2356,6 +2469,29 @@ export class Workbench {
       this.toast(t(rasterizing
         ? 'Não foi possível gerar {}. Tente exportar em SVG.'
         : 'Não foi possível exportar {}. Tente outro nome ou outra pasta.', kind.toUpperCase()));
+    }
+  }
+
+  private async doExportDocs(format: 'html' | 'md'): Promise<void> {
+    if (!this.transport.exportFile || !this.wasm) return;
+    const stem = this.title.replace(/\.dbml$/i, '') || 'schema';
+    try {
+      if (format === 'md') {
+        if (!this.wasm.export_docs_markdown) return;
+        const md = this.wasm.export_docs_markdown(this.source, stem);
+        await this.transport.exportFile(`${stem}.md`, md, false);
+        return;
+      }
+      if (!this.wasm.export_docs_html) return;
+      await document.fonts.ready;
+      const svg = exportToSvg(this.schema, this.positions, this.scene, this.prefs.mode, this.edges, {
+        zoom: this.zoom,
+      });
+      const html = this.wasm.export_docs_html(this.source, stem, svg);
+      await this.transport.exportFile(`${stem}.html`, html, false);
+    } catch (e) {
+      console.error('Docs export failed:', e);
+      this.toast(t('Não foi possível exportar {}. Tente outro nome ou outra pasta.', format.toUpperCase()));
     }
   }
 
@@ -2514,6 +2650,7 @@ export class Workbench {
   private closeModal(): void {
     this.wb.querySelectorAll('[data-modal]:not(.out)').forEach((n) => this.fadeOut(n));
     this.paletteOpen = false;
+    this.quickSearchOpen = false;
     this.shortcutsOpen = false;
   }
 
@@ -2986,6 +3123,108 @@ export class Workbench {
     else this.runAction(item.id);
   }
 
+  private openQuickSearch(): void {
+    this.quickSearchQuery = '';
+    this.quickSearchIdx = 0;
+    const bg = this.modal(
+      `<div class="mbar">${ICON('Search', 15)}<input id="qs-q" placeholder="${translate('Buscar tabelas, colunas, tipos, enums…')}" autocomplete="off"><span class="esc">Esc</span></div>
+       <div class="list" id="qs-list"></div>
+       <div class="mfoot"><span>${translate("↑↓ navegar")}</span><span>${translate("↵ ir para")}</span><span>${translate("Esc fechar")}</span><span class="grow"></span><span id="qs-n"></span></div>`
+    );
+    this.quickSearchOpen = true;
+    const q = bg.querySelector('#qs-q') as HTMLInputElement;
+    const draw = () => {
+      const items = this.quickSearchItems();
+      this.quickSearchIdx = Math.min(this.quickSearchIdx, Math.max(items.length - 1, 0));
+      (bg.querySelector('#qs-list') as HTMLElement).innerHTML = items
+        .map((it, i) => {
+          const ic: IconName = it.kind === 'table' ? 'Table2' : it.kind === 'enum' ? 'List' : 'Columns2';
+          const badge = it.kind === 'table' ? 'TABLE' : it.kind === 'enum' ? 'ENUM' : 'COL';
+          return `<div class="it ${i === this.quickSearchIdx ? 'on' : ''}" data-act="quick-search-run" data-index="${i}">
+            ${ICON(ic, 14)}
+            <span class="mono" style="flex:1;overflow:hidden;text-overflow:ellipsis">${esc(it.label)}</span>
+            <span class="mono" style="font-size:11px;color:var(--faint)">${esc(it.detail)}</span>
+            <span class="pill" style="font-family:var(--mono);font-size:9.5px">${badge}</span>
+          </div>`;
+        })
+        .join('');
+      (bg.querySelector('#qs-n') as HTMLElement).textContent = `${t('{} resultados', items.length)}`;
+      (bg.querySelector('.it.on') as HTMLElement | null)?.scrollIntoView({ block: 'nearest' });
+    };
+    q.addEventListener('input', () => { this.quickSearchQuery = q.value; this.quickSearchIdx = 0; draw(); });
+    q.addEventListener('keydown', (e) => {
+      const items = this.quickSearchItems();
+      if (e.key === 'ArrowDown') { this.quickSearchIdx = Math.min(this.quickSearchIdx + 1, items.length - 1); draw(); e.preventDefault(); }
+      else if (e.key === 'ArrowUp') { this.quickSearchIdx = Math.max(this.quickSearchIdx - 1, 0); draw(); e.preventDefault(); }
+      else if (e.key === 'Enter') { const it = items[this.quickSearchIdx]; this.closeModal(); if (it) this.runQuickSearchItem(it); e.preventDefault(); }
+      else if (e.key === 'Escape') this.closeModal();
+    });
+    draw();
+    q.focus();
+  }
+
+  private quickSearchItems(): Array<{ kind: 'table' | 'column' | 'enum'; table?: string; column?: string; enumName?: string; label: string; detail: string; score: number }> {
+    const q = this.quickSearchQuery.trim().toLowerCase();
+    const scoreOf = (cand: string): number | null => {
+      const c = cand.toLowerCase();
+      if (c === q) return 0;
+      if (c.startsWith(q)) return 1;
+      if (c.includes(q)) return 2;
+      let qi = 0;
+      for (const ch of c) {
+        if (ch === q[qi]) {
+          qi++;
+          if (qi >= q.length) return 3;
+        }
+      }
+      return null;
+    };
+    if (!q) {
+      return [
+        ...this.schema.tables.map((tb) => {
+          const qn = qualifiedTableName(tb);
+          return { kind: 'table' as const, table: qn, label: qn, detail: `${tb.columns.length} cols`, score: 0 };
+        }),
+        ...(this.scene?.enums || []).map((ev) => ({
+          kind: 'enum' as const, enumName: ev.name, label: ev.name, detail: `${ev.values.length} values`, score: 0,
+        })),
+      ].slice(0, 60);
+    }
+    const out: Array<{ kind: 'table' | 'column' | 'enum'; table?: string; column?: string; enumName?: string; label: string; detail: string; score: number; typeOnly: number }> = [];
+    for (const tb of this.schema.tables) {
+      const qn = qualifiedTableName(tb);
+      const ts = [scoreOf(tb.name), scoreOf(qn)].filter((x): x is number => x !== null);
+      if (ts.length) {
+        out.push({ kind: 'table', table: qn, label: qn, detail: `${tb.columns.length} cols`, score: Math.min(...ts), typeOnly: 0 });
+      }
+      for (const c of tb.columns) {
+        const full = `${qn}.${c.name}`;
+        const ns = [scoreOf(c.name), scoreOf(full)].filter((x): x is number => x !== null);
+        const tys = scoreOf(c.ty);
+        const nameScore = ns.length ? Math.min(...ns) : null;
+        const best = nameScore !== null ? nameScore : (tys !== null ? Math.min(3, tys + 1) : null);
+        if (best !== null) {
+          out.push({ kind: 'column', table: qn, column: c.name, label: full, detail: c.ty, score: best, typeOnly: nameScore === null ? 1 : 0 });
+        }
+      }
+    }
+    for (const ev of this.scene?.enums || []) {
+      const es = scoreOf(ev.name);
+      if (es !== null) {
+        out.push({ kind: 'enum', enumName: ev.name, label: ev.name, detail: `${ev.values.length} values`, score: es, typeOnly: 0 });
+      }
+    }
+    const rank = { table: 0, enum: 1, column: 2 } as const;
+    out.sort((a, b) => a.score - b.score || a.typeOnly - b.typeOnly || rank[a.kind] - rank[b.kind] || a.label.localeCompare(b.label));
+    return out.slice(0, 60);
+  }
+
+  private runQuickSearchItem(it: { kind: 'table' | 'column' | 'enum'; table?: string; column?: string; enumName?: string }): void {
+    if (it.kind === 'table' && it.table) this.focusTable(it.table);
+    else if (it.kind === 'column' && it.table && it.column) this.focusTable(it.table, it.column);
+    else if (it.kind === 'enum' && it.enumName) this.focusEnum(it.enumName);
+  }
+
   private openShortcuts(): void {
     const bg = this.modal(
       `<div class="shd">${`<span style="color:var(--accent);display:flex">${ICON('Keyboard', 16)}</span>`}<span class="tt">${translate("Atalhos de teclado")}</span><span class="grow"></span>
@@ -3226,6 +3465,7 @@ export class Workbench {
         return;
       }
       case 'palette-run': { const item = this.paletteItems()[Number(d.index)]; this.closeModal(); if (item) this.runPaletteItem(item); return; }
+      case 'quick-search-run': { const item = this.quickSearchItems()[Number(d.index)]; this.closeModal(); if (item) this.runQuickSearchItem(item); return; }
       case 'set-color':
         this.dispatch({ action: 'set_table_color', payload: { table: d.table!, color: d.color || null } });
         return;
@@ -3387,6 +3627,20 @@ export class Workbench {
       this.dispatch({
         action: 'set_column_check',
         payload: { table: t.dataset.table!, column: t.dataset.col!, check: val || null },
+      });
+      return;
+    }
+    if (kind === 'colnote') {
+      this.dispatch({
+        action: 'set_column_note',
+        payload: { table: t.dataset.table!, column: t.dataset.col!, note: val || null },
+      });
+      return;
+    }
+    if (kind === 'tablenote') {
+      this.dispatch({
+        action: 'set_table_note',
+        payload: { table: t.dataset.table!, note: val || null },
       });
       return;
     }
@@ -3566,6 +3820,10 @@ export class Workbench {
     }
     this.selectedRef = null;
     this.selectedEnum = null;
+    if (!e.shiftKey) {
+      this.focusMode = false;
+      this.highlightedColumn = null;
+    }
     const base = e.shiftKey ? [...this.selection] : [];
     this.selection = base;
     this.drag = { kind: 'marquee', start: wp, now: wp, base };
@@ -3772,12 +4030,12 @@ export class Workbench {
   private onKey(e: KeyboardEvent): void {
     const ae = document.activeElement as HTMLElement | null;
     const typing = !!ae && (ae.tagName === 'INPUT' || ae.tagName === 'TEXTAREA' || ae.isContentEditable);
-    if (e.code === 'Space' && !typing && !this.paletteOpen && ae?.tagName !== 'BUTTON') {
+    if (e.code === 'Space' && !typing && !this.paletteOpen && !this.quickSearchOpen && ae?.tagName !== 'BUTTON') {
       if (!this.space) { this.space = true; this.scheduleRender(); }
       e.preventDefault();
       return;
     }
-    if (this.paletteOpen && e.key !== 'Escape') return;
+    if ((this.paletteOpen || this.quickSearchOpen) && e.key !== 'Escape') return;
     if (this.selectedRef && !typing && !this.shortcutsOpen && !e.ctrlKey && !e.metaKey && !e.altKey && ['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown'].includes(e.key)) {
       const step = e.shiftKey ? 1 : 8;
       this.pushHistory();
@@ -3795,20 +4053,26 @@ export class Workbench {
       return;
     }
     const key = this.keyOf(e);
-    const entry = catalog().find((a) => a.key === key || (a.id === 'DeleteSelection' && key === 'delete'));
-    if (!entry || !entry.key) {
-      if (e.key === 'Escape' && (this.paletteOpen || this.shortcutsOpen)) this.closeModal();
+    if (key === 'ctrl-p') {
+      e.preventDefault();
+      this.closeMenus();
+      this.openQuickSearch();
       return;
     }
-    if (entry.context === 'Canvas' && (typing || this.paletteOpen || this.shortcutsOpen)) {
-      if (entry.id === 'Deselect' && (this.paletteOpen || this.shortcutsOpen)) this.closeModal();
+    const entry = catalog().find((a) => a.key === key || (a.id === 'DeleteSelection' && key === 'delete'));
+    if (!entry || !entry.key) {
+      if (e.key === 'Escape' && (this.paletteOpen || this.quickSearchOpen || this.shortcutsOpen)) this.closeModal();
+      return;
+    }
+    if (entry.context === 'Canvas' && (typing || this.paletteOpen || this.quickSearchOpen || this.shortcutsOpen)) {
+      if (entry.id === 'Deselect' && (this.paletteOpen || this.quickSearchOpen || this.shortcutsOpen)) this.closeModal();
       return;
     }
     // Alt+Up/Down só valem dentro do editor DBML
     if ((entry.id === 'MoveLineUp' || entry.id === 'MoveLineDown') && ae !== this.els['code']) return;
     e.preventDefault();
     this.closeMenus();
-    if (entry.id === 'Deselect' && (this.paletteOpen || this.shortcutsOpen)) { this.closeModal(); return; }
+    if (entry.id === 'Deselect' && (this.paletteOpen || this.quickSearchOpen || this.shortcutsOpen)) { this.closeModal(); return; }
     this.runAction(entry.id);
   }
 

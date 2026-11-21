@@ -71,6 +71,11 @@ eol_fn! {
         => indexes::set_column_check
 }
 eol_fn! {
+    /// Sets or clears the `note: '...'` attribute on `table.col`.
+    set_column_note(table: &str, col: &str, note: Option<&str>) -> Option<String>
+        => indexes::set_column_note
+}
+eol_fn! {
     /// Adds `index` to the `indexes { }` block of `table`.
     add_index(table: &str, index: &IndexDef) -> Option<String> => indexes::add_index
 }

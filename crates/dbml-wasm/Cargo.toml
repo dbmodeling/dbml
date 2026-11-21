@@ -21,6 +21,7 @@ dbml-analysis.workspace = true
 dbml-edit.workspace = true
 sql-import.workspace = true
 layout.workspace = true
+diagram-export = { path = "../diagram-export", default-features = false }
 rowan.workspace = true
 
 [dev-dependencies]

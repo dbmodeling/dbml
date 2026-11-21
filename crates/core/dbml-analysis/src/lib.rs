@@ -5,9 +5,11 @@
 mod complete;
 mod export_sql;
 mod lint;
+mod search;
 pub use complete::{Completion, CompletionKind, complete};
 pub use export_sql::{SqlDialect, SqlExportError, export_sql_ddl, try_export_sql_ddl};
 pub use lint::{Diagnostic, Severity, lint};
+pub use search::{SearchHit, SearchKind, search_schema};
 
 use dbml_syntax::{
     SyntaxKind, SyntaxNode, SyntaxToken, descendant_tokens as tokens, parse, unquote,

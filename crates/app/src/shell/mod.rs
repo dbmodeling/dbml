@@ -85,6 +85,7 @@ enum EditTarget {
     ColType(String, String),
     ColDefault(String, String),
     ColCheck(String, String),
+    ColNote(String, String),
     IndexName(String, usize),
     Enum(String),
     EnumVal(String, String),
@@ -170,6 +171,7 @@ pub struct Shell {
     editing: Option<(EditTarget, Entity<InputState>, Subscription)>,
     last_summary: Option<crate::canvas::Summary>,
     palette: Entity<CommandState>,
+    quick_search: Entity<CommandState>,
     focus: FocusHandle,
     subs: Vec<Subscription>,
     dragging_window: bool,
@@ -661,6 +663,7 @@ impl Shell {
             last_summary: None,
             editing: None,
             palette: cx.new(|cx| CommandState::new(window, cx)),
+            quick_search: cx.new(|cx| CommandState::new(window, cx)),
             focus: cx.focus_handle(),
             subs: Vec::new(),
             dragging_window: false,
@@ -2171,6 +2174,55 @@ impl Shell {
         );
     }
 
+    fn export_docs_markdown(
+        &mut self,
+        _: &ExportDocsMarkdown,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(doc) = self.doc() else { return };
+        let schema = doc.diagram.read(cx).schema().clone();
+        let stem = self.export_stem();
+        let suggested = format!("{stem}.md");
+        self.save_export(
+            &suggested,
+            "Markdown Docs".into(),
+            move || Ok(diagram_export::to_markdown(&schema, &stem).into_bytes()),
+            window,
+            cx,
+        );
+    }
+
+    fn export_docs_html(
+        &mut self,
+        _: &ExportDocsHtml,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(doc) = self.doc() else { return };
+        let (schema, pos, edges) = {
+            let d = doc.diagram.read(cx);
+            (d.schema().clone(), d.positions().clone(), d.edges().clone())
+        };
+        let theme = if self.mode == Mode::Dark {
+            diagram_export::Theme::dark()
+        } else {
+            diagram_export::Theme::light()
+        };
+        let stem = self.export_stem();
+        let suggested = format!("{stem}.html");
+        self.save_export(
+            &suggested,
+            "HTML Docs".into(),
+            move || {
+                let svg = diagram_export::to_svg(&schema, &pos, &edges, &theme);
+                Ok(diagram_export::to_html(&schema, &svg, &stem).into_bytes())
+            },
+            window,
+            cx,
+        );
+    }
+
     fn export_image(&mut self, kind: ImageKind, window: &mut Window, cx: &mut Context<Self>) {
         let Some(doc) = self.doc() else { return };
         let (schema, pos, edges, tables, enum_name, relation) = {
@@ -3461,6 +3513,166 @@ impl Shell {
         }
     }
 
+    fn toggle_focus_mode(&mut self, _: &ToggleFocusMode, _: &mut Window, cx: &mut Context<Self>) {
+        self.with_diagram(cx, Diagram::toggle_focus_mode);
+        cx.notify();
+    }
+
+    fn cycle_focus_depth(&mut self, _: &CycleFocusDepth, _: &mut Window, cx: &mut Context<Self>) {
+        self.with_diagram(cx, Diagram::cycle_focus_depth);
+        cx.notify();
+    }
+
+    fn open_quick_search(&mut self, _: &QuickSearch, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(doc) = self.doc() else { return };
+        let schema = doc.diagram.read(cx).schema().clone();
+        let state = self.quick_search.clone();
+        let shell = cx.entity();
+        let g = Glass::of_scaled(self.mode, self.translucent, self.ui_scale);
+        window.open_dialog(cx, move |dialog, _, _| {
+            let (shell, schema) = (shell.clone(), schema.clone());
+            let state = state.clone();
+            dialog_bare(dialog, &g, 560.)
+                .margin_top(px(64.))
+                .content(move |content, _, cx| {
+                    let query = state.read(cx).query(cx);
+                    let hits = dbml_analysis::search_schema(&schema, &query);
+                    let mut items = Vec::with_capacity(hits.len().min(60));
+                    let mut targets: Vec<dbml_analysis::SearchKind> = Vec::new();
+                    for hit in hits.into_iter().take(60) {
+                        let (badge_txt, icon) = match &hit.kind {
+                            dbml_analysis::SearchKind::Table { .. } => ("TABLE", IconName::Table2),
+                            dbml_analysis::SearchKind::Column { .. } => ("COL", IconName::Columns3),
+                            dbml_analysis::SearchKind::Enum { .. } => ("ENUM", IconName::List),
+                        };
+                        let label = hit.label.clone();
+                        let detail = hit.detail.clone();
+                        targets.push(hit.kind);
+                        items.push(CommandItem::new().label(format!("{label} {detail}")).child(
+                            move |_, _| {
+                                div()
+                                    .flex_1()
+                                    .h(px(20.))
+                                    .flex()
+                                    .items_center()
+                                    .justify_between()
+                                    .gap(SP_SM)
+                                    .child(
+                                        div()
+                                            .flex()
+                                            .items_center()
+                                            .gap(SP_SM)
+                                            .min_w_0()
+                                            .child(
+                                                Icon::new(icon)
+                                                    .size(px(14.))
+                                                    .text_color(g.text_faint),
+                                            )
+                                            .child(
+                                                div()
+                                                    .font_family(FONT_MONO)
+                                                    .text_size(px(12.5))
+                                                    .truncate()
+                                                    .child(label.clone()),
+                                            ),
+                                    )
+                                    .child(
+                                        div()
+                                            .flex()
+                                            .items_center()
+                                            .gap(px(6.))
+                                            .flex_none()
+                                            .child(
+                                                div()
+                                                    .font_family(FONT_MONO)
+                                                    .text_size(px(11.))
+                                                    .text_color(g.text_faint)
+                                                    .child(detail.clone()),
+                                            )
+                                            .child(
+                                                div()
+                                                    .px(px(5.))
+                                                    .py(px(1.))
+                                                    .rounded(px(4.))
+                                                    .bg(g.selected)
+                                                    .font_family(FONT_MONO)
+                                                    .text_size(px(9.5))
+                                                    .text_color(g.text_muted)
+                                                    .child(badge_txt),
+                                            ),
+                                    )
+                            },
+                        ));
+                    }
+                    let shell = shell.clone();
+                    let count = targets.len();
+                    let cmd = Command::new(&state)
+                        .placeholder(crate::i18n::t("Buscar tabelas, colunas, tipos, enums…"))
+                        .bordered(false)
+                        .max_h(px(400.))
+                        .group(
+                            CommandGroup::new()
+                                .label(crate::i18n::t("Resultados"))
+                                .items(items),
+                        )
+                        .footer(move |_, _, _| {
+                            div()
+                                .h(px(34.))
+                                .flex()
+                                .items_center()
+                                .gap(px(16.))
+                                .px(px(14.))
+                                .border_t_1()
+                                .border_color(g.edge_soft)
+                                .text_size(px(11.5))
+                                .text_color(g.text_faint)
+                                .child(crate::i18n::t("↑↓ navegar"))
+                                .child(crate::i18n::t("↵ ir para"))
+                                .child(crate::i18n::t("Esc fechar"))
+                                .child(div().flex_1())
+                                .child(format!("{count}"))
+                        })
+                        .rounded(px(11.))
+                        .on_confirm(move |ix, window, cx| {
+                            window.close_dialog(cx);
+                            if let Some(kind) = targets.get(ix.row).cloned() {
+                                shell.update(cx, |this, cx| match kind {
+                                    dbml_analysis::SearchKind::Table { table, .. } => {
+                                        this.go_to_table(&table, window, cx);
+                                    }
+                                    dbml_analysis::SearchKind::Column { table, column, .. } => {
+                                        this.with_diagram(cx, |d| {
+                                            d.focus_column(&table, &column);
+                                        });
+                                        this.open_col = Some((table.clone(), Some(column)));
+                                        if this.editor_open
+                                            && let Some(doc) = this.doc()
+                                        {
+                                            let text = doc.editor.read(cx).value().to_string();
+                                            if let Some(block) =
+                                                crate::ide::table_block(&text, &table)
+                                            {
+                                                this.reveal(block.start, window, cx);
+                                            }
+                                        }
+                                        cx.notify();
+                                    }
+                                    dbml_analysis::SearchKind::Enum { name, .. } => {
+                                        this.with_diagram(cx, |d| d.focus_enum(&name));
+                                        cx.notify();
+                                    }
+                                });
+                            }
+                        });
+                    content.child(cmd)
+                })
+        });
+        let state = self.quick_search.clone();
+        window.defer(cx, move |window, cx| {
+            state.update(cx, |s, cx| s.focus(window, cx));
+        });
+    }
+
     fn show_shortcuts(&mut self, _: &ShowShortcuts, window: &mut Window, cx: &mut Context<Self>) {
         let g = Glass::of_scaled(self.mode, self.translucent, self.ui_scale);
         let filter =
@@ -3823,6 +4035,12 @@ impl Shell {
                 let opt = (!value.is_empty()).then_some(value.as_str());
                 self.edit_text(false, window, cx, |t| {
                     dbml_edit::set_column_check(t, &table, &col, opt)
+                });
+            }
+            EditTarget::ColNote(table, col) => {
+                let opt = (!value.is_empty()).then_some(value.as_str());
+                self.edit_text(false, window, cx, |t| {
+                    dbml_edit::set_column_note(t, &table, &col, opt)
                 });
             }
             EditTarget::IndexName(table, idx) => {
@@ -4437,6 +4655,8 @@ pub fn register_global_actions(win: AnyWindowHandle, shell: &Entity<Shell>, cx: 
         ExportSqlSqlServer => export_sql_sqlserver,
         ExportSqlOracle => export_sql_oracle,
         ExportMermaid => export_mermaid,
+        ExportDocsHtml => export_docs_html,
+        ExportDocsMarkdown => export_docs_markdown,
         ExportPng => export_png,
         ExportJpeg => export_jpeg,
         ExportSvg => export_svg,
@@ -4449,6 +4669,9 @@ pub fn register_global_actions(win: AnyWindowHandle, shell: &Entity<Shell>, cx: 
         MoveLineUp => move_line_up,
         MoveLineDown => move_line_down,
         OpenPalette => open_palette,
+        QuickSearch => open_quick_search,
+        ToggleFocusMode => toggle_focus_mode,
+        CycleFocusDepth => cycle_focus_depth,
         ShowShortcuts => show_shortcuts,
         ToggleTheme => toggle_theme,
         ThemeLight => theme_light,
@@ -4743,6 +4966,9 @@ impl Render for Shell {
             .on_action(cx.listener(Self::move_line_up))
             .on_action(cx.listener(Self::move_line_down))
             .on_action(cx.listener(Self::open_palette))
+            .on_action(cx.listener(Self::open_quick_search))
+            .on_action(cx.listener(Self::toggle_focus_mode))
+            .on_action(cx.listener(Self::cycle_focus_depth))
             .on_action(cx.listener(Self::import_sql_ddl))
             .on_action(cx.listener(Self::export_sql_postgres))
             .on_action(cx.listener(Self::export_sql_mysql))
@@ -4750,6 +4976,8 @@ impl Render for Shell {
             .on_action(cx.listener(Self::export_sql_sqlserver))
             .on_action(cx.listener(Self::export_sql_oracle))
             .on_action(cx.listener(Self::export_mermaid))
+            .on_action(cx.listener(Self::export_docs_html))
+            .on_action(cx.listener(Self::export_docs_markdown))
             .on_action(cx.listener(Self::export_png))
             .on_action(cx.listener(Self::export_jpeg))
             .on_action(cx.listener(Self::export_svg))
@@ -4924,6 +5152,11 @@ mod tests {
             "Self::export_sql_sqlserver",
             "Self::export_sql_oracle",
             "Self::export_mermaid",
+            "Self::export_docs_html",
+            "Self::export_docs_markdown",
+            "Self::open_quick_search",
+            "Self::toggle_focus_mode",
+            "Self::cycle_focus_depth",
             "Self::export_png",
             "Self::export_jpeg",
             "Self::export_svg",
@@ -4950,7 +5183,7 @@ mod tests {
                 .filter(|e| e.group == group)
                 .count()
         };
-        assert_eq!(count(crate::actions::GROUP_EXPORT_CODE), 6); // 5 bancos + Mermaid
+        assert_eq!(count(crate::actions::GROUP_EXPORT_CODE), 8); // 5 bancos + Mermaid + HTML/MD docs
         assert_eq!(count(crate::actions::GROUP_EXPORT_IMAGE), 3); // PNG, JPEG, SVG
     }
 }

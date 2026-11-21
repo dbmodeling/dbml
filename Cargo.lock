@@ -1567,6 +1567,7 @@ dependencies = [
  "proptest",
  "rowan",
  "schema",
+ "serde",
 ]
 
 [[package]]
@@ -1582,8 +1583,10 @@ dependencies = [
  "dbml-analysis",
  "dbml-edit",
  "dbml-syntax",
+ "diagram-export",
  "futures-util",
  "getrandom 0.3.4",
+ "layout",
  "mime_guess",
  "notify",
  "opener",
@@ -1627,6 +1630,7 @@ dependencies = [
  "dbml-analysis",
  "dbml-edit",
  "dbml-syntax",
+ "diagram-export",
  "insta",
  "layout",
  "proptest",
@@ -6288,6 +6292,7 @@ name = "schema"
 version = "0.1.4"
 dependencies = [
  "serde",
+ "serde_json",
 ]
 
 [[package]]

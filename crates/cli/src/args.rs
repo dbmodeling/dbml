@@ -8,6 +8,26 @@ pub enum ExportFormat {
     Sql,
 }
 
+/// Output format for `dbml docs`.
+#[derive(ValueEnum, Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DocsFormat {
+    /// Self-contained single-page static HTML documentation.
+    Html,
+    /// Structured Markdown documentation with Mermaid `erDiagram`.
+    #[value(alias = "markdown")]
+    Md,
+}
+
+/// Output format for `dbml diff`.
+#[derive(ValueEnum, Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum DiffFormat {
+    /// Human-readable text (`+` added, `-` removed, `~` modified).
+    #[default]
+    Text,
+    /// The serialized `SchemaDiff` as JSON.
+    Json,
+}
+
 /// Target SQL dialect for `dbml export --format sql`.
 #[derive(ValueEnum, Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CliDialect {
@@ -199,6 +219,45 @@ pub enum Commands {
         #[arg(long, requires = "output")]
         force: bool,
     },
+    /// Generate static navigable documentation (HTML or Markdown) from a .dbml file
+    Docs {
+        /// Path to the input .dbml file
+        #[arg(value_name = "FILE")]
+        file: PathBuf,
+
+        /// Documentation format (`html` or `md`)
+        #[arg(long, value_enum, default_value_t = DocsFormat::Html)]
+        format: DocsFormat,
+
+        /// Output file or directory path (writes to stdout if omitted)
+        #[arg(short, long, value_name = "OUTPUT")]
+        output: Option<PathBuf>,
+
+        /// Optional documentation title (defaults to the input filename)
+        #[arg(long)]
+        title: Option<String>,
+
+        /// Overwrite an existing output file
+        #[arg(long, requires = "output")]
+        force: bool,
+    },
+    /// Compare two .dbml files structurally (tables, columns, indexes, enums, refs).
+    ///
+    /// Exit code: 0 when there are no differences, 1 when there are (like `diff`),
+    /// 2 on errors (unreadable file or DBML syntax error, which names the file).
+    Diff {
+        /// Baseline .dbml file
+        #[arg(value_name = "OLD")]
+        old: PathBuf,
+
+        /// .dbml file to compare against the baseline
+        #[arg(value_name = "NEW")]
+        new: PathBuf,
+
+        /// Output format (`text` or `json`)
+        #[arg(long, value_enum, default_value_t = DiffFormat::Text)]
+        format: DiffFormat,
+    },
     /// Import a SQL DDL file, or the live catalog of a database (`--url`), into DBML
     Import {
         /// Path to the input .sql file
@@ -280,6 +339,12 @@ impl Cli {
             ) => (file, port, host, no_open, no_watch),
             Some(Commands::Export { .. }) => {
                 anyhow::bail!("export command should be handled before starting the web server")
+            }
+            Some(Commands::Docs { .. }) => {
+                anyhow::bail!("docs command should be handled before starting the web server")
+            }
+            Some(Commands::Diff { .. }) => {
+                anyhow::bail!("diff command should be handled before starting the web server")
             }
             Some(Commands::Import { .. }) => {
                 anyhow::bail!("import command should be handled before starting the web server")
@@ -425,5 +490,68 @@ mod tests {
     fn cli_should_require_dialect_for_import() {
         let err = Cli::try_parse_from(["dbml", "import", "schema.sql"]);
         assert!(err.is_err());
+    }
+
+    #[test]
+    fn cli_parses_diff_subcommand() {
+        let cli = Cli::try_parse_from(["dbml", "diff", "a.dbml", "b.dbml"]).unwrap();
+        match cli.command {
+            Some(Commands::Diff { old, new, format }) => {
+                assert_eq!(old, PathBuf::from("a.dbml"));
+                assert_eq!(new, PathBuf::from("b.dbml"));
+                assert_eq!(format, DiffFormat::Text);
+            }
+            other => panic!("expected Diff command, got {other:?}"),
+        }
+        let cli =
+            Cli::try_parse_from(["dbml", "diff", "a.dbml", "b.dbml", "--format", "json"]).unwrap();
+        assert!(matches!(
+            cli.command,
+            Some(Commands::Diff {
+                format: DiffFormat::Json,
+                ..
+            })
+        ));
+        assert!(Cli::try_parse_from(["dbml", "diff", "a.dbml"]).is_err());
+    }
+
+    #[test]
+    fn cli_parses_docs_subcommand() {
+        let cli = Cli::try_parse_from([
+            "dbml",
+            "docs",
+            "schema.dbml",
+            "--format",
+            "html",
+            "-o",
+            "docs/",
+        ])
+        .unwrap();
+        match cli.command {
+            Some(Commands::Docs {
+                file,
+                format,
+                output,
+                title,
+                force,
+            }) => {
+                assert_eq!(file, PathBuf::from("schema.dbml"));
+                assert_eq!(format, DocsFormat::Html);
+                assert_eq!(output, Some(PathBuf::from("docs/")));
+                assert_eq!(title, None);
+                assert!(!force);
+            }
+            other => panic!("expected Docs command, got {other:?}"),
+        }
+
+        let cli_md =
+            Cli::try_parse_from(["dbml", "docs", "schema.dbml", "--format", "md"]).unwrap();
+        assert!(matches!(
+            cli_md.command,
+            Some(Commands::Docs {
+                format: DocsFormat::Md,
+                ..
+            })
+        ));
     }
 }

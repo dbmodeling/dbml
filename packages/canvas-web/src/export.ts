@@ -41,7 +41,9 @@ export function exportToMermaid(schema: Schema): string {
       if (col.unique && !col.pk) keys.push('UK');
 
       const keySuffix = keys.length > 0 ? ` ${keys.join(',')}` : '';
-      lines.push(`        ${colType} ${colName}${keySuffix}`);
+      const note = col.note?.trim();
+      const comment = note ? ` "${note.replace(/[\r\n]+/g, ' ').replace(/"/g, "'")}"` : '';
+      lines.push(`        ${colType} ${colName}${keySuffix}${comment}`);
     }
 
     lines.push('    }');

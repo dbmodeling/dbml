@@ -43,6 +43,15 @@ pub struct AnalysisResult {
     pub enums: Vec<String>,
 }
 
+/// Output returned by `diff_dbml`: structural diff plus its aggregated counts.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DiffResult {
+    /// Structural diff between base and head.
+    pub diff: schema::SchemaDiff,
+    /// Aggregated counts of atomic changes (`added`, `removed`, `modified`).
+    pub summary: schema::DiffSummary,
+}
+
 /// Minimal textual patch resulting from a semantic edit command plus UI metadata.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TextPatch {
@@ -221,6 +230,24 @@ pub enum Command {
         table: String,
         /// Optional hex color (`None` removes `headercolor`).
         color: Option<String>,
+    },
+    /// Set or clear the `Note` of a table.
+    SetTableNote {
+        /// Target table name.
+        table: String,
+        /// Desired note text (`None` or empty clears the note).
+        #[serde(default)]
+        note: Option<String>,
+    },
+    /// Set or clear the `[note: '...']` attribute of a column.
+    SetColumnNote {
+        /// Target table name.
+        table: String,
+        /// Target column name.
+        column: String,
+        /// Desired note text (`None` or empty clears the note).
+        #[serde(default)]
+        note: Option<String>,
     },
     /// Add a new `Enum` block (auto-naming if `name` is `None`).
     AddEnum {

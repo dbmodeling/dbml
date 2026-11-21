@@ -4,7 +4,7 @@ import { GROUP_EXPORT_CODE, GROUP_EXPORT_IMAGE, catalog } from '../src/actions';
 const labels = (group: string) => catalog().filter((e) => e.group === group).map((e) => e.label);
 
 describe('export dropdown groups', () => {
-  it('code dropdown lists the five databases then Mermaid', () => {
+  it('code dropdown lists the five databases, Mermaid, and documentation exports', () => {
     expect(labels(GROUP_EXPORT_CODE)).toEqual([
       'Exportar código: PostgreSQL (.sql)',
       'Exportar código: MySQL (.sql)',
@@ -12,6 +12,8 @@ describe('export dropdown groups', () => {
       'Exportar código: SQL Server (.sql)',
       'Exportar código: Oracle (.sql)',
       'Exportar código: Mermaid erDiagram (.mmd)',
+      'Exportar documentação: HTML (.html)',
+      'Exportar documentação: Markdown (.md)',
     ]);
   });
 

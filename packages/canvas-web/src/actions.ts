@@ -44,11 +44,16 @@ export type ActionId =
   | 'ResetUiZoom'
   | 'ToggleAutoCollapseInspector'
   | 'OpenPalette'
+  | 'QuickSearch'
+  | 'ToggleFocusMode'
+  | 'CycleFocusDepth'
   | 'ShowShortcuts'
   | 'ExportSvg'
   | 'ExportPng'
   | 'ExportJpeg'
   | 'ExportMermaid'
+  | 'ExportDocsHtml'
+  | 'ExportDocsMarkdown'
   | 'ExportSqlPostgres'
   | 'ExportSqlMysql'
   | 'ExportSqlSqlite'
@@ -170,10 +175,15 @@ export function catalog(): ActionEntry[] {
     e('', [], 'ExportSqlSqlServer', GROUP_EXPORT_CODE, 'Exportar código: SQL Server (.sql)'),
     e('', [], 'ExportSqlOracle', GROUP_EXPORT_CODE, 'Exportar código: Oracle (.sql)'),
     e('', [], 'ExportMermaid', GROUP_EXPORT_CODE, 'Exportar código: Mermaid erDiagram (.mmd)'),
+    e('', [], 'ExportDocsHtml', GROUP_EXPORT_CODE, 'Exportar documentação: HTML (.html)'),
+    e('', [], 'ExportDocsMarkdown', GROUP_EXPORT_CODE, 'Exportar documentação: Markdown (.md)'),
     e('', [], 'ExportPng', GROUP_EXPORT_IMAGE, 'Exportar imagem: PNG'),
     e('', [], 'ExportJpeg', GROUP_EXPORT_IMAGE, 'Exportar imagem: JPEG'),
     e('', [], 'ExportSvg', GROUP_EXPORT_IMAGE, 'Exportar imagem: SVG vetorial'),
     e('ctrl-k', ['Ctrl', 'K'], 'OpenPalette', 'Ajuda', 'Paleta de comandos'),
+    e('ctrl-f', ['Ctrl', 'F'], 'QuickSearch', 'Exibir', 'Busca rápida (tabelas, colunas, enums)'),
+    e('f', ['F'], 'ToggleFocusMode', 'Canvas', 'Modo Foco (vizinhança FK)'),
+    e('shift-f', ['Shift', 'F'], 'CycleFocusDepth', 'Canvas', 'Modo Foco: alternar 1-hop / 2-hop'),
     e('ctrl-/', ['Ctrl', '/'], 'ShowShortcuts', 'Ajuda', 'Atalhos de teclado'),
   ];
 }

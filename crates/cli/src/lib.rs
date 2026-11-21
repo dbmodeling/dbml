@@ -3,6 +3,7 @@
 pub mod args;
 pub mod assets;
 pub mod constants;
+pub mod diff;
 pub mod introspect_api;
 pub mod lifecycle;
 pub mod net;

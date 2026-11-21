@@ -154,6 +154,12 @@ pub struct Diagram {
     /// incrementa a cada troca de `schema`; entra na impressão digital do cache de rotas
     schema_rev: u64,
     route_cache: RefCell<RouteCache>,
+    /// Modo Foco (#12): destaca a tabela selecionada e sua vizinhança FK; esmaece o restante.
+    focus_mode: bool,
+    /// Profundidade do Modo Foco (1-hop ou 2-hop).
+    focus_depth: usize,
+    /// Coluna destacada via Busca Rápida (`(qualified_table, column)`).
+    highlighted_column: Option<(String, String)>,
 }
 
 impl Diagram {
@@ -189,6 +195,9 @@ impl Diagram {
             edges: EdgeStyles::new(),
             schema_rev: 0,
             route_cache: RefCell::default(),
+            focus_mode: false,
+            focus_depth: 1,
+            highlighted_column: None,
         };
         d.set_schema(schema);
         d
@@ -376,43 +385,86 @@ impl Diagram {
         self.size = size;
     }
 
-    /// Seleciona a tabela e centraliza a vista nela.
+    /// Seleciona a tabela e centraliza a vista nela em um zoom legível.
     pub fn focus_table(&mut self, name: &str) {
         let Some(t) = self.schema.table(name) else {
             return;
         };
-        let (x, y) = self.positions()[name];
+        let qname = t.qualified_name();
+        let (x, y) = self
+            .positions()
+            .get(&qname)
+            .copied()
+            .unwrap_or(crate::constants::DEFAULT_CARD_POS);
         let (w, h) = (f32::from(self.size.width), f32::from(self.size.height));
+        let target_zoom = if self.zoom < 0.85 { 1.0 } else { self.zoom };
         let (cx_, cy_) = (x + CARD_W / 2., y + card_h(t.columns.len()) / 2.);
         self.animate_viewport([
-            w / 2. - cx_ * self.zoom,
-            h / 2. - cy_ * self.zoom,
-            self.zoom,
+            w / 2. - cx_ * target_zoom,
+            h / 2. - cy_ * target_zoom,
+            target_zoom,
         ]);
-        self.selected = Some(name.to_string());
+        self.selected = Some(qname.clone());
+        self.multi.clear();
         self.selected_enum = None;
         self.selected_ref = None;
-        self.top = Some(name.to_string());
+        self.highlighted_column = None;
+        self.top = Some(qname);
     }
 
-    /// Seleciona o enum e centraliza a vista nele.
+    /// Seleciona a tabela, destaca a coluna alvo e centraliza a vista nela.
+    pub fn focus_column(&mut self, table: &str, column: &str) {
+        self.focus_table(table);
+        if let Some(t) = self.schema.table(table) {
+            self.highlighted_column = Some((t.qualified_name(), column.to_string()));
+        }
+    }
+
+    /// Seleciona o enum e centraliza a vista nele em um zoom legível.
     pub fn focus_enum(&mut self, name: &str) {
-        let Some(en) = self.schema.enums.iter().find(|e| e.name == name) else {
+        let Some(en) = self
+            .schema
+            .enums
+            .iter()
+            .find(|e| e.name == name || e.qualified_name() == name)
+        else {
             return;
         };
         let key = enum_key(en);
+        let en_name = en.name.clone();
         let (x, y) = self.positions().get(&key).copied().unwrap_or((0., 0.));
         let (w, h) = (f32::from(self.size.width), f32::from(self.size.height));
+        let target_zoom = if self.zoom < 0.85 { 1.0 } else { self.zoom };
         let (cx_, cy_) = (x + ENUM_W / 2., y + enum_h(en) / 2.);
         self.animate_viewport([
-            w / 2. - cx_ * self.zoom,
-            h / 2. - cy_ * self.zoom,
-            self.zoom,
+            w / 2. - cx_ * target_zoom,
+            h / 2. - cy_ * target_zoom,
+            target_zoom,
         ]);
         self.selected = None;
         self.multi.clear();
         self.selected_ref = None;
-        self.selected_enum = Some(name.to_string());
+        self.highlighted_column = None;
+        self.selected_enum = Some(en_name);
+    }
+
+    pub fn focus_mode(&self) -> bool {
+        self.focus_mode && !self.selection().is_empty()
+    }
+
+    pub fn toggle_focus_mode(&mut self) {
+        if self.focus_mode {
+            self.focus_mode = false;
+        } else if !self.selection().is_empty() {
+            self.focus_mode = true;
+        }
+    }
+
+    pub fn cycle_focus_depth(&mut self) {
+        self.focus_depth = if self.focus_depth == 1 { 2 } else { 1 };
+        if !self.selection().is_empty() {
+            self.focus_mode = true;
+        }
     }
 
     /// Frase curta para a barra de status: o que o usuário pode fazer agora.
@@ -488,6 +540,8 @@ impl Diagram {
         self.selected = None;
         self.selected_enum = None;
         self.selected_ref = None;
+        self.focus_mode = false;
+        self.highlighted_column = None;
     }
 
     pub fn zoom_by(&mut self, factor: f32) {
@@ -1122,8 +1176,10 @@ impl Diagram {
             sb: f32,
             pts: Vec<[Point<Pixels>; 4]>,
             lit: f32,
+            dim: f32,
             ends: (&'static str, &'static str),
         }
+        const FOCUS_DIM: f32 = 0.18;
         let now = Instant::now();
         if self.advance_motion(now, motion::disabled() || cx.reduce_motion()) {
             window.request_animation_frame();
@@ -1148,6 +1204,12 @@ impl Diagram {
         };
         let s = move |v: f32| px(v * z);
         let schema = &self.schema;
+        let focus_sub: Option<schema::FocusSubgraph> = if self.focus_mode {
+            let seeds: std::collections::HashSet<String> = self.selection().into_iter().collect();
+            (!seeds.is_empty()).then(|| schema.neighborhood(&seeds, self.focus_depth))
+        } else {
+            None
+        };
 
         // arestas coluna→coluna: âncoras locais ao canvas + cardinalidade + destaque
         self.validate_routes();
@@ -1182,6 +1244,10 @@ impl Diagram {
                     window,
                     cx,
                 );
+                let dim = match &focus_sub {
+                    Some(sub) if !sub.ref_indices.contains(&i) => FOCUS_DIM,
+                    _ => 1.0,
+                };
                 Some(Edge {
                     a: pts.first()?[0],
                     b: pts.last()?[3],
@@ -1189,6 +1255,7 @@ impl Diagram {
                     sb,
                     pts,
                     lit,
+                    dim,
                     ends,
                 })
             })
@@ -1198,7 +1265,7 @@ impl Diagram {
             .selected_edge()
             .map(|(_, _, _, m)| point(px(m.x * z + pan_x), px(m.y * z + pan_y)));
         // rótulos N/1: 9px para dentro da aresta, acima da linha (centrados numa caixa de 12px)
-        let labels: Vec<(Point<Pixels>, &'static str, f32)> = edges
+        let labels: Vec<(Point<Pixels>, &'static str, f32, f32)> = edges
             .iter()
             .flat_map(|e| {
                 [(e.a, e.sa, e.ends.0), (e.b, e.sb, e.ends.1)].map(|(p, side, text)| {
@@ -1206,6 +1273,7 @@ impl Diagram {
                         point(p.x + px((side * 11. - 6.) * z), p.y - px(17. * z)),
                         text,
                         e.lit,
+                        e.dim,
                     )
                 })
             })
@@ -1336,6 +1404,8 @@ impl Diagram {
                             this.selected = None;
                             this.selected_ref = None;
                             this.multi.clear();
+                            this.focus_mode = false;
+                            this.highlighted_column = None;
                         }
                         this.drag = Some(Drag::Marquee { start: at, now: at });
                     }
@@ -1492,12 +1562,12 @@ impl Diagram {
                         let (a, b) = (bounds.origin + e.a, bounds.origin + e.b);
                         let pts: Vec<_> =
                             e.pts.iter().map(|c| c.map(|p| bounds.origin + p)).collect();
-                        let color = motion::color(line, stroke, e.lit);
+                        let color = motion::color(line, stroke, e.lit).opacity(e.dim);
                         // Halo sob o traço da relação ativa.
                         if e.lit > 0.
                             && let Some(path) = bezier(&pts, 8. * z)
                         {
-                            window.paint_path(path, stroke.opacity(0.16 * e.lit));
+                            window.paint_path(path, stroke.opacity(0.16 * e.lit * e.dim));
                         }
                         let w = (1.4 + 0.4 * e.lit) * z.max(0.5);
                         if let Some(path) = bezier(&pts, w) {
@@ -1564,7 +1634,7 @@ impl Diagram {
             .size_full(),
         );
 
-        for (at, text, lit) in labels {
+        for (at, text, lit, dim) in labels {
             root = root.child(
                 div()
                     .absolute()
@@ -1576,6 +1646,7 @@ impl Diagram {
                     .font_family(FONT_MONO)
                     .font_weight(FontWeight::MEDIUM)
                     .text_color(motion::color(g.text_faint, g.accent, lit))
+                    .opacity(dim)
                     .child(text),
             );
         }
@@ -1604,6 +1675,16 @@ impl Diagram {
                 .as_deref()
                 .and_then(hex)
                 .unwrap_or_else(|| group_color(schema, &gr.name));
+            let group_dim = match &focus_sub {
+                Some(sub)
+                    if !members
+                        .iter()
+                        .any(|(_, t)| sub.tables.contains(&t.qualified_name())) =>
+                {
+                    FOCUS_DIM
+                }
+                _ => 1.0,
+            };
             let name = gr.name.clone();
             root = root.child(
                 div()
@@ -1619,6 +1700,7 @@ impl Diagram {
                     .border_1()
                     .border_color(c.opacity(if dark { 0.18 } else { 0.22 }))
                     .bg(c.opacity(if dark { 0.06 } else { 0.07 }))
+                    .opacity(group_dim)
                     // etiqueta em pílula: ponto, nome, contagem
                     .child(
                         div()
@@ -1743,6 +1825,16 @@ impl Diagram {
                     .any(|ix| ix.references_column(c.name.as_str()));
                 let has_def = c.default_value.is_some();
                 let has_chk = c.check.is_some();
+                let col_note = c
+                    .note
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty())
+                    .map(str::to_owned);
+                let is_hi_col = self
+                    .highlighted_column
+                    .as_ref()
+                    .is_some_and(|(tb, cl)| tb == &qname && cl == &c.name);
                 let icon = if c.pk {
                     Some(Icon::new(IconName::KeyRound).text_color(g.accent))
                 } else if fk {
@@ -1753,6 +1845,7 @@ impl Diagram {
                 let k = z;
                 let neutral = |label| badge(label, gpui_kit::transparent_black(), g.text_faint, k);
                 let from = (qname.clone(), c.name.clone());
+                let note_col_id = SharedString::from(format!("col-note-{qname}-{}", c.name));
                 rows.push(
                     div()
                         .id(("col", i))
@@ -1764,6 +1857,7 @@ impl Diagram {
                         .items_center()
                         .gap(s(8.))
                         .text_size(s(13.))
+                        .when(is_hi_col, |d| d.bg(g.accent.opacity(0.14)))
                         .hover({
                             let h = g.hover;
                             move |st| st.bg(h)
@@ -1785,6 +1879,23 @@ impl Diagram {
                                 .when(c.pk, |d| d.font_weight(FontWeight::MEDIUM))
                                 .child(c.name.clone()),
                         )
+                        .when_some(col_note, |d, note_text| {
+                            d.child(
+                                div()
+                                    .id(note_col_id)
+                                    .flex_none()
+                                    .flex()
+                                    .items_center()
+                                    .tooltip(move |window, cx| {
+                                        Tooltip::new(note_text.clone()).build(window, cx)
+                                    })
+                                    .child(
+                                        Icon::new(IconName::Info)
+                                            .size(s(11.))
+                                            .text_color(g.text_muted),
+                                    ),
+                            )
+                        })
                         .when(has_idx, |d| {
                             d.child(badge("IDX", gpui_kit::transparent_black(), idx_color, k))
                         })
@@ -1832,6 +1943,17 @@ impl Diagram {
                         .into_any_element(),
                 );
             }
+            let table_dim = match &focus_sub {
+                Some(sub) if !sub.tables.contains(&qname) => FOCUS_DIM,
+                _ => 1.0,
+            };
+            let table_note = t
+                .note
+                .as_deref()
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(str::to_owned);
+            let table_note_id = SharedString::from(format!("tbl-note-{qname}"));
             root = root.child(
                 div()
                     .id(SharedString::from(format!("table-{qname}")))
@@ -1848,7 +1970,7 @@ impl Diagram {
                     .group("card")
                     .border_1()
                     .border_color(motion::color(g.edge_soft, g.accent, on))
-                    .opacity(appear)
+                    .opacity(appear * table_dim)
                     // sombra suave sempre; selecionado ganha o anel do destaque
                     .shadow({
                         let mut shadow = card_shadow(g.mode);
@@ -1956,6 +2078,23 @@ impl Diagram {
                                         .child(sch.clone()),
                                 )
                             })
+                            .when_some(table_note, |d, note_text| {
+                                d.child(
+                                    div()
+                                        .id(table_note_id)
+                                        .flex_none()
+                                        .flex()
+                                        .items_center()
+                                        .tooltip(move |window, cx| {
+                                            Tooltip::new(note_text.clone()).build(window, cx)
+                                        })
+                                        .child(
+                                            Icon::new(IconName::Info)
+                                                .size(s(12.))
+                                                .text_color(g.text_muted),
+                                        ),
+                                )
+                            })
                             .child(
                                 div()
                                     .min_w(s(18.))
@@ -2047,6 +2186,18 @@ impl Diagram {
             let en_name = en.name.clone();
             let shown = en.values.iter().take(6);
             let overflow = en.values.len().saturating_sub(6);
+            let enum_dim = match &focus_sub {
+                Some(sub) => {
+                    let used_in_sub = schema.tables.iter().any(|t| {
+                        sub.tables.contains(&t.qualified_name())
+                            && t.columns
+                                .iter()
+                                .any(|c| c.ty.rsplit('.').next().is_some_and(|ty| ty == en.name))
+                    });
+                    if used_in_sub { 1.0 } else { FOCUS_DIM }
+                }
+                None => 1.0,
+            };
             let card = div()
                 .id(SharedString::from(format!("enum-card-{}", en.name)))
                 .absolute()
@@ -2058,7 +2209,7 @@ impl Diagram {
                 .rounded(s(CARD_R))
                 .border_1()
                 .border_color(motion::color(g.edge, g.accent, on))
-                .opacity(appear)
+                .opacity(appear * enum_dim)
                 .shadow({
                     let mut shadow = card_shadow(g.mode);
                     shadow.offset.y += px(4. * lift);
@@ -2390,10 +2541,15 @@ impl Diagram {
             let on = match id {
                 "tool-select" => self.tool == Tool::Select,
                 "tool-hand" => self.tool == Tool::Hand,
+                "tool-focus" => self.focus_mode(),
                 "tool-editor" => g.editor_open,
                 _ => false,
             };
-            let enabled = id != "tool-group" || n_sel >= 2;
+            let enabled = match id {
+                "tool-group" => n_sel >= 2,
+                "tool-focus" => n_sel >= 1 || self.focus_mode,
+                _ => true,
+            };
             tools = tools
                 .when(sep, |d| d.child(hsep()))
                 .child(tool_btn(id, icon, tip, action, on, enabled, 32.));
@@ -2407,6 +2563,61 @@ impl Diagram {
                 .child(tools)
                 .into_any_element(),
         );
+        if self.focus_mode() {
+            let depth = self.focus_depth;
+            let focus_bar = island("canvas-focus-bar", crate::i18n::t("Modo Foco"))
+                .px(px(10.))
+                .gap(px(8.))
+                .child(
+                    div()
+                        .text_size(TEXT_XS)
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .text_color(g.accent)
+                        .child(crate::i18n::t("Modo Foco")),
+                )
+                .child(
+                    div()
+                        .id("focus-depth-pill")
+                        .role(Role::Button)
+                        .px(px(7.))
+                        .py(px(2.))
+                        .rounded(px(6.))
+                        .bg(g.accent.opacity(0.16))
+                        .text_size(TEXT_XS)
+                        .font_family(FONT_MONO)
+                        .text_color(g.accent)
+                        .cursor_pointer()
+                        .on_click(|_, window, cx| {
+                            window.dispatch_action(Box::new(CycleFocusDepth), cx);
+                        })
+                        .child(if depth == 1 { "1-hop" } else { "2-hop" }),
+                )
+                .child(
+                    div()
+                        .id("focus-exit-btn")
+                        .role(Role::Button)
+                        .px(px(6.))
+                        .py(px(2.))
+                        .rounded(px(6.))
+                        .text_size(TEXT_XS)
+                        .text_color(g.text_muted)
+                        .cursor_pointer()
+                        .hover(|s| s.bg(g.hover))
+                        .on_click(|_, window, cx| {
+                            window.dispatch_action(Box::new(ToggleFocusMode), cx);
+                        })
+                        .child("Esc"),
+                );
+            out.push(
+                div()
+                    .absolute()
+                    .top(px(12.))
+                    .left(relative(0.5))
+                    .ml(px(-95.))
+                    .child(focus_bar)
+                    .into_any_element(),
+            );
+        }
 
         // Zoom, ajuste e legenda no canto inferior direito.
         let pct = format!("{}%", (self.zoom * 100.).round() as i32);
@@ -2775,6 +2986,13 @@ fn tool_items() -> Vec<ToolItem> {
             true,
         ),
         (
+            "tool-focus",
+            IconName::Scan,
+            crate::i18n::t("Modo Foco (vizinhança FK)"),
+            Box::new(ToggleFocusMode),
+            false,
+        ),
+        (
             "tool-editor",
             IconName::Braces,
             "Editor DBML",
@@ -3063,13 +3281,14 @@ mod tests {
     /// Ações e divisores da ilha de ferramentas.
     #[::core::prelude::v1::test]
     fn tool_island_order_and_separators() {
-        let want: [(&str, &dyn Action, bool); 7] = [
+        let want: [(&str, &dyn Action, bool); 8] = [
             ("tool-select", &ToolSelect, false),
             ("tool-hand", &ToolHand, false),
             ("tool-table", &NewTable, true),
             ("tool-enum", &NewEnum, false),
             ("tool-group", &GroupSelection, false),
             ("tool-layout", &Relayout, true),
+            ("tool-focus", &ToggleFocusMode, false),
             ("tool-editor", &ToggleEditor, false),
         ];
         let got = tool_items();

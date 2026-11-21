@@ -94,6 +94,9 @@ cargo run -p dbml-cli -- import schema.sql --dialect postgres -o schema.dbml
 
 # Export DBML to SQL DDL (postgres, mysql, sqlite, sqlserver, oracle):
 cargo run -p dbml-cli -- export schema.dbml --format sql --dialect postgres -o schema.sql
+
+# Structural diff between two DBML files (exit 0 = same, 1 = differences, 2 = error):
+cargo run -p dbml-cli -- diff old.dbml new.dbml [--format json]
 ```
 
 - **Ubuntu / Debian dependencies:** `build-essential pkg-config cmake libxcb1-dev libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev libxkbcommon-dev libxkbcommon-x11-dev libwayland-dev libvulkan-dev libfontconfig1-dev libssl-dev`
