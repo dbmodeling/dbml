@@ -1,7 +1,23 @@
 //! View-model for the "Conectar ao banco…" modal (parity with `connect-db.ts` on the web).
 
 use db_introspect::{ConnectionParams, Dialect, Options, TlsMode};
+use std::sync::OnceLock;
 use std::time::Duration;
+
+/// Runtime tokio compartilhado entre chamadas de introspecção (#115).
+fn introspect_runtime() -> Result<&'static tokio::runtime::Runtime, String> {
+    static RT: OnceLock<Result<tokio::runtime::Runtime, String>> = OnceLock::new();
+    match RT.get_or_init(|| {
+        tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(crate::constants::INTROSPECT_WORKER_THREADS)
+            .enable_all()
+            .build()
+            .map_err(|e| e.to_string())
+    }) {
+        Ok(rt) => Ok(rt),
+        Err(e) => Err(e.clone()),
+    }
+}
 
 /// Where the connection attempt is.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -120,13 +136,10 @@ pub fn introspect_blocking(
     schemas: Vec<String>,
 ) -> Result<Generated, String> {
     let url = params.to_url().map_err(|e| e.to_string())?;
-    let rt = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .map_err(|e| e.to_string())?;
+    let rt = introspect_runtime()?;
     let options = Options {
         schemas,
-        timeout_secs: Duration::from_secs(10).as_secs(),
+        timeout_secs: Duration::from_secs(crate::constants::INTROSPECT_TIMEOUT_SECS).as_secs(),
     };
     let outcome = rt
         .block_on(Box::pin(db_introspect::introspect_with(&url, &options)))
@@ -149,10 +162,7 @@ pub fn introspect_blocking(
 /// Blocking: call from a background thread.
 pub fn test_blocking(params: &ConnectionParams, schemas: Vec<String>) -> Result<String, String> {
     let url = params.to_url().map_err(|e| e.to_string())?;
-    let rt = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .map_err(|e| e.to_string())?;
+    let rt = introspect_runtime()?;
     let options = Options {
         schemas,
         ..Options::default()

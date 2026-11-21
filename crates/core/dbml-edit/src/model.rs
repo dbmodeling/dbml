@@ -468,7 +468,7 @@ pub(crate) fn set_column_flag(
         (Some(o), Some(cl)) if o < cl => {
             let inner =
                 usize::from(toks[o].text_range().end())..usize::from(toks[cl].text_range().start());
-            let mut parts: Vec<String> = text[inner.clone()]
+            let mut parts: Vec<String> = text[inner]
                 .split(',')
                 .map(|p| p.trim().to_string())
                 .filter(|p| !p.is_empty() && !is_flag(p))
@@ -584,10 +584,10 @@ pub(crate) fn link_tables(text: &str, source_table: &str, target_table: &str) ->
         if used_in_other_ref {
             unique_column_name(text, target_table, &fk_base)
         } else {
-            fk_base.clone()
+            fk_base
         }
     } else {
-        fk_base.clone()
+        fk_base
     };
 
     let with_col = if find_table(&root, target_table)

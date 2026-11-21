@@ -1,13 +1,15 @@
 use crate::constants::{
-    CONTENT_TYPE_HTML, CSP_PREFIX, CSP_SUFFIX, HEAD_OPEN_TAG, HEADER_FRAME_DENY, HEADER_NOSNIFF,
-    HEADER_REFERRER_NO_REFERRER, INDEX_HTML_PATH,
+    CACHE_CONTROL_IMMUTABLE, CACHE_CONTROL_NO_CACHE, CONTENT_TYPE_HTML, CSP_PREFIX, CSP_SUFFIX,
+    ETAG_HEADER_CAPACITY, HEAD_OPEN_TAG, HEADER_FRAME_DENY, HEADER_NOSNIFF,
+    HEADER_REFERRER_NO_REFERRER, IMMUTABLE_ASSETS_PREFIX, INDEX_HTML_PATH,
 };
 use axum::{
     body::Body,
-    http::{StatusCode, header},
+    http::{HeaderMap, StatusCode, header},
     response::{IntoResponse, Response},
 };
 use rust_embed::RustEmbed;
+use std::fmt::Write as _;
 
 #[derive(RustEmbed)]
 #[folder = "web/"]
@@ -41,12 +43,38 @@ fn csp_header(nonce: &str) -> String {
     format!("{CSP_PREFIX}{nonce}{CSP_SUFFIX}")
 }
 
+fn format_etag(sha256: &[u8; 32]) -> String {
+    let mut out = String::with_capacity(ETAG_HEADER_CAPACITY);
+    out.push('"');
+    for b in sha256 {
+        let _ = write!(out, "{b:02x}");
+    }
+    out.push('"');
+    out
+}
+
+fn if_none_match_hits(headers: &HeaderMap, etag: &str) -> bool {
+    headers
+        .get(header::IF_NONE_MATCH)
+        .and_then(|v| v.to_str().ok())
+        .is_some_and(|raw| raw.split(',').any(|tag| tag.trim() == etag))
+}
+
+fn cache_control_for(path: &str) -> &'static str {
+    if path.starts_with(IMMUTABLE_ASSETS_PREFIX) {
+        CACHE_CONTROL_IMMUTABLE
+    } else {
+        CACHE_CONTROL_NO_CACHE
+    }
+}
+
 fn html_response(html: &[u8]) -> Response {
     let nonce = crate::state::generate_token();
     Response::builder()
         .status(StatusCode::OK)
         .header(header::CONTENT_TYPE, CONTENT_TYPE_HTML)
         .header(header::CONTENT_SECURITY_POLICY, csp_header(&nonce))
+        .header(header::CACHE_CONTROL, CACHE_CONTROL_NO_CACHE)
         .header(header::X_CONTENT_TYPE_OPTIONS, HEADER_NOSNIFF)
         .header(header::X_FRAME_OPTIONS, HEADER_FRAME_DENY)
         .header(header::REFERRER_POLICY, HEADER_REFERRER_NO_REFERRER)
@@ -54,7 +82,7 @@ fn html_response(html: &[u8]) -> Response {
         .unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response())
 }
 
-pub async fn static_handler(uri: axum::http::Uri) -> Response {
+pub async fn static_handler(uri: axum::http::Uri, headers: HeaderMap) -> Response {
     let mut path = uri.path().trim_start_matches('/').to_string();
     if path.is_empty() {
         path = INDEX_HTML_PATH.to_string();
@@ -63,10 +91,22 @@ pub async fn static_handler(uri: axum::http::Uri) -> Response {
     match WebAssets::get(&path) {
         Some(content) if path == INDEX_HTML_PATH => html_response(&content.data),
         Some(content) => {
+            let etag = format_etag(&content.metadata.sha256_hash());
+            let cache_control = cache_control_for(&path);
+            if if_none_match_hits(&headers, &etag) {
+                return Response::builder()
+                    .status(StatusCode::NOT_MODIFIED)
+                    .header(header::ETAG, etag)
+                    .header(header::CACHE_CONTROL, cache_control)
+                    .body(Body::empty())
+                    .unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response());
+            }
             let mime = mime_guess::from_path(&path).first_or_octet_stream();
             Response::builder()
                 .status(StatusCode::OK)
                 .header(header::CONTENT_TYPE, mime.as_ref())
+                .header(header::ETAG, etag)
+                .header(header::CACHE_CONTROL, cache_control)
                 .header(header::X_CONTENT_TYPE_OPTIONS, HEADER_NOSNIFF)
                 .header(header::X_FRAME_OPTIONS, HEADER_FRAME_DENY)
                 .header(header::REFERRER_POLICY, HEADER_REFERRER_NO_REFERRER)
@@ -112,5 +152,32 @@ mod tests {
         assert!(csp.contains("script-src 'self' 'nonce-"), "{csp}");
         assert!(csp.contains("'wasm-unsafe-eval'"), "{csp}");
         assert!(csp.contains("frame-ancestors 'none'"), "{csp}");
+    }
+
+    #[tokio::test]
+    async fn static_assets_emit_etag_cache_control_and_304() {
+        let asset_path = WebAssets::iter()
+            .find(|p| p.starts_with(IMMUTABLE_ASSETS_PREFIX))
+            .expect("embedded hashed asset must exist")
+            .into_owned();
+        let uri: axum::http::Uri = format!("/{asset_path}").parse().unwrap();
+        let resp = static_handler(uri.clone(), HeaderMap::new()).await;
+        assert_eq!(resp.status(), StatusCode::OK);
+        let etag = resp
+            .headers()
+            .get(header::ETAG)
+            .and_then(|v| v.to_str().ok())
+            .expect("ETag header must be present")
+            .to_owned();
+        assert_eq!(
+            resp.headers()
+                .get(header::CACHE_CONTROL)
+                .and_then(|v| v.to_str().ok()),
+            Some(CACHE_CONTROL_IMMUTABLE)
+        );
+        let mut req_headers = HeaderMap::new();
+        req_headers.insert(header::IF_NONE_MATCH, etag.parse().unwrap());
+        let not_modified = static_handler(uri, req_headers).await;
+        assert_eq!(not_modified.status(), StatusCode::NOT_MODIFIED);
     }
 }

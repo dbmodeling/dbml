@@ -1,5 +1,42 @@
+use crate::constants::{MONOSPACE_FONT_FAMILY, SANS_SERIF_FONT_FAMILY};
 use resvg::{tiny_skia, usvg};
+use std::collections::hash_map::DefaultHasher;
 use std::fmt;
+use std::hash::{Hash, Hasher};
+use std::sync::{Arc, Mutex};
+
+fn font_fingerprint(fonts: &[&[u8]]) -> u64 {
+    let mut hasher = DefaultHasher::new();
+    fonts.len().hash(&mut hasher);
+    for f in fonts {
+        f.len().hash(&mut hasher);
+        f.hash(&mut hasher);
+    }
+    hasher.finish()
+}
+
+/// Reutiliza o `fontdb::Database` quando o conjunto de fontes não mudou (#127).
+fn cached_fontdb(fonts: &[&[u8]]) -> Arc<usvg::fontdb::Database> {
+    static CACHE: Mutex<Option<(u64, Arc<usvg::fontdb::Database>)>> = Mutex::new(None);
+    let key = font_fingerprint(fonts);
+    let mut guard = CACHE
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if let Some((cached_key, db)) = guard.as_ref()
+        && *cached_key == key
+    {
+        return Arc::clone(db);
+    }
+    let mut db = usvg::fontdb::Database::new();
+    for f in fonts {
+        db.load_font_data((*f).to_vec());
+    }
+    db.set_sans_serif_family(SANS_SERIF_FONT_FAMILY);
+    db.set_monospace_family(MONOSPACE_FONT_FAMILY);
+    let db = Arc::new(db);
+    *guard = Some((key, Arc::clone(&db)));
+    db
+}
 
 /// Failure while rasterising an SVG.
 #[derive(Debug)]
@@ -74,15 +111,10 @@ fn render(
     if !scale.is_finite() || scale <= 0.0 {
         return Err(RasterError::Size);
     }
-    let mut opt = usvg::Options::default();
-    {
-        let db = opt.fontdb_mut();
-        for f in fonts {
-            db.load_font_data((*f).to_vec());
-        }
-        db.set_sans_serif_family("Geist");
-        db.set_monospace_family("Geist Mono");
-    }
+    let opt = usvg::Options {
+        fontdb: cached_fontdb(fonts),
+        ..usvg::Options::default()
+    };
     let tree = usvg::Tree::from_str(svg, &opt).map_err(|e| RasterError::Svg(e.to_string()))?;
     let size = tree.size();
     if !(size.width().is_finite() && size.height().is_finite())

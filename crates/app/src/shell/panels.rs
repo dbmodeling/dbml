@@ -2633,7 +2633,7 @@ impl Shell {
                 );
                 let gc = group_tint.unwrap_or(g.accent);
                 let tbl = t_qname.clone();
-                let groups_for_menu = all_groups.clone();
+                let groups_for_menu = all_groups;
                 let shell_weak = cx.entity().downgrade();
                 let g_menu = *g;
                 let epoch = self.popover_epoch;

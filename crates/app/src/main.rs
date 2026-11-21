@@ -1,4 +1,5 @@
 #![cfg_attr(windows, windows_subsystem = "windows")]
+#![deny(unsafe_code)]
 
 //! DB Modeling: visual database modeling with DBML ↔ canvas.
 

@@ -2407,7 +2407,7 @@ impl Shell {
             cx,
             crate::i18n::t("todos os schemas (ou: public, sales)"),
         );
-        let shell_entity = cx.entity().clone();
+        let shell_entity = cx.entity();
         let has_existing = self
             .doc()
             .is_some_and(|d| !d.editor.read(cx).value().trim().is_empty());
@@ -2848,7 +2848,7 @@ impl Shell {
         use sql_import::SqlDialect;
         let model = cx.new(|_| crate::import_sql::ImportSqlModel::new(self.import_dialect));
         let sql_editor = cx.new(|cx| EditorState::new(window, cx).line_number(true));
-        let shell_entity = cx.entity().clone();
+        let shell_entity = cx.entity();
         let has_existing = self
             .doc()
             .is_some_and(|d| !d.editor.read(cx).value().trim().is_empty());

@@ -4,6 +4,7 @@ use gpui_kit::WindowBackgroundAppearance;
 
 /// Número de build do Windows (ex.: 22631), via `RtlGetVersion` (não mente por compatibilidade).
 #[cfg(windows)]
+#[expect(unsafe_code, reason = "FFI call to ntdll::RtlGetVersion")]
 fn windows_build() -> u32 {
     #[repr(C)]
     struct OsVersionInfoW {

@@ -160,6 +160,53 @@ async fn read_conn(
     .await
     .map_err(e)?;
 
+    // Busca todas as colunas de todas as tabelas selecionadas em uma única query (#114).
+    let all_cols = sqlx::query(sqlx::AssertSqlSafe(format!(
+        "SELECT a.attrelid::int8 AS oid, a.attname, format_type(a.atttypid, a.atttypmod) AS ty, \
+         a.attnotnull, pg_get_expr(d.adbin, d.adrelid) AS dflt, a.attidentity::text AS ident, \
+         a.attgenerated::text AS generated, col_description(a.attrelid, a.attnum) AS cmt \
+         FROM pg_attribute a \
+         JOIN pg_class c ON c.oid = a.attrelid \
+         JOIN pg_namespace n ON n.oid = c.relnamespace \
+         LEFT JOIN pg_attrdef d ON d.adrelid = a.attrelid AND d.adnum = a.attnum \
+         WHERE c.relkind IN ('r', 'p') AND NOT c.relispartition AND {SYSTEM_SCHEMAS} \
+         AND ($1::text[] IS NULL OR n.nspname = ANY($1)) \
+         AND a.attnum > 0 AND NOT a.attisdropped \
+         ORDER BY a.attrelid, a.attnum"
+    )))
+    .bind(schemas)
+    .fetch_all(&mut *conn)
+    .await
+    .map_err(e)?;
+
+    let mut cols_by_oid: HashMap<i64, Vec<Column>> = HashMap::new();
+    for c in &all_cols {
+        let oid: i64 = c.try_get("oid").map_err(e)?;
+        let default: Option<String> = c.try_get("dflt").map_err(e)?;
+        let ident: String = c.try_get("ident").map_err(e)?;
+        let generated: String = c.try_get("generated").map_err(e)?;
+        let serial = default
+            .as_deref()
+            .is_some_and(|d| d.starts_with("nextval('"));
+        let identity = matches!(ident.as_str(), "a" | "d");
+        let default = if serial || identity || !generated.is_empty() {
+            None
+        } else {
+            default.as_deref().map(clean_default)
+        };
+        cols_by_oid.entry(oid).or_default().push(Column {
+            name: c.try_get("attname").map_err(e)?,
+            ty: dbml_type(&c.try_get::<String, _>("ty").map_err(e)?),
+            not_null: c.try_get("attnotnull").map_err(e)?,
+            primary_key: false,
+            unique: false,
+            auto_increment: serial || identity,
+            default,
+            comment: c.try_get("cmt").map_err(e)?,
+            check: None,
+        });
+    }
+
     // (schema, table) -> index into db.tables
     let mut pos: HashMap<(String, String), usize> = HashMap::new();
     for t in &tables {
@@ -167,45 +214,7 @@ async fn read_conn(
         let name: String = t.try_get("relname").map_err(e)?;
         let oid: i64 = t.try_get("oid").map_err(e)?;
         let comment: Option<String> = t.try_get("cmt").map_err(e)?;
-        let cols = sqlx::query(
-            "SELECT a.attname, format_type(a.atttypid, a.atttypmod) AS ty, a.attnotnull, \
-             pg_get_expr(d.adbin, d.adrelid) AS dflt, a.attidentity::text AS ident, \
-             a.attgenerated::text AS generated, col_description(a.attrelid, a.attnum) AS cmt \
-             FROM pg_attribute a \
-             LEFT JOIN pg_attrdef d ON d.adrelid = a.attrelid AND d.adnum = a.attnum \
-             WHERE a.attrelid = $1::int8::oid AND a.attnum > 0 AND NOT a.attisdropped \
-             ORDER BY a.attnum",
-        )
-        .bind(oid)
-        .fetch_all(&mut *conn)
-        .await
-        .map_err(e)?;
-        let mut columns = Vec::new();
-        for c in &cols {
-            let default: Option<String> = c.try_get("dflt").map_err(e)?;
-            let ident: String = c.try_get("ident").map_err(e)?;
-            let generated: String = c.try_get("generated").map_err(e)?;
-            let serial = default
-                .as_deref()
-                .is_some_and(|d| d.starts_with("nextval('"));
-            let identity = matches!(ident.as_str(), "a" | "d");
-            let default = if serial || identity || !generated.is_empty() {
-                None
-            } else {
-                default.as_deref().map(clean_default)
-            };
-            columns.push(Column {
-                name: c.try_get("attname").map_err(e)?,
-                ty: dbml_type(&c.try_get::<String, _>("ty").map_err(e)?),
-                not_null: c.try_get("attnotnull").map_err(e)?,
-                primary_key: false,
-                unique: false,
-                auto_increment: serial || identity,
-                default,
-                comment: c.try_get("cmt").map_err(e)?,
-                check: None,
-            });
-        }
+        let columns = cols_by_oid.remove(&oid).unwrap_or_default();
         pos.insert((schema.clone(), name.clone()), db.tables.len());
         db.tables.push(Table {
             schema: schema_of(schema),

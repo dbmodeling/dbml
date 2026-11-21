@@ -423,7 +423,7 @@ mod tests {
         let base = snap("a", 1.0, 2.0);
         h.push(base.clone());
         let single = h.approx_bytes();
-        let mut next = base.clone();
+        let mut next = base;
         next.text = Arc::from("b");
         h.push(next);
         assert_eq!(h.approx_bytes(), single + 1);

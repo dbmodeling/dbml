@@ -19,3 +19,7 @@ pub const TLS_BTN_GAP_PX: f32 = 6.0;
 pub const TLS_BTN_HEIGHT_PX: f32 = 28.0;
 pub const TLS_LABEL_WIDTH_PX: f32 = 96.0;
 pub const TLS_LABEL_FONT_PX: f32 = 12.5;
+
+/// Configuração do runtime tokio reutilizado pela introspecção de banco.
+pub const INTROSPECT_WORKER_THREADS: usize = 1;
+pub const INTROSPECT_TIMEOUT_SECS: u64 = 10;

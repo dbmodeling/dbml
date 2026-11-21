@@ -19,6 +19,16 @@ pub const CSP_PREFIX: &str = "default-src 'self'; script-src 'self' 'nonce-";
 /// Sufixo da diretiva `Content-Security-Policy` após o nonce.
 pub const CSP_SUFFIX: &str = "' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; connect-src 'self' ws: wss:; frame-ancestors 'none'; base-uri 'self'; object-src 'none'";
 
+/// Capacidade em bytes de um cabeçalho `ETag` SHA-256 com aspas (`"` + 64 hex + `"`).
+pub const ETAG_HEADER_CAPACITY: usize = 66;
+
+/// Prefixo de ativos com hash de conteúdo no nome (imutáveis em cache).
+pub const IMMUTABLE_ASSETS_PREFIX: &str = "assets/";
+/// Política de cache para ativos versionados por hash.
+pub const CACHE_CONTROL_IMMUTABLE: &str = "public, max-age=31536000, immutable";
+/// Política de cache para `index.html` e ativos não versionados.
+pub const CACHE_CONTROL_NO_CACHE: &str = "no-cache";
+
 /// Valores aceitos para o campo `tls` em `/api/introspect`.
 pub const TLS_MODE_AUTO: &str = "auto";
 pub const TLS_MODE_VERIFY: &str = "verify";

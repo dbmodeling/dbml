@@ -3,6 +3,7 @@
 //! Diagram export without UI dependencies: Mermaid `erDiagram`, vector SVG and PNG/JPEG
 //! rasterisation (ADR-0007: scene → SVG → raster).
 
+mod constants;
 mod mermaid;
 mod raster;
 mod svg;
