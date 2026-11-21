@@ -17,6 +17,7 @@ mod i18n;
 mod import_sql;
 mod motion;
 mod platform;
+mod recovery;
 mod session;
 mod settings;
 mod shell;

@@ -98,6 +98,8 @@ pub fn install_panic_hook() {
     std::panic::set_hook(Box::new(move |info| {
         let message = format!("panic: {info}");
         append_log(&message);
+        // abas com edições não salvas viram cópias de recuperação antes do abort
+        crate::recovery::dump_live_for_panic();
         if !cfg!(debug_assertions) {
             show_dialog(crate::i18n::t("DB Modeling encerrou com um erro"), &message);
         }

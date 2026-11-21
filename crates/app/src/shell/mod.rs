@@ -37,6 +37,8 @@ const NEW_TABLE_NAME: &str = "new_table";
 
 /// Um arquivo aberto (aba).
 pub struct Doc {
+    /// identifica a cópia de recuperação (`recovery`) desta aba
+    id: u64,
     path: Option<PathBuf>,
     title: String,
     editor: Entity<EditorState>,
@@ -183,6 +185,10 @@ pub struct Shell {
     disk_watcher: Option<Task<()>>,
     /// consulta a caixa de entrada de `handoff` (segunda instância, "Abrir com" do macOS)
     handoff_poll: Option<Task<()>>,
+    /// gravação (com debounce) das cópias de recuperação das abas não salvas
+    recovery_task: Option<Task<()>>,
+    /// há cópias de recuperação no disco (ou pendentes de gravação)
+    recovery_active: bool,
     /// leituras de arquivo/pasta em andamento em segundo plano (mostra "Abrindo…" na barra)
     loading: usize,
     /// `.dbml` de uma pasta fora do projeto (arquivo avulso), varridos em segundo plano
@@ -667,6 +673,8 @@ impl Shell {
             popover_epoch: 0,
             disk_watcher: None,
             handoff_poll: None,
+            recovery_task: None,
+            recovery_active: false,
             loading: 0,
             loose_files: (PathBuf::new(), Vec::new()),
             preselect: crate::harness::var("DBM_SELECT"),
@@ -684,6 +692,7 @@ impl Shell {
             Some(p) => this.open_path(p, window, cx),
             None => this.restore_session(window, cx),
         }
+        this.adopt_recovery(window, cx);
         this
     }
 
@@ -780,6 +789,7 @@ impl Shell {
                 if !suppress && let Some(i) = this.doc_index(ed) {
                     this.schedule_autosave(i, window, cx);
                 }
+                this.publish_recovery(cx);
                 cx.notify();
             },
         );
@@ -855,6 +865,7 @@ impl Shell {
         );
         self.subs.extend([sub, obs, events]);
         self.docs.push(Doc {
+            id: crate::recovery::next_id(),
             path,
             title,
             editor,
@@ -880,6 +891,69 @@ impl Shell {
 
     /// Abre `path` em uma aba. A leitura roda em segundo plano (pasta de rede lenta não congela
     /// a janela); `finish_open` conclui na thread da UI.
+    /// Publica as abas com edições não salvas (para o panic hook) e agenda a gravação das cópias
+    /// de recuperação; salvar ou fechar a aba apaga a cópia na próxima gravação.
+    fn publish_recovery(&mut self, cx: &mut Context<Self>) {
+        let live: Vec<crate::recovery::Live> = self
+            .docs
+            .iter()
+            .filter(|d| d.dirty)
+            .map(|d| crate::recovery::Live {
+                id: d.id,
+                title: d.title.clone(),
+                path: d.path.clone(),
+                text: d.last_text.clone(),
+            })
+            .collect();
+        crate::recovery::set_live(live.clone());
+        if live.is_empty() && !self.recovery_active {
+            return;
+        }
+        self.recovery_active = !live.is_empty();
+        let Some(dir) = crate::recovery::dir() else { return };
+        let bg = cx.background_executor().clone();
+        self.recovery_task = Some(cx.spawn(async move |_, _| {
+            bg.timer(std::time::Duration::from_millis(1500)).await;
+            bg.spawn(async move {
+                if let Err(e) = crate::recovery::write_all(&dir, &live) {
+                    eprintln!("recovery: {e}");
+                }
+            })
+            .await;
+        }));
+    }
+
+    /// Devolve como abas não salvas o que uma execução anterior deixou em `recovery/`. A aba
+    /// herda o id da cópia, então ela continua sendo regravada/apagada normalmente. Abas de
+    /// arquivo voltam sem caminho: gravar exige "Salvar como", nada sobrescreve o disco calado.
+    fn adopt_recovery(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(dir) = crate::recovery::dir() else { return };
+        let entries = crate::recovery::read_all(&dir);
+        if entries.is_empty() {
+            return;
+        }
+        let count = entries.len();
+        for entry in entries {
+            let title = match &entry.path {
+                Some(p) => crate::i18n::t("{} (recuperado)").replace("{}", &file_title(p)),
+                None => crate::i18n::t("{} (recuperado)").replace("{}", &entry.title),
+            };
+            self.add_doc(entry.text, None, title, window, cx);
+            if let Some(doc) = self.docs.last_mut() {
+                doc.id = entry.id;
+                doc.saved_text = std::sync::Arc::from("");
+                doc.dirty = true;
+            }
+        }
+        self.recovery_active = true;
+        self.publish_recovery(cx);
+        window.push_notification(
+            crate::i18n::t("{} aba(s) com edições não salvas foram recuperadas de uma sessão que terminou de forma inesperada.")
+                .replace("{}", &count.to_string()),
+            cx,
+        );
+    }
+
     fn open_path(&mut self, path: PathBuf, window: &mut Window, cx: &mut Context<Self>) {
         if let Some(i) = self.docs.iter().position(|d| d.path.as_ref() == Some(&path)) {
             self.active = i;
@@ -1288,6 +1362,7 @@ impl Shell {
                 window.push_notification(crate::i18n::t(save_error_hint(&e)), cx);
             }
         }
+        self.publish_recovery(cx);
         cx.notify();
     }
 
@@ -1405,6 +1480,7 @@ impl Shell {
         if changed {
             window.push_notification(crate::i18n::t("{} foi recarregado do disco.").replace("{}", &title), cx);
         }
+        self.publish_recovery(cx);
         cx.notify();
     }
 
@@ -1431,6 +1507,8 @@ impl Shell {
                 doc.dirty = false;
                 doc.watch_warned = None;
                 doc.save_armed = None;
+                self.publish_recovery(cx);
+                let Some(doc) = self.docs.get_mut(i) else { return true };
                 doc.autosave = None;
                 window.push_notification(crate::i18n::t("Salvo em {}").replace("{}", &path.display().to_string()), cx);
                 doc.title = file_title(&path);
@@ -1459,6 +1537,7 @@ impl Shell {
             return;
         }
         self.docs.remove(i);
+        self.publish_recovery(cx);
         if self.active >= self.docs.len() {
             self.active = self.docs.len().saturating_sub(1);
         } else if i < self.active {
@@ -3309,6 +3388,7 @@ impl Shell {
             Self::save_edges(doc, cx);
         }
         self.schedule_autosave(self.active, window, cx);
+        self.publish_recovery(cx);
         cx.notify();
     }
 

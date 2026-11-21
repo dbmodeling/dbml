@@ -412,6 +412,8 @@ const TRANSLATIONS: &[(&str, &str)] = &[
     ("problema", "problem"),
     ("problemas", "problems"),
     ("Salvo em {}", "Saved to {}"),
+    ("{} (recuperado)", "{} (recovered)"),
+    ("{} aba(s) com edições não salvas foram recuperadas de uma sessão que terminou de forma inesperada.", "{} tab(s) with unsaved edits were recovered from a session that ended unexpectedly."),
     ("Instância única indisponível", "Single instance unavailable"),
     ("Abrindo…", "Opening…"),
     ("DB Modeling não conseguiu iniciar", "DB Modeling could not start"),
