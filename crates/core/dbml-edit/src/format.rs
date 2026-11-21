@@ -24,7 +24,7 @@ fn braces(line: &str) -> (i32, i32) {
 
 /// Formats a DBML document with consistent indentation while preserving comments.
 #[must_use]
-pub fn format(text: &str) -> String {
+pub(crate) fn format(text: &str) -> String {
     let mut out = String::with_capacity(text.len());
     let mut depth: i32 = 0;
     let mut blank_run = 0;

@@ -67,7 +67,7 @@ pub fn unique_enum_name(text: &str, base: &str) -> String {
 
 /// Appends a new `Enum <name> { value_1 }` block to `text`.
 #[must_use]
-pub fn add_enum(text: &str, name: &str) -> String {
+pub(crate) fn add_enum(text: &str, name: &str) -> String {
     let ident = format_ident(name);
     let mut out = text.to_string();
     if !out.is_empty() && !out.ends_with('\n') {
@@ -82,7 +82,7 @@ pub fn add_enum(text: &str, name: &str) -> String {
 
 /// Deletes the `Enum <name> { ... }` block from `text`.
 #[must_use]
-pub fn delete_enum(text: &str, name: &str) -> String {
+pub(crate) fn delete_enum(text: &str, name: &str) -> String {
     let root = parse(text).syntax();
     let Some(node) = find_enum(&root, name) else {
         return text.to_string();
@@ -95,7 +95,7 @@ pub fn delete_enum(text: &str, name: &str) -> String {
 
 /// Renames `Enum <old_name>` to `new_name` and cascades the type rename to table columns.
 #[must_use]
-pub fn rename_enum(text: &str, old_name: &str, new_name: &str) -> String {
+pub(crate) fn rename_enum(text: &str, old_name: &str, new_name: &str) -> String {
     if old_name == new_name {
         return text.to_string();
     }
@@ -145,7 +145,7 @@ pub fn rename_enum(text: &str, old_name: &str, new_name: &str) -> String {
 
 /// Inserts a new `value` at the end of `Enum <enum_name>`.
 #[must_use]
-pub fn add_enum_value(text: &str, enum_name: &str, value: &str) -> Option<String> {
+pub(crate) fn add_enum_value(text: &str, enum_name: &str, value: &str) -> Option<String> {
     let root = parse(text).syntax();
     let node = find_enum(&root, enum_name)?;
     let rbrace = sig(&node)
@@ -187,7 +187,7 @@ pub fn add_enum_value(text: &str, enum_name: &str, value: &str) -> Option<String
 
 /// Deletes `value` from `Enum <enum_name>`.
 #[must_use]
-pub fn delete_enum_value(text: &str, enum_name: &str, value: &str) -> Option<String> {
+pub(crate) fn delete_enum_value(text: &str, enum_name: &str, value: &str) -> Option<String> {
     let root = parse(text).syntax();
     let node = find_enum(&root, enum_name)?;
     let col = node
@@ -202,7 +202,7 @@ pub fn delete_enum_value(text: &str, enum_name: &str, value: &str) -> Option<Str
 
 /// Renames `old_val` to `new_val` inside `Enum <enum_name>`.
 #[must_use]
-pub fn rename_enum_value(
+pub(crate) fn rename_enum_value(
     text: &str,
     enum_name: &str,
     old_val: &str,
@@ -229,7 +229,12 @@ pub fn rename_enum_value(
 
 /// Moves `value` one position up (`up = true`) or down (`up = false`) inside `Enum <enum_name>`.
 #[must_use]
-pub fn reorder_enum_value(text: &str, enum_name: &str, value: &str, up: bool) -> Option<String> {
+pub(crate) fn reorder_enum_value(
+    text: &str,
+    enum_name: &str,
+    value: &str,
+    up: bool,
+) -> Option<String> {
     let root = parse(text).syntax();
     let node = find_enum(&root, enum_name)?;
     let cols: Vec<SyntaxNode> = node

@@ -1,6 +1,7 @@
 //! Mapeamento de coordenadas textuais bidirecionais entre offsets de bytes UTF-8 (Rowan)
 //! e posições `(line, character)` em UTF-16 utilizadas pelo VS Code e browsers.
 
+pub use dbml_edit::LineEnding;
 use serde::{Deserialize, Serialize};
 
 /// Posição 0-based compatível com a especificação LSP / VS Code.
@@ -19,26 +20,6 @@ pub struct Range {
     pub start: Position,
     /// Exclusive end position.
     pub end: Position,
-}
-
-/// Predominant line-ending style detected in a document.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum LineEnding {
-    /// Unix line feed (`\n`).
-    Lf,
-    /// Windows carriage-return + line feed (`\r\n`).
-    Crlf,
-}
-
-impl LineEnding {
-    /// Returns the line-ending string slice (`"\n"` or `"\r\n"`).
-    #[must_use]
-    pub fn as_str(&self) -> &'static str {
-        match self {
-            LineEnding::Lf => "\n",
-            LineEnding::Crlf => "\r\n",
-        }
-    }
 }
 
 /// Índice de linhas com correspondência de UTF-8 e UTF-16.

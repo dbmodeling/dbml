@@ -105,7 +105,7 @@ pub(crate) fn kv_edit(
 
 /// Sets or clears the `default: ...` attribute on `table.col`, preserving other column settings.
 #[must_use]
-pub fn set_column_default(
+pub(crate) fn set_column_default(
     text: &str,
     table: &str,
     col: &str,
@@ -117,7 +117,7 @@ pub fn set_column_default(
 
 /// Sets or clears the ``check: `...` `` attribute on `table.col`, preserving other column settings.
 #[must_use]
-pub fn set_column_check(
+pub(crate) fn set_column_check(
     text: &str,
     table: &str,
     col: &str,
@@ -171,7 +171,7 @@ fn index_entry_spans(block: &SyntaxNode) -> Vec<Range<usize>> {
 
 /// Appends `index` to the `indexes { ... }` block of `table` (creating the block if absent).
 #[must_use]
-pub fn add_index(text: &str, table: &str, index: &IndexDef) -> Option<String> {
+pub(crate) fn add_index(text: &str, table: &str, index: &IndexDef) -> Option<String> {
     if index.columns.is_empty() {
         return None;
     }
@@ -216,7 +216,12 @@ pub fn add_index(text: &str, table: &str, index: &IndexDef) -> Option<String> {
 /// Updates the index at `index_idx` inside `table`'s `indexes { ... }` block.
 /// If `index.columns` is empty, removes the index entry instead.
 #[must_use]
-pub fn update_index(text: &str, table: &str, index_idx: usize, index: &IndexDef) -> Option<String> {
+pub(crate) fn update_index(
+    text: &str,
+    table: &str,
+    index_idx: usize,
+    index: &IndexDef,
+) -> Option<String> {
     if index.columns.is_empty() {
         return delete_index(text, table, index_idx);
     }
@@ -231,7 +236,7 @@ pub fn update_index(text: &str, table: &str, index_idx: usize, index: &IndexDef)
 /// Deletes the index at `index_idx` inside `table`'s `indexes { ... }` block, removing
 /// the enclosing `indexes { ... }` block when its last entry is deleted.
 #[must_use]
-pub fn delete_index(text: &str, table: &str, index_idx: usize) -> Option<String> {
+pub(crate) fn delete_index(text: &str, table: &str, index_idx: usize) -> Option<String> {
     let root = parse(text).syntax();
     let t_node = find_table(&root, table)?;
     let block = find_indexes_block(&t_node)?;

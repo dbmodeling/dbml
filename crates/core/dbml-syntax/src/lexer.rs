@@ -3,7 +3,8 @@ use logos::Logos;
 
 #[derive(Logos, Debug, Clone, Copy, PartialEq)]
 enum Tok {
-    #[regex(r"[ \t\r]+")]
+    // U+FEFF (BOM UTF-8) é trivia: arquivos salvos com BOM continuam com o mesmo CST.
+    #[regex("[ \t\r\u{feff}]+")]
     Whitespace,
     #[token("\n")]
     Newline,
@@ -72,6 +73,14 @@ mod tests {
     fn triple_quoted_string_is_one_token() {
         let toks = lex("Note: '''it's\nmulti'''\n");
         assert_eq!(toks[3], (SyntaxKind::Str, "'''it's\nmulti'''"));
+    }
+
+    #[test]
+    fn leading_bom_is_whitespace_trivia() {
+        let toks = lex("\u{feff}Table t {}");
+        assert_eq!(toks[0], (SyntaxKind::Whitespace, "\u{feff}"));
+        assert_eq!(toks[1], (SyntaxKind::Ident, "Table"));
+        assert!(!toks.iter().any(|(k, _)| *k == SyntaxKind::Other));
     }
 
     #[test]

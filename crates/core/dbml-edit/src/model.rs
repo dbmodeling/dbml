@@ -146,7 +146,7 @@ pub fn unique_column_name(text: &str, table: &str, base: &str) -> String {
 
 /// Appends a new `Table name { id int [pk] }` block to `text`.
 #[must_use]
-pub fn add_table(text: &str, name: &str) -> String {
+pub(crate) fn add_table(text: &str, name: &str) -> String {
     append_block(text, &format!("Table {name} {{\n  id int [pk]\n}}\n"))
 }
 
@@ -179,7 +179,7 @@ fn parse_top_ref_endpoints(r: &SyntaxNode) -> Option<(String, String, String, St
 
 /// Remove a tabela, as `Ref:` de topo que a citam, as colunas FK `id_<name>` nas tabelas filhas e a sua linha em grupos.
 #[must_use]
-pub fn delete_table(text: &str, name: &str) -> String {
+pub(crate) fn delete_table(text: &str, name: &str) -> String {
     let root = parse(text).syntax();
     let mut edits = Vec::new();
     let mut fk_cols_to_remove: Vec<(String, String)> = Vec::new();
@@ -231,7 +231,7 @@ pub fn delete_table(text: &str, name: &str) -> String {
 
 /// Renomeia a tabela no cabeçalho, em `tabela.coluna` (refs de topo e inline), colunas FK `id_<old>` e nos grupos.
 #[must_use]
-pub fn rename_table(text: &str, old: &str, new: &str) -> String {
+pub(crate) fn rename_table(text: &str, old: &str, new: &str) -> String {
     let root = parse(text).syntax();
     let mut edits = Vec::new();
     if let Some(r) = find_table(&root, old).and_then(|t| table_name_range(&t)) {
@@ -314,7 +314,11 @@ pub fn rename_table(text: &str, old: &str, new: &str) -> String {
 /// Aplica um [`crate::ColumnPreset`] a `table`; `None` se a tabela não existe.
 /// Retorna o texto inalterado quando todas as colunas do preset já existem.
 #[must_use]
-pub fn add_column_preset(text: &str, table: &str, preset: crate::ColumnPreset) -> Option<String> {
+pub(crate) fn add_column_preset(
+    text: &str,
+    table: &str,
+    preset: crate::ColumnPreset,
+) -> Option<String> {
     let cmd = crate::Command::AddColumnPreset {
         table: table.into(),
         preset,
@@ -324,7 +328,7 @@ pub fn add_column_preset(text: &str, table: &str, preset: crate::ColumnPreset) -
 
 /// Inserts a new column `name ty` into `table`, returning `None` if `table` is missing.
 #[must_use]
-pub fn add_column(text: &str, table: &str, name: &str, ty: &str) -> Option<String> {
+pub(crate) fn add_column(text: &str, table: &str, name: &str, ty: &str) -> Option<String> {
     let cmd = crate::Command::AddColumn {
         table: table.into(),
         name: name.into(),
@@ -335,7 +339,7 @@ pub fn add_column(text: &str, table: &str, name: &str, ty: &str) -> Option<Strin
 
 /// Remove a coluna e todas as `Ref:` de topo que referenciam `table.col`.
 #[must_use]
-pub fn delete_column(text: &str, table: &str, col: &str) -> Option<String> {
+pub(crate) fn delete_column(text: &str, table: &str, col: &str) -> Option<String> {
     let root = parse(text).syntax();
     let c = find_column(&find_table(&root, table)?, col)?;
     let mut edits = vec![(
@@ -363,7 +367,7 @@ pub fn delete_column(text: &str, table: &str, col: &str) -> Option<String> {
 
 /// Renames column `old` to `new` in `table` and updates all `table.old` and `indexes` references.
 #[must_use]
-pub fn rename_column(text: &str, table: &str, old: &str, new: &str) -> Option<String> {
+pub(crate) fn rename_column(text: &str, table: &str, old: &str, new: &str) -> Option<String> {
     let root = parse(text).syntax();
     let t_node = find_table(&root, table)?;
     let c = find_column(&t_node, old)?;
@@ -424,7 +428,7 @@ pub fn rename_column(text: &str, table: &str, old: &str, new: &str) -> Option<St
 
 /// Updates the data type of column `col` in `table` to `ty`.
 #[must_use]
-pub fn set_column_type(text: &str, table: &str, col: &str, ty: &str) -> Option<String> {
+pub(crate) fn set_column_type(text: &str, table: &str, col: &str, ty: &str) -> Option<String> {
     let root = parse(text).syntax();
     let c = find_column(&find_table(&root, table)?, col)?;
     let toks = sig(&c);
@@ -444,7 +448,13 @@ pub fn set_column_type(text: &str, table: &str, col: &str, ty: &str) -> Option<S
 
 /// Liga/desliga `pk`, `not null` ou `unique` nas opções `[...]` da coluna.
 #[must_use]
-pub fn set_column_flag(text: &str, table: &str, col: &str, flag: &str, on: bool) -> Option<String> {
+pub(crate) fn set_column_flag(
+    text: &str,
+    table: &str,
+    col: &str,
+    flag: &str,
+    on: bool,
+) -> Option<String> {
     let root = parse(text).syntax();
     let c = find_column(&find_table(&root, table)?, col)?;
     let toks = sig(&c);
@@ -488,7 +498,7 @@ pub fn set_column_flag(text: &str, table: &str, col: &str, flag: &str, on: bool)
 
 /// `Ref: a.b > c.d` (muitos-para-um) no fim do texto.
 #[must_use]
-pub fn add_ref(text: &str, from: (&str, &str), to: (&str, &str)) -> String {
+pub(crate) fn add_ref(text: &str, from: (&str, &str), to: (&str, &str)) -> String {
     let line = format!("Ref: {}.{} > {}.{}\n", from.0, from.1, to.0, to.1);
     let mut out = text.trim_end_matches('\n').to_string();
     out.push_str(if out.is_empty() { "" } else { "\n" });
@@ -538,7 +548,7 @@ fn primary_key_of(root: &SyntaxNode, table: &str) -> Option<(String, String)> {
 /// Linka `source_table` à `target_table` criando automaticamente a coluna `id_<source_table>`
 /// (classificada como FK) em `target_table` e adicionando `Ref: target_table.id_<source_table> > source_table.<pk>`.
 #[must_use]
-pub fn link_tables(text: &str, source_table: &str, target_table: &str) -> String {
+pub(crate) fn link_tables(text: &str, source_table: &str, target_table: &str) -> String {
     if source_table == target_table {
         return text.to_string();
     }
@@ -594,7 +604,7 @@ pub fn link_tables(text: &str, source_table: &str, target_table: &str) -> String
 
 /// Remove a linha `Ref:` entre `from` e `to` (ou inline) e apaga também a coluna FK `from.1` da tabela `from.0`.
 #[must_use]
-pub fn delete_ref(text: &str, from: (&str, &str), to: (&str, &str)) -> String {
+pub(crate) fn delete_ref(text: &str, from: (&str, &str), to: (&str, &str)) -> String {
     let root = parse(text).syntax();
     let mut edits = Vec::new();
 
@@ -694,7 +704,12 @@ fn rewrite_bracket_actions(
 
 /// Updates cardinality and `delete:` / `update:` actions on an existing top-level or inline `Ref`.
 #[must_use]
-pub fn update_ref(text: &str, from: (&str, &str), to: (&str, &str), update: RefUpdate) -> String {
+pub(crate) fn update_ref(
+    text: &str,
+    from: (&str, &str),
+    to: (&str, &str),
+    update: RefUpdate,
+) -> String {
     let root = parse(text).syntax();
     let mut edits = Vec::new();
 
