@@ -186,7 +186,7 @@ export interface SidecarLayout {
   };
 }
 
-/** Presets de coluna (ids iguais a `ColumnPreset::id` em `crates/dbml-edit`). */
+/** Presets de coluna (ids iguais a `ColumnPreset::id` em `crates/core/dbml-edit`). */
 export type ColumnPresetId = 'uuid_pk' | 'bigint_pk' | 'timestamps' | 'soft_delete';
 
 /** Comandos semânticos emitidos pela UI (idênticos ao enum `Command` em `crates/dbml-wasm/src/types.rs`) */

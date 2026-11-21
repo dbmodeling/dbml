@@ -18,10 +18,10 @@ Whenever you implement a feature, fix a bug, change keyboard shortcuts, modify c
 
 | Layer / Feature | Where it lives in Desktop (GPUI) | Where it lives in Web (CLI & VS Code) |
 | :--- | :--- | :--- |
-| **Parser, CST & AST** | `crates/dbml-syntax` (incl. `unquote`, `child_tokens`, `descendant_tokens`), `crates/schema` | Shared via `crates/dbml-wasm` |
-| **Lint, Diagnostics & Autocomplete** | `crates/dbml-analysis` | Shared via `crates/dbml-wasm` (`analyze`, `complete`, `format_source`) |
-| **Structural Editing (Text Patches)** | `crates/dbml-edit` | Shared via `crates/dbml-wasm` (`apply_command`, `add_group`, etc.) |
-| **Auto-Layout, Routing & Card Geometry** | `crates/layout` (`CARD_W`, `HEADER_H`, `ROW_H`, `GROUP_PAD`, `TABLE_COLORS`, `compute_diagram_positions`) | Shared via `crates/dbml-wasm` (`compute_layout`, `build_scene`) |
+| **Parser, CST & AST** | `crates/core/dbml-syntax` (incl. `unquote`, `child_tokens`, `descendant_tokens`), `crates/core/schema` | Shared via `crates/dbml-wasm` |
+| **Lint, Diagnostics & Autocomplete** | `crates/core/dbml-analysis` | Shared via `crates/dbml-wasm` (`analyze`, `complete`, `format_source`) |
+| **Structural Editing (Text Patches)** | `crates/core/dbml-edit` | Shared via `crates/dbml-wasm` (`apply_command`, `add_group`, etc.) |
+| **Auto-Layout, Routing & Card Geometry** | `crates/core/layout` (`CARD_W`, `HEADER_H`, `ROW_H`, `GROUP_PAD`, `TABLE_COLORS`, `compute_diagram_positions`) | Shared via `crates/dbml-wasm` (`compute_layout`, `build_scene`) |
 | **Canvas (Render, Pan/Zoom, Hit-test)** | `crates/app/src/canvas.rs` + `crates/app/src/canvas_geom.rs` | `packages/canvas-web/src/canvas-view.ts` + `renderer.ts` |
 | **Workbench (Topbar, Sidebar, Inspector, Statusbar)** | `crates/app/src/shell/mod.rs` + `crates/app/src/shell/panels.rs` | `packages/canvas-web/src/workbench.ts` + `panels.ts` |
 | **Shortcuts & Command Palette** | `crates/app/src/actions.rs` | `packages/canvas-web/src/actions.ts` |

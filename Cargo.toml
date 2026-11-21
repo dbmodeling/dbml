@@ -1,6 +1,14 @@
 [workspace]
 resolver = "2"
-members = ["crates/*"]
+members = [
+    "crates/core/*",
+    "crates/app",
+    "crates/cli",
+    "crates/dbml-wasm",
+    "crates/db-introspect",
+    "crates/diagram-export",
+    "crates/sql-import",
+]
 
 [workspace.package]
 edition = "2024"
@@ -10,11 +18,11 @@ publish = false
 
 [workspace.dependencies]
 # Internal workspace crates
-schema = { path = "crates/schema" }
-dbml-syntax = { path = "crates/dbml-syntax" }
-dbml-analysis = { path = "crates/dbml-analysis" }
-dbml-edit = { path = "crates/dbml-edit" }
-layout = { path = "crates/layout" }
+schema = { path = "crates/core/schema" }
+dbml-syntax = { path = "crates/core/dbml-syntax" }
+dbml-analysis = { path = "crates/core/dbml-analysis" }
+dbml-edit = { path = "crates/core/dbml-edit" }
+layout = { path = "crates/core/layout" }
 diagram-export = { path = "crates/diagram-export" }
 sql-import = { path = "crates/sql-import" }
 db-introspect = { path = "crates/db-introspect" }

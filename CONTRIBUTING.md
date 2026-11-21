@@ -10,7 +10,7 @@ DB Modeling shares a single Rust core across three targets:
 
 | Component | Path | Description |
 | :--- | :--- | :--- |
-| **Core Crates** | `crates/schema`, `crates/dbml-syntax`, `crates/dbml-analysis`, `crates/dbml-edit`, `crates/layout` | Parser (Rowan CST), linter, autocomplete, minimal textual edits, and Sugiyama auto-layout |
+| **Core Crates** | `crates/core/schema`, `crates/core/dbml-syntax`, `crates/core/dbml-analysis`, `crates/core/dbml-edit`, `crates/core/layout` | Parser (Rowan CST), linter, autocomplete, minimal textual edits, and Sugiyama auto-layout |
 | **Desktop App** | `crates/app` | Native GPUI desktop application |
 | **WebAssembly Bridge** | `crates/dbml-wasm` | Wasm bindings exposing the Rust core to browser and VS Code |
 | **Shared Web Workbench** | `packages/canvas-web` | TypeScript/HTML5 Canvas UI shared by the Web CLI and VS Code Extension |

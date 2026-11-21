@@ -16,23 +16,33 @@
           texto ◀─patch─── edição de CST ◀─comando── UI
 ```
 
-## Workspace de crates (proposta)
+## Estrutura do monorepo
 
-```
+```text
 crates/
-  schema/        # modelo semântico puro: Table, Column, Type, Ref, Index, Enum, ids estáveis
-  dbml-syntax/   # lexer (logos) + parser tolerante → CST rowan; sem dependência de UI
-  dbml-analysis/ # CST → Schema, diagnósticos, resolução de nomes, completions, rename
-  dbml-edit/     # operações semânticas → patches textuais mínimos sobre o CST
-  scene/         # descrição visual pura (caixas, textos, arestas, cores) a partir de Schema + layout
-  export/        # scene → SVG → PNG/JPEG (resvg/tiny-skia + image); Schema → Mermaid erDiagram
-  layout/        # auto-layout (camadas/Sugiyama), roteamento de arestas, geometria
-  project/       # arquivo .dbml + sidecar de layout, autosave, file watching
-  app/           # binário GPUI: janelas, canvas, editor, painéis, temas, atalhos
+  core/
+    schema/         # modelo semântico
+    dbml-syntax/    # lexer e parser tolerante, com CST sem perdas
+    dbml-analysis/  # projeção do CST, diagnósticos e autocomplete
+    dbml-edit/      # comandos semânticos que produzem patches textuais
+    layout/         # posicionamento, roteamento e geometria
+  db-introspect/    # leitura de esquemas de bancos de dados
+  sql-import/       # conversão de DDL para DBML
+  diagram-export/   # exportação de diagramas
+  dbml-wasm/        # ponte do Rust para o navegador e o VS Code
+  app/             # aplicativo desktop GPUI
+  cli/             # binário dbml, servidor HTTP e WebSocket
+packages/
+  canvas-web/      # canvas e workbench compartilhados pela CLI Web e pelo VS Code
+vscode-extension/  # editor customizado, sidebar e integração com o VS Code
 ```
 
-Regra: **só `app` depende de GPUI.** Todo o resto é Rust puro, testável com `cargo test`
-e snapshot (`insta`), e reaproveitável (CLI, LSP standalone).
+Os crates em `crates/core/` tratam do modelo, do texto DBML e da geometria. O
+desktop os consome diretamente. O canvas compartilhado acessa o núcleo via
+`dbml-wasm`. Só o crate `app` depende de GPUI.
+
+O script `./scripts/sync-build.sh` compila a ponte Wasm e atualiza o bundle
+embutido em `crates/cli/web/` e o bundle em `vscode-extension/dist/`.
 
 Plataformas alvo: **Windows 10/11** (GPUI usa DirectX) e **Ubuntu 22.04/24.04** (Vulkan;
 Wayland e X11). Atalhos usam `Ctrl`.
@@ -83,9 +93,9 @@ feitos pela UI atualizam o sidecar atomicamente. Renames feitos no texto são in
 GPUI não oferece renderização off-screen para imagem de forma simples, então o export
 não "fotografa" a janela. Em vez disso:
 
-1. `scene` gera uma descrição visual (retângulos, textos, paths das arestas, cores do
-   tema) a partir do `Schema` + layout — **a mesma geometria usada pelo canvas**.
-2. `export` converte a cena em **SVG** e rasteriza com `resvg`/`tiny-skia` na escala
+1. `layout` fornece a geometria compartilhada com o canvas, incluindo as
+   dimensões dos cards e as rotas das arestas.
+2. `diagram-export` gera **SVG** e rasteriza com `resvg`/`tiny-skia` na escala
    escolhida (1×/2×/4×), usando **as mesmas fontes embarcadas** no app.
 3. PNG (com ou sem fundo transparente) ou JPEG (fundo sólido obrigatório, qualidade
    configurável) via crate `image`.
@@ -131,21 +141,3 @@ e o layout. Mudanças só de layout (mover tabela) entram no mesmo histórico.
 - Propriedade-chave testada com `proptest`: *para todo comando de UI, aplicar o patch e
   reparsear produz o `Schema` esperado* e *texto sem mudança semântica é preservado byte a byte*.
 - UI: testes headless do GPUI (`TestAppContext`) para fluxos críticos.
-
-
-## Estado atual dos crates e módulos
-
-```
-crates/
-  schema/        # modelo semântico puro (#![forbid(unsafe_code)], #![deny(missing_docs)])
-  dbml-syntax/   # lexer logos + parser CST rowan + helpers compartilhados (unquote, child_tokens, descendant_tokens)
-  dbml-analysis/ # CST → Schema, lint e complete (seguro em UTF-8 + proptest)
-  dbml-edit/     # patches textuais mínimos (Patch, EditError)
-  layout/        # auto-layout Sugiyama (layered/clustered), roteamento ortogonal e geometria/paleta compartilhadas (CARD_W, HEADER_H, ROW_H, GROUP_PAD, TABLE_COLORS, compute_diagram_positions)
-  dbml-wasm/     # bindings WebAssembly + LineIndex UTF-16 + cena para Web e VS Code
-  cli/           # binário dbml (`dbml-cli`): servidor Axum/WebSocket, file watcher e escrita atômica
-  app/           # binário desktop GPUI: shell/{mod.rs,panels.rs}, canvas.rs, canvas_geom.rs, session.rs, settings.rs, glass.rs, actions.rs
-```
-
-- **Frontend Web compartilhado:** `packages/canvas-web` (TypeScript + Canvas 2D) embutido em `crates/cli/web/` e `vscode-extension/`, sincronizado via `./scripts/sync-build.sh`.
-- **Segurança e lints:** Os 6 crates de biblioteca usam `#![forbid(unsafe_code)]` e `#![deny(missing_docs)]`; o workspace aplica `clippy::pedantic` e `-D clippy::perf`.
