@@ -292,3 +292,233 @@ async fn oversized_api_body_is_rejected_with_413() {
     let (status, _) = http(h.addr, &request).await;
     assert_eq!(status, 413);
 }
+
+// ───────────────────────── versão do documento (#51) ─────────────────────────
+
+type Ws =
+    tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>;
+
+async fn connect(h: &Harness) -> Ws {
+    let url = format!("ws://{}/ws?token={}", h.addr, h.state.token());
+    tokio_tungstenite::connect_async(&url).await.unwrap().0
+}
+
+/// Próxima mensagem JSON do tipo `kind` (ignora as demais), com timeout.
+async fn next_of(ws: &mut Ws, kind: &str) -> serde_json::Value {
+    tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        loop {
+            let Some(Ok(Message::Text(text))) = ws.next().await else {
+                panic!("conexão encerrada esperando {kind}");
+            };
+            let value: serde_json::Value = serde_json::from_str(&text).unwrap();
+            if value["type"] == kind {
+                return value;
+            }
+        }
+    })
+    .await
+    .unwrap_or_else(|_| panic!("timeout esperando {kind}"))
+}
+
+async fn active_file(h: &Harness) -> String {
+    h.state
+        .doc
+        .read()
+        .await
+        .file_path
+        .to_string_lossy()
+        .into_owned()
+}
+
+async fn send_patch(
+    ws: &mut Ws,
+    h: &Harness,
+    id: u32,
+    base_version: Option<u64>,
+    expected_source: &str,
+    text: &str,
+) {
+    use futures_util::SinkExt;
+    let mut payload = serde_json::json!({
+        "byte_start": 0, "byte_end": 0, "new_text": text,
+        "expected_source": expected_source, "expected_file": active_file(h).await,
+    });
+    if let Some(v) = base_version {
+        payload["base_version"] = v.into();
+    }
+    let msg = serde_json::json!({"type": "apply_patch", "payload": payload, "id": id});
+    ws.send(Message::Text(msg.to_string().into()))
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+async fn init_carries_the_document_version() {
+    let h = spawn("ver_init").await;
+    let mut ws = connect(&h).await;
+    let init = next_of(&mut ws, "init").await;
+    assert_eq!(init["version"], h.state.doc.read().await.version);
+    assert!(init["version"].as_u64().unwrap() >= 1);
+}
+
+#[tokio::test]
+async fn patch_with_current_version_applies_and_bumps_the_version() {
+    let h = spawn("ver_ok").await;
+    let mut ws = connect(&h).await;
+    let init = next_of(&mut ws, "init").await;
+    let v = init["version"].as_u64().unwrap();
+    let source = init["source"].as_str().unwrap().to_owned();
+
+    send_patch(&mut ws, &h, 1, Some(v), &source, "// ok\n").await;
+    let result = next_of(&mut ws, "result").await;
+    assert!(result["error"].is_null(), "{result}");
+    assert_eq!(result["version"], v + 1);
+    let doc = h.state.doc.read().await;
+    assert!(doc.content.starts_with("// ok\n"));
+    assert_eq!(doc.version, v + 1);
+}
+
+#[tokio::test]
+async fn patch_without_base_version_is_refused_and_changes_nothing() {
+    let h = spawn("ver_missing").await;
+    let mut ws = connect(&h).await;
+    let init = next_of(&mut ws, "init").await;
+    let source = init["source"].as_str().unwrap().to_owned();
+
+    send_patch(&mut ws, &h, 1, None, &source, "// x\n").await;
+    let result = next_of(&mut ws, "result").await;
+    assert!(result["error"].is_string(), "{result}");
+    assert_eq!(h.state.doc.read().await.content, source);
+}
+
+#[tokio::test]
+async fn stale_patch_is_rejected_with_current_state_and_nothing_changes() {
+    let h = spawn("ver_stale").await;
+    let mut a = connect(&h).await;
+    let mut b = connect(&h).await;
+    let init_a = next_of(&mut a, "init").await;
+    let init_b = next_of(&mut b, "init").await;
+    let v = init_a["version"].as_u64().unwrap();
+    assert_eq!(init_b["version"], v);
+    let original = init_a["source"].as_str().unwrap().to_owned();
+
+    // A vence; B ainda tem a versão antiga.
+    send_patch(&mut a, &h, 1, Some(v), &original, "// de A\n").await;
+    assert!(next_of(&mut a, "result").await["error"].is_null());
+    let after_a = h.state.doc.read().await.content.clone();
+
+    send_patch(&mut b, &h, 1, Some(v), &original, "// de B\n").await;
+    let rejected = next_of(&mut b, "patch_rejected").await;
+    assert_eq!(rejected["source"], after_a);
+    assert_eq!(rejected["version"], v + 1);
+    assert!(rejected.get("layout").is_some());
+    assert!(rejected["reason"].is_string());
+    let result = next_of(&mut b, "result").await;
+    assert!(
+        result["error"].as_str().unwrap().contains("version"),
+        "{result}"
+    );
+
+    // Nada mudou por causa do patch recusado.
+    {
+        let doc = h.state.doc.read().await;
+        assert_eq!(doc.content, after_a);
+        assert_eq!(doc.version, v + 1);
+    }
+
+    // Com o estado novo, B consegue editar.
+    send_patch(&mut b, &h, 2, Some(v + 1), &after_a, "// de B\n").await;
+    let ok = next_of(&mut b, "result").await;
+    assert!(ok["error"].is_null(), "{ok}");
+    assert_eq!(ok["version"], v + 2);
+}
+
+#[tokio::test]
+async fn same_version_wrong_source_is_still_refused_by_expected_source() {
+    let h = spawn("ver_source").await;
+    let mut ws = connect(&h).await;
+    let init = next_of(&mut ws, "init").await;
+    let v = init["version"].as_u64().unwrap();
+    send_patch(
+        &mut ws,
+        &h,
+        1,
+        Some(v),
+        "texto que o cliente inventou",
+        "// x\n",
+    )
+    .await;
+    let result = next_of(&mut ws, "result").await;
+    assert!(result["error"].is_string(), "{result}");
+    assert_eq!(h.state.doc.read().await.version, v);
+}
+
+#[tokio::test]
+async fn stale_save_document_is_rejected_with_current_state() {
+    use futures_util::SinkExt;
+    let h = spawn("ver_save").await;
+    let mut ws = connect(&h).await;
+    let init = next_of(&mut ws, "init").await;
+    let v = init["version"].as_u64().unwrap();
+    let source = init["source"].as_str().unwrap().to_owned();
+    let file = active_file(&h).await;
+
+    // Sem base_version: erro.
+    let msg = serde_json::json!({"type": "save_document", "id": 1,
+        "payload": {"expected_source": source, "expected_file": file}});
+    ws.send(Message::Text(msg.to_string().into()))
+        .await
+        .unwrap();
+    assert!(next_of(&mut ws, "result").await["error"].is_string());
+
+    // Versão velha: rejeitado com estado atual.
+    h.state
+        .apply_patch(&file, v, &source, 0, 0, "// externo\n")
+        .await
+        .unwrap();
+    let msg = serde_json::json!({"type": "save_document", "id": 2,
+        "payload": {"expected_source": source, "expected_file": file, "base_version": v}});
+    ws.send(Message::Text(msg.to_string().into()))
+        .await
+        .unwrap();
+    let rejected = next_of(&mut ws, "patch_rejected").await;
+    assert_eq!(rejected["version"], v + 1);
+    assert!(
+        rejected["source"]
+            .as_str()
+            .unwrap()
+            .starts_with("// externo\n")
+    );
+    assert!(next_of(&mut ws, "result").await["error"].is_string());
+
+    // Versão certa: salva.
+    let current = rejected["source"].as_str().unwrap().to_owned();
+    let msg = serde_json::json!({"type": "save_document", "id": 3,
+        "payload": {"expected_source": current, "expected_file": file, "base_version": v + 1}});
+    ws.send(Message::Text(msg.to_string().into()))
+        .await
+        .unwrap();
+    let ok = next_of(&mut ws, "result").await;
+    assert!(ok["error"].is_null(), "{ok}");
+}
+
+#[tokio::test]
+async fn version_grows_on_external_change_and_file_switch() {
+    let h = spawn("ver_ext").await;
+    dbml_cli::watcher::start_file_watcher(h.state.clone()).unwrap();
+    let mut ws = connect(&h).await;
+    let init = next_of(&mut ws, "init").await;
+    let v = init["version"].as_u64().unwrap();
+
+    let file = h.state.doc.read().await.file_path.clone();
+    std::fs::write(&file, "// de fora\n").unwrap();
+    let ext = next_of(&mut ws, "external_change").await;
+    assert!(ext["version"].as_u64().unwrap() > v, "{ext}");
+    assert_eq!(h.state.doc.read().await.version, ext["version"]);
+
+    // Troca de arquivo (mesmo arquivo alvo) também conta como mudança de texto.
+    let before = h.state.doc.read().await.version;
+    h.state.switch_file(file).await.unwrap();
+    let update = next_of(&mut ws, "update").await;
+    assert!(update["version"].as_u64().unwrap() > before, "{update}");
+}

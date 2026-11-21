@@ -1,7 +1,7 @@
 import type * as vscode from 'vscode';
 import type { CliHost } from '../cliHost.js';
 import { nodeCliHost } from '../cliHost.node.js';
-import { Uri } from './vscode-mock.js';
+import { mockState, Uri } from './vscode-mock.js';
 
 export interface Harness {
   provider: import('../customEditor.js').DbmlCustomEditorProvider;
@@ -23,6 +23,8 @@ export interface FakeDocument {
   text: string;
   isDirty: boolean;
   isUntitled: boolean;
+  /** Como `TextDocument.version`: começa em 1 e sobe a cada alteração de texto. */
+  version: number;
   getText(): string;
   save(): Promise<boolean>;
 }
@@ -33,6 +35,7 @@ export function fakeDocument(uri: Uri, text: string): FakeDocument {
     text,
     isDirty: false,
     isUntitled: false,
+    version: 1,
     getText() {
       return this.text;
     },
@@ -72,6 +75,7 @@ export async function openEditor(
   // `reuse` simula recarregar a janela: o estado do workspace sobrevive, o resto é novo.
   const { context, workspaceState, globalState } = fakeContext(opts.reuse);
   const document = fakeDocument(opts.uri ?? Uri.file('/ws/schema.dbml'), opts.text ?? 'Table a {\n  id int\n}\n');
+  mockState.afterApplyEdit = () => void document.version++;
   const posted: any[] = [];
   let receive: (m: unknown) => void = () => {};
   let onDispose: () => void = () => {};

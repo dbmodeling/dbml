@@ -101,6 +101,8 @@ export interface TextPatch {
   new_text: string;
   expected_source?: string;
   expected_file?: string;
+  /** Versão do documento em que o patch foi calculado; preenchida pelo transporte, nunca pelo Workbench. */
+  base_version?: number;
   updated_source?: string;
   created_table?: string;
   created_column?: [string, string];
@@ -290,6 +292,8 @@ export interface DocumentMetadata {
   saved?: boolean;
   savedSource?: string;
   autosave?: boolean;
+  /** Versão do texto no host (contador monotônico); o transporte a devolve como `base_version` nos patches. */
+  version?: number;
 }
 
 /** `connecting`: tentando (re)conectar; `online`: canal aberto; `offline`: caiu, aguardando nova tentativa. */

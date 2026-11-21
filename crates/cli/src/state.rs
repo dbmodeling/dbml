@@ -167,7 +167,36 @@ pub struct DocState {
     pub dirty: bool,
     /// Já existe uma gravação adiada agendada.
     pub flush_scheduled: bool,
+    /// Versão do texto do documento: começa em [`INITIAL_VERSION`] e cresce de 1 em 1 a cada
+    /// mudança de texto (patch, alteração externa vista pelo watcher, troca de arquivo,
+    /// [`AppState::save_content`]). Patches e salvamentos citam a versão em que foram calculados.
+    pub version: u64,
 }
+
+/// Versão do documento logo depois de aberto.
+pub const INITIAL_VERSION: u64 = 1;
+
+/// Patch ou salvamento calculado sobre uma versão que não é mais a atual. Carrega o estado atual
+/// (mensagem `patch_rejected` já serializada) para o servidor devolver ao cliente que errou.
+#[derive(Debug)]
+pub struct StaleVersion {
+    pub base_version: u64,
+    pub current_version: u64,
+    /// Mensagem `patch_rejected` com o documento atual (montada sob o lock do documento).
+    pub rejection: String,
+}
+
+impl std::fmt::Display for StaleVersion {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "Document version changed (client has {}, current is {}); state resynced, reapply your change",
+            self.base_version, self.current_version
+        )
+    }
+}
+
+impl std::error::Error for StaleVersion {}
 
 impl DocState {
     /// Nome do arquivo ativo para exibição.
@@ -192,6 +221,9 @@ struct DocumentMessage<'a> {
     document_id: std::borrow::Cow<'a, str>,
     saved: bool,
     files: Vec<serde_json::Value>,
+    version: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    reason: Option<&'a str>,
 }
 
 #[derive(Clone)]
@@ -306,6 +338,7 @@ impl AppState {
                 last_saved_hash: hash,
                 dirty: false,
                 flush_scheduled: false,
+                version: INITIAL_VERSION,
             })),
             tx,
             lifecycle: Arc::default(),
@@ -404,6 +437,16 @@ impl AppState {
     ///
     /// Nunca: a serialização de valores JSON em memória não falha.
     pub async fn document_message(&self, kind: &str, doc: &DocState) -> String {
+        self.document_message_with(kind, doc, None).await
+    }
+
+    /// Como [`Self::document_message`], com o motivo de uma recusa (`patch_rejected`).
+    async fn document_message_with(
+        &self,
+        kind: &str,
+        doc: &DocState,
+        reason: Option<&str>,
+    ) -> String {
         let msg = DocumentMessage {
             kind,
             source: &doc.content,
@@ -415,6 +458,8 @@ impl AppState {
             document_id: doc.file_path.to_string_lossy(),
             saved: true,
             files: self.workspace_files(&doc.file_path).await,
+            version: doc.version,
+            reason,
         };
         serde_json::to_string(&msg).expect("serialização de DocumentMessage não falha")
     }
@@ -465,6 +510,7 @@ impl AppState {
             doc.layout = new_layout;
             doc.layout_path = new_layout_path;
             doc.file_path.clone_from(&canonical);
+            doc.version += 1;
 
             crate::session::save_async(crate::session::CliSession {
                 last_target: Some(this.target_path.clone()),
@@ -487,21 +533,38 @@ impl AppState {
         }
     }
 
+    /// Recusa quando `base_version` não é a versão atual do documento; o erro leva o estado atual.
+    async fn ensure_version(&self, doc: &DocState, base_version: u64) -> anyhow::Result<()> {
+        if doc.version == base_version {
+            return Ok(());
+        }
+        Err(StaleVersion {
+            base_version,
+            current_version: doc.version,
+            rejection: self
+                .document_message_with("patch_rejected", doc, Some("stale base_version"))
+                .await,
+        }
+        .into())
+    }
+
     /// Lê o arquivo ativo, valida e aplica o patch e persiste o resultado tudo sob um único
     /// lock de escrita, de modo que dois clientes não percam a edição um do outro.
     ///
     /// # Errors
     ///
-    /// Retorna erro se o arquivo ativo mudou, se o documento diverge de `expected_source`, se o
-    /// intervalo é inválido ou se a gravação falha.
+    /// Retorna [`StaleVersion`] se `base_version` não é a versão atual (nada é alterado); também
+    /// retorna erro se o arquivo ativo mudou, se o documento diverge de `expected_source`, se o
+    /// intervalo é inválido ou se a gravação falha. Em caso de sucesso devolve a nova versão.
     pub async fn apply_patch(
         &self,
         expected_file: &str,
+        base_version: u64,
         expected_source: &str,
         start: usize,
         end: usize,
         new_text: &str,
-    ) -> anyhow::Result<()> {
+    ) -> anyhow::Result<u64> {
         let doc = self.write_doc().await;
         let (expected_file, expected_source, new_text) = (
             expected_file.to_owned(),
@@ -512,6 +575,7 @@ impl AppState {
         detach(async move {
             let mut doc = doc;
             Self::ensure_active(&doc, &expected_file)?;
+            this.ensure_version(&doc, base_version).await?;
             // Com edições pendentes a memória é a fonte da verdade; sem elas, o disco (detecta
             // alterações externas mesmo com o watcher desligado).
             if doc.dirty {
@@ -522,11 +586,12 @@ impl AppState {
                 doc.content = buffer;
             }
             doc.dirty = true;
+            doc.version += 1;
             if !doc.flush_scheduled {
                 doc.flush_scheduled = true;
                 this.schedule_flush();
             }
-            Ok(())
+            Ok(doc.version)
         })
         .await
     }
@@ -536,24 +601,28 @@ impl AppState {
     ///
     /// # Errors
     ///
-    /// Retorna erro se o arquivo ativo mudou ou o conteúdo em disco diverge.
+    /// Retorna [`StaleVersion`] se `base_version` não é a atual; erro se o arquivo ativo mudou ou o
+    /// conteúdo em disco diverge. Em caso de sucesso devolve a versão do documento.
     pub async fn verify_document(
         &self,
         expected_file: &str,
+        base_version: u64,
         expected_source: &str,
-    ) -> anyhow::Result<()> {
+    ) -> anyhow::Result<u64> {
         let doc = self.write_doc().await;
         let (expected_file, expected_source) =
             (expected_file.to_owned(), expected_source.to_owned());
+        let this = self.clone();
         detach(async move {
             let mut doc = doc;
             Self::ensure_active(&doc, &expected_file)?;
+            this.ensure_version(&doc, base_version).await?;
             // Salvar = gravar as edições pendentes agora e conferir o que ficou no disco.
             Self::flush_locked(&mut doc).await?;
             if tokio::fs::read_to_string(&doc.file_path).await? != expected_source {
                 anyhow::bail!("Document changed outside this editor; reload or reconcile changes");
             }
-            Ok(())
+            Ok(doc.version)
         })
         .await
     }
@@ -581,6 +650,7 @@ impl AppState {
         doc.last_saved_hash = compute_hash(&new_content);
         doc.content = new_content;
         doc.dirty = false;
+        doc.version += 1;
         Ok(())
     }
 

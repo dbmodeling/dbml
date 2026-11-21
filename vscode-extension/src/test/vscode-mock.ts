@@ -106,6 +106,8 @@ export interface MockState {
   findFilesCalls: Array<{ include: unknown; exclude: unknown; max: unknown }>;
   executed: Array<{ command: string; args: unknown[] }>;
   applyEditResult: boolean;
+  /** Chamado quando `applyEdit` tem sucesso (o harness usa para subir `document.version`). */
+  afterApplyEdit: (() => void) | null;
   textListeners: Array<Listener<{ document: { uri: Uri } }>>;
   messages: { warnings: Array<{ message: string; items: string[] }>; infos: string[]; errors: string[] };
   /** Respostas (em ordem) para `showWarningMessage` com botões; padrão: `undefined` (descartado). */
@@ -125,6 +127,7 @@ function fresh(): MockState {
     findFilesCalls: [],
     executed: [],
     applyEditResult: true,
+    afterApplyEdit: null,
     textListeners: [],
     messages: { warnings: [], infos: [], errors: [] },
     warningAnswers: [],
@@ -214,6 +217,7 @@ export const workspace = {
     },
   },
   async applyEdit(_edit: WorkspaceEdit): Promise<boolean> {
+    if (mockState.applyEditResult) mockState.afterApplyEdit?.();
     return mockState.applyEditResult;
   },
   onDidChangeTextDocument(l: Listener<{ document: { uri: Uri } }>) {
