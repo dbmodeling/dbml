@@ -1,3 +1,5 @@
+#![forbid(unsafe_code)]
+
 use anyhow::Context as _;
 use clap::Parser;
 use colored::Colorize;
