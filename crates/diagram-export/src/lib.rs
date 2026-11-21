@@ -7,7 +7,7 @@ mod mermaid;
 mod raster;
 mod svg;
 
-pub use mermaid::to_mermaid;
+pub use mermaid::{CollisionScope, IdentCollision, MermaidExport, to_mermaid, to_mermaid_checked};
 pub use raster::{RasterError, svg_to_jpeg, svg_to_png};
 pub use svg::{Selection, Theme, to_svg, to_svg_with_selection};
 
