@@ -2,7 +2,7 @@
   "name": "dbmodeling-vscode",
   "displayName": "DB Modeling",
   "description": "Visual and bidirectional relational database modeling with DBML in VS Code",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "type": "module",
   "publisher": "dbmodeling",
   "license": "SEE LICENSE IN LICENSE",
@@ -35,7 +35,9 @@
     "untrustedWorkspaces": {
       "supported": "limited",
       "description": "Em workspaces não confiáveis a conexão com o banco (execução da CLI dbml) fica desativada; o canvas e o editor DBML continuam disponíveis.",
-      "restrictedConfigurations": ["dbmodeling.cliPath"]
+      "restrictedConfigurations": [
+        "dbmodeling.cliPath"
+      ]
     }
   },
   "contributes": {
@@ -44,7 +46,10 @@
       "properties": {
         "dbmodeling.defaultEditor": {
           "type": "string",
-          "enum": ["text", "canvas"],
+          "enum": [
+            "text",
+            "canvas"
+          ],
           "enumDescriptions": [
             "Abre .dbml no editor de texto (diffs e conflitos do Source Control continuam em texto). Use o botão da barra de título para abrir o canvas.",
             "Abre .dbml no canvas visual por padrão (grava workbench.editorAssociations nas configurações do usuário)."
@@ -64,8 +69,13 @@
     "languages": [
       {
         "id": "dbml",
-        "aliases": ["DBML", "dbml"],
-        "extensions": [".dbml"]
+        "aliases": [
+          "DBML",
+          "dbml"
+        ],
+        "extensions": [
+          ".dbml"
+        ]
       }
     ],
     "viewsContainers": {
