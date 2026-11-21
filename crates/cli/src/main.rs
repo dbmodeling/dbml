@@ -38,13 +38,17 @@ async fn main() -> anyhow::Result<()> {
     {
         if let Some(url) = url {
             let password = if password_stdin {
-                Some(read_password_stdin()?)
+                Some(("--password-stdin", read_password_stdin()?))
             } else {
                 std::env::var("DBML_PASSWORD")
                     .ok()
                     .filter(|p| !p.is_empty())
+                    .map(|p| ("DBML_PASSWORD", p))
             };
-            let url = password.map_or(url.clone(), |p| db_introspect::with_password(&url, &p));
+            let (url, warning) = apply_password(&url, password);
+            if let Some(warning) = warning {
+                eprintln!("warning: {warning}");
+            }
             if test {
                 return run_test_url(&url).await;
             }
@@ -172,6 +176,33 @@ async fn run_import_url(
     write_output(&outcome.dbml, output, force)
 }
 
+/// Whether the URL already carries `user:password@`.
+fn url_has_password(url: &str) -> bool {
+    let Some((_, rest)) = url.split_once("://") else {
+        return false;
+    };
+    let authority = rest.split_once('/').map_or(rest, |(a, _)| a);
+    authority
+        .rsplit_once('@')
+        .is_some_and(|(userinfo, _)| userinfo.contains(':'))
+}
+
+/// Injects the password given via `--password-stdin`/`DBML_PASSWORD` into `url`. When the URL
+/// already has one, the URL wins (as before) and a warning says so, so the ignored value is not a
+/// silent surprise.
+fn apply_password(url: &str, password: Option<(&str, String)>) -> (String, Option<String>) {
+    let Some((source, password)) = password else {
+        return (url.to_owned(), None);
+    };
+    if url_has_password(url) {
+        let warning = format!(
+            "the URL already contains a password; the one from {source} is ignored and the URL's password is used"
+        );
+        return (url.to_owned(), Some(warning));
+    }
+    (db_introspect::with_password(url, &password), None)
+}
+
 fn read_password_stdin() -> anyhow::Result<String> {
     let mut line = String::new();
     std::io::stdin()
@@ -285,6 +316,28 @@ mod tests {
         );
         let _ = std::fs::remove_file(&db);
         let _ = std::fs::remove_file(&out);
+    }
+
+    #[test]
+    fn warns_when_the_url_already_has_a_password() {
+        assert!(url_has_password("postgres://u:p@h/db"));
+        assert!(!url_has_password("postgres://u@h/db"));
+        assert!(!url_has_password("postgres://h:5432/db"));
+        assert!(!url_has_password("app.sqlite"));
+
+        let (url, warning) =
+            apply_password("postgres://u:p@h/db", Some(("DBML_PASSWORD", "x".into())));
+        assert_eq!(url, "postgres://u:p@h/db");
+        let warning = warning.unwrap();
+        assert!(warning.contains("DBML_PASSWORD") && warning.contains("URL's password is used"));
+        assert!(!warning.contains(":p@"), "o aviso não pode ecoar a senha");
+
+        let (url, warning) =
+            apply_password("postgres://u@h/db", Some(("--password-stdin", "s3".into())));
+        assert_eq!(url, "postgres://u:s3@h/db");
+        assert!(warning.is_none());
+        let (url, warning) = apply_password("postgres://u:p@h/db", None);
+        assert_eq!((url.as_str(), warning), ("postgres://u:p@h/db", None));
     }
 
     #[test]
