@@ -16,6 +16,18 @@ async function listDbmlFiles(active?: vscode.Uri): Promise<Array<{ name: string;
     }));
 }
 
+const verifiedClis = new Set<string>();
+
+/** Caminho confiável da CLI, já verificado (presença + versão mínima) — a checagem é feita uma vez por caminho. */
+async function ensureCli(context: vscode.ExtensionContext): Promise<string> {
+  const path = await getTrustedCliPath(context);
+  if (!verifiedClis.has(path)) {
+    await checkCli(path);
+    verifiedClis.add(path);
+  }
+  return path;
+}
+
 export class DbmlCustomEditorProvider implements vscode.CustomTextEditorProvider {
   public static readonly viewType = 'dbmodeling.editor';
 
@@ -188,12 +200,12 @@ export class DbmlCustomEditorProvider implements vscode.CustomTextEditorProvider
             break;
           }
           case 'check_cli': {
-            await checkCli(await getTrustedCliPath(this.context));
+            await ensureCli(this.context);
             break;
           }
           case 'test_connection': {
             try {
-              const result = await runTestConnection(await getTrustedCliPath(this.context), message.request);
+              const result = await runTestConnection(await ensureCli(this.context), message.request);
               webview.postMessage({ type: 'test_connection_result', id: message.id, result });
             } catch (e) {
               webview.postMessage({
@@ -206,7 +218,7 @@ export class DbmlCustomEditorProvider implements vscode.CustomTextEditorProvider
           }
           case 'introspect': {
             try {
-              const result = await runIntrospect(await getTrustedCliPath(this.context), message.request);
+              const result = await runIntrospect(await ensureCli(this.context), message.request);
               webview.postMessage({ type: 'introspect_result', id: message.id, result });
             } catch (e) {
               webview.postMessage({
