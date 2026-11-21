@@ -12,7 +12,7 @@ sql-import.workspace = true
 dbml-analysis.workspace = true
 # Bundled SQLite via libsqlite3-sys >= 0.39 (RUSTSEC-2026-0459). Do not use sqlx-sqlite: it caps
 # libsqlite3-sys below 0.38.
-rusqlite = { version = "=0.42.0", features = ["bundled"] }
+rusqlite = { version = "=0.43.0", features = ["bundled"] }
 sqlx = { version = "=0.9.0", default-features = false, features = ["runtime-tokio", "tls-rustls", "postgres", "mysql"] }
 tokio.workspace = true
 tiberius = { version = "=0.13.0", default-features = false, features = ["tds73", "rustls"] }
