@@ -15,6 +15,7 @@ import {
   ConnectionState,
   IntrospectRequest,
   WasmApi,
+  WasmSession,
   EdgeStyle,
   edgeKey,
   TextPatch,
@@ -151,6 +152,10 @@ export class Workbench {
   private wb!: HTMLElement;
   private transport: HostTransport;
   private wasm: WasmApi | undefined;
+  /** Documento analisado por versão de texto (#107/#110); ausente em hosts sem `Session`. */
+  private session: WasmSession | null = null;
+  /** Posições mudaram no arrasto: as arestas são reroteadas uma vez por quadro, não por mousemove. */
+  private edgesDirty = false;
 
   private source = '';
   private savedSource = '';
@@ -504,7 +509,7 @@ export class Workbench {
   private reanalyze(): void {
     if (!this.wasm || this.engineFailed) return;
     try {
-      const r = this.wasm.parse_and_analyze(this.source);
+      const r = this.analysisSession()?.analyze(this.source) ?? this.wasm.parse_and_analyze(this.source);
       const hasError = (r.diagnostics as Diagnostic[]).some((d) => d.severity === 'error');
       this.diags = r.diagnostics;
       this.transport.sendDiagnostics?.(this.diags);
@@ -523,6 +528,14 @@ export class Workbench {
     this.computeScene();
   }
 
+  /** Sessão Wasm (criada sob demanda); `null` se o host não a exporta ou já foi liberada. */
+  private analysisSession(): WasmSession | null {
+    if (this.session) return this.session;
+    if (this.destroyed || !this.wasm?.Session) return null;
+    this.session = new this.wasm.Session();
+    return this.session;
+  }
+
   private computeScene(): void {
     if (!this.wasm || this.engineFailed) return;
     const known: Record<string, Pt> = {};
@@ -536,7 +549,8 @@ export class Workbench {
       this.positions[this.pendingNew] = known[this.pendingNew];
     }
     try {
-      this.scene = this.wasm.compute_scene(this.source, known);
+      this.scene = this.analysisSession()?.compute_scene(this.source, known) ?? this.wasm.compute_scene(this.source, known);
+      this.edgesDirty = false;
       for (const k of Object.keys(this.scene!.positions)) {
         if (!this.positions[k]) this.positions[k] = this.scene!.positions[k];
       }
@@ -1078,6 +1092,7 @@ export class Workbench {
   }
 
   private renderAll(): void {
+    if (this.edgesDirty) this.recomputeEdges();
     this.detectFx();
     // chrome primeiro: o ajuste à tela depende da largura que os painéis deixam ao canvas
     this.renderChrome();
@@ -3458,7 +3473,7 @@ export class Workbench {
         const p = this.positions[n];
         if (p) { p.x += dx; p.y += dy; }
       }
-      this.recomputeEdges();
+      this.queueEdges();
     } else if (d.kind === 'enum') {
       const dx = wp.x - d.last.x, dy = wp.y - d.last.y;
       d.last = wp;
@@ -3473,7 +3488,7 @@ export class Workbench {
         const p = this.positions[n];
         if (p) { p.x += dx; p.y += dy; }
       }
-      this.recomputeEdges();
+      this.queueEdges();
     } else if (d.kind === 'marquee') {
       d.now = wp;
       this.drawMarquee();
@@ -3486,15 +3501,31 @@ export class Workbench {
 
   /** Recalcula rotas ortogonais com as posições atuais (Wasm: `layout::route`). */
   private recomputeEdges(): void {
-    if (this.engineFailed) return;
+    this.edgesDirty = false;
+    if (this.engineFailed || this.destroyed || !this.wasm) return;
     try {
-      this.scene = this.wasm!.compute_scene(this.source, this.positions);
-    } catch (e) { this.wasmFailed('compute_scene (arrasto)', e); /* mantém a cena anterior */ }
+      const session = this.analysisSession();
+      if (session && this.scene) {
+        // sem reparse: só as arestas; as molduras de grupo seguem as posições em TS
+        const edges = session.route_edges(this.positions);
+        const groups = canvasGroups(this.scene.groups, this.schema, this.positions);
+        this.scene = { ...this.scene, edges, groups };
+      } else {
+        this.scene = this.wasm.compute_scene(this.source, this.positions);
+      }
+    } catch (e) { this.wasmFailed('rotear arestas (arrasto)', e); /* mantém a cena anterior */ }
+  }
+
+  /** Pede o reroteamento das arestas para o próximo quadro (vários mousemove por quadro viram um). */
+  private queueEdges(): void {
+    this.edgesDirty = true;
+    this.scheduleRender();
   }
 
   private onUp(): void {
     const d = this.drag;
     if (!d) return;
+    if (this.edgesDirty) this.recomputeEdges();
     this.drag = null;
     if (d.kind === 'cards') this.fxStart('.card.sel', 'fx-drop', MOTION.fast);
     if (d.kind === 'pan') {
@@ -3687,6 +3718,8 @@ export class Workbench {
     this.saveTimer = this.sessionTimer = null;
     this.styleEl?.remove();
     this.styleEl = null;
+    this.session?.free();
+    this.session = null;
     this.root.innerHTML = '';
   }
 }

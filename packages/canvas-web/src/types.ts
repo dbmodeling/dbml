@@ -329,8 +329,26 @@ export interface HostTransport {
   sendDiagnostics?(diagnostics: Diagnostic[]): void;
 }
 
+/**
+ * Sessão Wasm (`dbml_wasm::session::Session`): analisa o DBML uma vez por versão de texto e
+ * roteia arestas sem reparse. Chame `free()` ao descartar.
+ */
+export interface WasmSession {
+  /** Igual a `parse_and_analyze`; reanalisa só se `source` mudou. */
+  analyze(source: string): { schema: Schema; diagnostics: Diagnostic[]; enums?: string[] };
+  /** Igual a `compute_scene`, reaproveitando a análise da versão atual do texto. */
+  compute_scene(source: string, positions: Record<string, NodeCoordinate>): SceneGeometry;
+  /** Só as arestas roteadas para `positions` (sem reparse): barato por quadro de arrasto. */
+  route_edges(positions: Record<string, NodeCoordinate>): RoutedEdge[];
+  /** Quantas análises completas a sessão fez. */
+  readonly analysis_count: number;
+  free(): void;
+}
+
 /** Superfície do módulo Wasm (`crates/dbml-wasm`) usada pelo workbench. */
 export interface WasmApi {
+  /** Ausente em hosts antigos (ex.: bundle do VS Code): o workbench cai nas funções soltas. */
+  Session?: new () => WasmSession;
   parse_and_analyze(source: string): { schema: Schema; diagnostics: Diagnostic[]; enums?: string[] };
   compute_scene(source: string, positions: Record<string, NodeCoordinate>): SceneGeometry;
   compute_layout(source: string, options: object): { positions: Record<string, NodeCoordinate> };
