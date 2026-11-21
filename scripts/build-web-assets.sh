@@ -64,6 +64,43 @@ wasm-bindgen --target web --out-dir "$WASM_DIR" "$WASM_IN"
 rm -f "$WASM_DIR/.gitignore"
 
 WASM_OUT="$WASM_DIR/dbml_wasm_bg.wasm"
+
+# A seção custom `producers` grava as versões do wasm-bindgen/walrus, que mudam conforme o
+# binário foi instalado (prebuilt do CI vs `cargo install` local) e quebram a reprodutibilidade.
+python3 -I - "$WASM_OUT" <<'PY'
+import sys
+
+path = sys.argv[1]
+data = open(path, "rb").read()
+
+
+def leb(buf, i):
+    v = s = 0
+    while True:
+        b = buf[i]
+        i += 1
+        v |= (b & 0x7F) << s
+        if not b & 0x80:
+            return v, i
+        s += 7
+
+
+out = bytearray(data[:8])
+i = 8
+while i < len(data):
+    start = i
+    sec_id = data[i]
+    size, j = leb(data, i + 1)
+    end = j + size
+    if sec_id == 0:
+        nlen, k = leb(data, j)
+        if data[k:k + nlen] == b"producers":
+            i = end
+            continue
+    out += data[start:end]
+    i = end
+open(path, "wb").write(out)
+PY
 BEFORE="$(wc -c < "$WASM_OUT")"
 if [[ "$OPT" == 1 ]]; then
   if command -v wasm-opt >/dev/null 2>&1; then
