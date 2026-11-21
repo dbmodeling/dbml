@@ -1,6 +1,7 @@
 import * as vscode from 'vscode';
 import { checkCli, runIntrospect, runTestConnection } from './introspect.js';
 import { parseWebviewMessage, type WebviewMessage } from './messages.js';
+import { isAllowedDbmlUri } from './uriPolicy.js';
 
 /** Lista os `.dbml` do workspace no formato esperado pela aba Arquivos do Workbench. */
 async function listDbmlFiles(active?: vscode.Uri): Promise<Array<{ name: string; path: string; active: boolean }>> {
@@ -219,11 +220,17 @@ export class DbmlCustomEditorProvider implements vscode.CustomTextEditorProvider
             break;
           }
           case 'open_file': {
-            await vscode.commands.executeCommand(
-              'vscode.openWith',
-              vscode.Uri.parse(message.path),
-              DbmlCustomEditorProvider.viewType
-            );
+            let target: vscode.Uri;
+            try {
+              target = vscode.Uri.parse(message.path, true);
+            } catch {
+              throw new Error('Invalid file path');
+            }
+            const isCurrent = target.toString() === documentId;
+            if (!isCurrent && !isAllowedDbmlUri(target, vscode.workspace.workspaceFolders?.map((f) => f.uri) ?? [])) {
+              throw new Error('Only .dbml files inside the workspace can be opened');
+            }
+            await vscode.commands.executeCommand('vscode.openWith', target, DbmlCustomEditorProvider.viewType);
             break;
           }
           case 'new_file': {

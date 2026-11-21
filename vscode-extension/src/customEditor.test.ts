@@ -104,6 +104,35 @@ describe('validação das mensagens da Webview', () => {
   });
 });
 
+describe('open_file', () => {
+  const folder = { uri: Uri.file('/ws'), name: 'ws', index: 0 };
+  const opened = () => mockState.executed.filter((e) => e.command === 'vscode.openWith');
+
+  it('abre .dbml do workspace', async () => {
+    mockState.workspaceFolders = [folder];
+    const h = await openEditor(DbmlCustomEditorProvider);
+    await h.send({ command: 'open_file', id: 1, path: 'file:///ws/sub/other.dbml' });
+    expect(opened()).toHaveLength(1);
+    expect(h.posted).toContainEqual({ type: 'result', id: 1 });
+  });
+
+  it('recusa esquema arbitrário, arquivo fora do workspace e extensão errada', async () => {
+    mockState.workspaceFolders = [folder];
+    const h = await openEditor(DbmlCustomEditorProvider);
+    for (const [i, path] of ['http://evil.example/ws/a.dbml', 'file:///etc/passwd', 'file:///ws/a.sh', 'file:///ws/../etc/a.dbml', 'not a uri'].entries()) {
+      await h.send({ command: 'open_file', id: 10 + i, path });
+      expect(h.posted.find((m) => m.type === 'result' && m.id === 10 + i).error).toBeTruthy();
+    }
+    expect(opened()).toHaveLength(0);
+  });
+
+  it('permite reabrir o próprio documento mesmo fora do workspace', async () => {
+    const h = await openEditor(DbmlCustomEditorProvider);
+    await h.send({ command: 'open_file', id: 1, path: h.document.uri.toString() });
+    expect(opened()).toHaveLength(1);
+  });
+});
+
 describe('mock de Uri', () => {
   it('faz roundtrip de parse/toString', () => {
     expect(Uri.parse('file:///a/b.dbml').toString()).toBe('file:///a/b.dbml');
