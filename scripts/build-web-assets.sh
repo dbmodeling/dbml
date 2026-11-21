@@ -44,7 +44,9 @@ if [[ "$CLI_BINDGEN" != "$LOCKED_BINDGEN" ]]; then
   exit 1
 fi
 
-REMAP="--remap-path-prefix=${ROOT_DIR}=. --remap-path-prefix=${CARGO_HOME:-$HOME/.cargo}=/cargo"
+SYSROOT="$(rustc --print sysroot)"
+RUSTC_HASH="$(rustc -vV | awk '/^commit-hash:/ {print $2}')"
+REMAP="--remap-path-prefix=${ROOT_DIR}=. --remap-path-prefix=${CARGO_HOME:-$HOME/.cargo}=/cargo --remap-path-prefix=${SYSROOT}/lib/rustlib/src/rust=/rustc/${RUSTC_HASH} --remap-path-prefix=${RUSTUP_HOME:-$HOME/.rustup}=/rustup"
 export RUSTFLAGS="${RUSTFLAGS:+$RUSTFLAGS }${REMAP}"
 
 echo "==> Compilando dbml-wasm (${PROFILE})..."
