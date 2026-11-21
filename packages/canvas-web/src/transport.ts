@@ -139,19 +139,25 @@ export class VsCodeTransport implements HostTransport {
     return this.request('check_cli');
   }
 
-  public testConnection(req: IntrospectRequest): Promise<TestConnectionResult> {
+  public testConnection(req: IntrospectRequest, signal?: AbortSignal): Promise<TestConnectionResult> {
     const id = ++this.introspectSeq;
     return new Promise((resolve, reject) => {
       this.pendingTest.set(id, { resolve, reject });
+      signal?.addEventListener('abort', () => {
+        if (this.pendingTest.delete(id)) reject(new Error('Introspection cancelled'));
+      }, { once: true });
       this.vscode.postMessage({ command: 'test_connection', id, request: req });
     });
   }
 
   /** O host da extensão executa `dbml import --url` (a Webview não abre sockets). */
-  public introspect(req: IntrospectRequest): Promise<IntrospectResult> {
+  public introspect(req: IntrospectRequest, signal?: AbortSignal): Promise<IntrospectResult> {
     const id = ++this.introspectSeq;
     return new Promise((resolve, reject) => {
       this.pendingIntrospect.set(id, { resolve, reject });
+      signal?.addEventListener('abort', () => {
+        if (this.pendingIntrospect.delete(id)) reject(new Error('Introspection cancelled'));
+      }, { once: true });
       this.vscode.postMessage({ command: 'introspect', id, request: req });
     });
   }
@@ -367,8 +373,9 @@ export class WebSocketTransport implements HostTransport {
     return this.request('save_document', { expected_source, expected_file });
   }
 
-  public async testConnection(req: IntrospectRequest): Promise<TestConnectionResult> {
+  public async testConnection(req: IntrospectRequest, signal?: AbortSignal): Promise<TestConnectionResult> {
     const res = await fetch('/api/introspect/test', {
+      signal,
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(req),
@@ -379,8 +386,9 @@ export class WebSocketTransport implements HostTransport {
   }
 
   /** POST no servidor local (`dbml run`), que conecta ao banco; a senha só vai no corpo. */
-  public async introspect(req: IntrospectRequest): Promise<IntrospectResult> {
+  public async introspect(req: IntrospectRequest, signal?: AbortSignal): Promise<IntrospectResult> {
     const res = await fetch('/api/introspect', {
+      signal,
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(req),

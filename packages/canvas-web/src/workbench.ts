@@ -13,6 +13,7 @@ import {
   SceneGeometry,
   SidecarLayout,
   ConnectionState,
+  IntrospectRequest,
   WasmApi,
   EdgeStyle,
   edgeKey,
@@ -46,7 +47,7 @@ import { curvedEdge, edgeDrawing } from './edge-path';
 import { MOTION, actSelector, cssQ, easeOut, lerp, noMotion } from './motion';
 import { exportToMermaid, exportToSvg, exportSvgStringToRasterBlob } from './export';
 import { canvasGridStep, canvasGroups } from './scene-style';
-import { ConnectDbModel, DB_ENGINES, DbEngine, buildRequest } from './connect-db';
+import { ConnectDbModel, DB_ENGINES, DbEngine, INTROSPECT_TIMEOUT_MS, IntrospectGuard, buildRequest } from './connect-db';
 import { IMPORT_DIALECTS, ImportDialect, ImportSqlModel, ImportSqlResult } from './import-sql';
 
 type Pt = { x: number; y: number };
@@ -2429,32 +2430,46 @@ export class Workbench {
         model.trustCert
       );
 
-    const test = async () => {
-      if (model.status === 'connecting' || !this.transport.testConnection) return;
-      const req = readRequest();
+    let guard: IntrospectGuard | null = null;
+    /** Chamada de rede com prazo e cancelamento; o modal pode ter sido fechado no meio. */
+    const run = async <T>(
+      dialect: IntrospectRequest['dialect'],
+      call: (signal: AbortSignal) => Promise<T>,
+      done: (result: T) => void
+    ) => {
+      if (model.status === 'connecting') return;
       model.start();
       syncView();
+      const g = (guard = new IntrospectGuard());
       try {
-        const r = await this.transport.testConnection(req);
-        model.finishTest(r.server, r.schemas);
+        done(await g.race(call(g.signal)));
       } catch (e) {
-        model.fail(connectionHint(e instanceof Error ? e.message : String(e), req.dialect === 'sqlite'));
+        if (g.cancelled) model.cancel();
+        else if (g.timedOut) model.fail(translate('A conexão demorou mais de {} s e foi cancelada. Confira o host e a porta.', INTROSPECT_TIMEOUT_MS / 1000));
+        else model.fail(connectionHint(e instanceof Error ? e.message : String(e), dialect === 'sqlite'));
+      } finally {
+        g.dispose();
+        if (guard === g) guard = null;
       }
       if (bg.isConnected) syncView();
     };
 
-    const connect = async () => {
-      if (model.status === 'connecting') return;
+    const test = () => {
+      const testConnection = this.transport.testConnection?.bind(this.transport);
+      if (!testConnection) return;
       const req = readRequest();
-      model.start();
-      syncView();
-      try {
-        model.finish(await introspect(req));
-      } catch (e) {
-        model.fail(connectionHint(e instanceof Error ? e.message : String(e), req.dialect === 'sqlite'));
-      }
-      // o modal pode ter sido fechado durante a conexão
-      if (bg.isConnected) syncView();
+      return run(req.dialect, (signal) => testConnection(req, signal), (r) => model.finishTest(r.server, r.schemas));
+    };
+
+    const connect = () => {
+      const req = readRequest();
+      return run(req.dialect, (signal) => introspect(req, signal), (r) => model.finish(r));
+    };
+
+    /** Durante a conexão, Cancelar/Esc/X só abortam a chamada; fora dela, fecham o modal. */
+    const dismiss = () => {
+      if (guard) { guard.cancel(); return; }
+      this.closeModal();
     };
 
     const applyMode = (mode: 'insert' | 'replace') => {
@@ -2481,14 +2496,14 @@ export class Workbench {
     connectBtn.addEventListener('click', () => void connect());
     replaceBtn.addEventListener('click', () => applyMode('replace'));
     insertBtn.addEventListener('click', () => applyMode('insert'));
-    $<HTMLButtonElement>('#db-cancel').addEventListener('click', () => this.closeModal());
-    $<HTMLButtonElement>('#db-x').addEventListener('click', () => this.closeModal());
+    $<HTMLButtonElement>('#db-cancel').addEventListener('click', dismiss);
+    $<HTMLButtonElement>('#db-x').addEventListener('click', dismiss);
 
     const modalEl = bg.querySelector('.modal') as HTMLElement;
     modalEl.addEventListener('keydown', (e) => {
       if (e.key === 'Escape') {
         e.preventDefault();
-        this.closeModal();
+        dismiss();
       } else if (e.key === 'Enter' && (e.target as HTMLElement).tagName === 'INPUT') {
         e.preventDefault();
         void connect();

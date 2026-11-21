@@ -48,6 +48,50 @@ export function buildRequest(
   };
 }
 
+/** Prazo máximo de um teste/leitura de catálogo antes de abortar. */
+export const INTROSPECT_TIMEOUT_MS = 60_000;
+
+/**
+ * Controla uma chamada de introspecção: timeout e cancelamento pelo usuário
+ * disparam o mesmo `AbortSignal`, e `race` rejeita mesmo que o transporte
+ * ignore o sinal.
+ */
+export class IntrospectGuard {
+  private readonly controller = new AbortController();
+  private readonly timer: ReturnType<typeof setTimeout>;
+  timedOut = false;
+  cancelled = false;
+
+  constructor(timeoutMs: number = INTROSPECT_TIMEOUT_MS) {
+    this.timer = setTimeout(() => {
+      this.timedOut = true;
+      this.controller.abort();
+    }, timeoutMs);
+  }
+
+  get signal(): AbortSignal {
+    return this.controller.signal;
+  }
+
+  cancel(): void {
+    this.cancelled = true;
+    this.controller.abort();
+  }
+
+  dispose(): void {
+    clearTimeout(this.timer);
+  }
+
+  race<T>(promise: Promise<T>): Promise<T> {
+    return new Promise<T>((resolve, reject) => {
+      const abort = () => reject(new Error(this.timedOut ? 'Introspection timed out' : 'Introspection cancelled'));
+      if (this.signal.aborted) return abort();
+      this.signal.addEventListener('abort', abort, { once: true });
+      promise.then(resolve, reject).finally(() => this.signal.removeEventListener('abort', abort));
+    });
+  }
+}
+
 export type ConnectStatus = 'idle' | 'connecting' | 'tested' | 'failed' | 'ready';
 
 /** `Conectado a X. Schemas: a, b (+3 a mais).` */
@@ -113,6 +157,11 @@ export class ConnectDbModel {
     this.reset();
     this.error = summarizeTest(server, schemas);
     this.status = 'tested';
+  }
+
+  /** O usuário desistiu da chamada em curso. */
+  cancel(): void {
+    this.reset();
   }
 
   fail(message: string): void {

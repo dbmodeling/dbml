@@ -298,9 +298,9 @@ export type ConnectionState = 'connecting' | 'online' | 'offline';
 export interface HostTransport {
   checkDatabaseSupport?(): Promise<void>;
   /** Só confere as credenciais e lista os schemas (sem ler tabelas). */
-  testConnection?(req: IntrospectRequest): Promise<TestConnectionResult>;
+  testConnection?(req: IntrospectRequest, signal?: AbortSignal): Promise<TestConnectionResult>;
   /** Lê o catálogo de um banco (somente leitura) e devolve DBML; ausente quando o host não suporta. */
-  introspect?(req: IntrospectRequest): Promise<IntrospectResult>;
+  introspect?(req: IntrospectRequest, signal?: AbortSignal): Promise<IntrospectResult>;
   sendPatch(patch: TextPatch): Promise<void>;
   saveDocument?(source: string, documentId?: string): Promise<void>;
   saveLayout(layout: SidecarLayout, documentId?: string): Promise<void>;

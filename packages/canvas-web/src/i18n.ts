@@ -1,6 +1,7 @@
 export type Language = 'pt-BR' | 'en';
 
 export const translations: ReadonlyArray<readonly [string, string]> = [
+  ["A conexão demorou mais de {} s e foi cancelada. Confira o host e a porta.", "The connection took longer than {} s and was cancelled. Check the host and port."],
   ["Sem conexão com o servidor. Edições não serão salvas.", "Disconnected from the server. Edits will not be saved."],
   ["Reconectando ao servidor…", "Reconnecting to the server…"],
   ["Suas alterações continuam abertas. Tente salvar novamente ou exporte uma cópia em DBML.", "Your changes are still open. Try saving again or export a DBML copy."],
