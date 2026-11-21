@@ -318,4 +318,19 @@ export interface HostTransport {
   ): void;
   onFileChangedExternally?(callback: (newSource: string, documentId?: string) => void): void;
   onError?(callback: (diagnostics: Diagnostic[]) => void): void;
+  /** Publica os diagnósticos do Wasm no host (ex.: aba Problems do VS Code). */
+  sendDiagnostics?(diagnostics: Diagnostic[]): void;
+}
+
+/** Superfície do módulo Wasm (`crates/dbml-wasm`) usada pelo workbench. */
+export interface WasmApi {
+  parse_and_analyze(source: string): { schema: Schema; diagnostics: Diagnostic[]; enums?: string[] };
+  compute_scene(source: string, positions: Record<string, NodeCoordinate>): SceneGeometry;
+  compute_layout(source: string, options: object): { positions: Record<string, NodeCoordinate> };
+  apply_command(source: string, command: Command): TextPatch;
+  swap_dbml_lines(source: string, line: number, up: boolean): TextPatch;
+  format_dbml(source: string): string;
+  export_sql_ddl?(source: string, dialect: string): string;
+  import_sql_ddl?(sql: string, dialect: string): unknown;
+  import_conflicts?(source: string, dbml: string): string[];
 }

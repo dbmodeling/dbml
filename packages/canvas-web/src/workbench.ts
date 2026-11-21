@@ -12,6 +12,7 @@ import {
   Schema,
   SceneGeometry,
   SidecarLayout,
+  WasmApi,
   EdgeStyle,
   edgeKey,
   TextPatch,
@@ -60,6 +61,7 @@ type Drag =
 
 const esc = (s: string): string =>
   String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+const errorMessage = (e: unknown): string => (e instanceof Error ? e.message : String(e));
 const ICON = (n: IconName, s = 16, c = 'currentColor'): string => iconSvg(n, s, c);
 const IDENT = /^[\p{L}\p{N}_]+$/u;
 const UI_STEPS = [1, 1.15, 1.3];
@@ -140,7 +142,7 @@ export class Workbench {
   private root: HTMLElement;
   private wb!: HTMLElement;
   private transport: HostTransport;
-  private wasm: any;
+  private wasm: WasmApi | undefined;
 
   private source = '';
   private savedSource = '';
@@ -224,11 +226,11 @@ export class Workbench {
 
   private els: Record<string, HTMLElement> = {};
 
-  constructor(root: HTMLElement, transport: HostTransport, wasm?: any) {
+  constructor(root: HTMLElement, transport: HostTransport, wasm?: WasmApi) {
     setLanguage(this.prefs.lang);
     this.root = root;
     this.transport = transport;
-    this.wasm = wasm || (window as any).DbModelingParser;
+    this.wasm = wasm || (window as unknown as { DbModelingParser?: WasmApi }).DbModelingParser;
     this.build();
     this.bind();
     transport.onDocumentUpdated((src, layout, meta) => this.setDocument(src, layout, meta));
@@ -465,7 +467,7 @@ export class Workbench {
       const r = this.wasm.parse_and_analyze(this.source);
       const hasError = (r.diagnostics as Diagnostic[]).some((d) => d.severity === 'error');
       this.diags = r.diagnostics;
-      (this.transport as any).sendDiagnostics?.(this.diags);
+      this.transport.sendDiagnostics?.(this.diags);
       this.enums = r.enums || [];
       // mantém o último esquema válido durante a digitação para não piscar o Empty State
       if (hasError && r.schema.tables.length === 0 && this.lastValid) {
@@ -734,8 +736,8 @@ export class Workbench {
       if (patch.should_relayout) this.relayout(false, false);
       this.scheduleRender();
       return patch;
-    } catch (e: any) {
-      this.toast(String(e?.message || e));
+    } catch (e) {
+      this.toast(errorMessage(e));
       return null;
     }
   }
@@ -1892,7 +1894,7 @@ export class Workbench {
     const ta = this.els['code'] as HTMLTextAreaElement;
     const line = ta.value.slice(0, ta.selectionStart).split('\n').length - 1;
     try {
-      const patch: TextPatch = this.wasm.swap_dbml_lines(this.source, line, up);
+      const patch: TextPatch = this.wasm!.swap_dbml_lines(this.source, line, up);
       if (patch.updated_source && patch.updated_source !== this.source) {
         this.pushHistory();
         this.applyPatch(patch);
@@ -2037,7 +2039,7 @@ export class Workbench {
         return;
       }
       case 'FormatDocument': {
-        const f = this.wasm.format_dbml(this.source);
+        const f = this.wasm!.format_dbml(this.source);
         if (f !== this.source) {
           this.pushHistory();
           this.applyPatch(this.fullReplace(f));
@@ -3365,7 +3367,7 @@ export class Workbench {
   /** Recalcula rotas ortogonais com as posições atuais (Wasm: `layout::route`). */
   private recomputeEdges(): void {
     try {
-      this.scene = this.wasm.compute_scene(this.source, this.positions);
+      this.scene = this.wasm!.compute_scene(this.source, this.positions);
     } catch { /* mantém a cena anterior */ }
   }
 
@@ -3495,7 +3497,7 @@ export class Workbench {
 }
 
 /** Monta o Workbench em `root` e inicia o rastreamento de mouse. */
-export function mountWorkbench(root: HTMLElement, transport: HostTransport, wasm?: any): Workbench {
+export function mountWorkbench(root: HTMLElement, transport: HostTransport, wasm?: WasmApi): Workbench {
   const wb = new Workbench(root, transport, wasm);
   wb.attachMouseTracking();
   return wb;
