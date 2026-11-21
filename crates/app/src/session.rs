@@ -176,12 +176,17 @@ pub struct SessionState {
     pub viewports: BTreeMap<PathBuf, ViewportState>,
 }
 
-fn path() -> Option<PathBuf> {
+/// Pasta de configuração do app (`~/.config/db-modeling`, `%APPDATA%\db-modeling`...).
+pub fn config_dir() -> Option<PathBuf> {
     let base = std::env::var_os("APPDATA")
         .or_else(|| std::env::var_os("XDG_CONFIG_HOME"))
         .map(PathBuf::from)
         .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".config")))?;
-    Some(base.join("db-modeling").join("session.json"))
+    Some(base.join("db-modeling"))
+}
+
+fn path() -> Option<PathBuf> {
+    config_dir().map(|d| d.join("session.json"))
 }
 
 pub fn load() -> SessionState {

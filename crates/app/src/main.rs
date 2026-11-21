@@ -7,6 +7,7 @@ mod canvas;
 mod canvas_geom;
 mod connect_db;
 mod disk_sync;
+mod fatal;
 mod glass;
 mod history;
 mod ide;
@@ -57,6 +58,7 @@ impl AssetSource for AppAssets {
 }
 
 fn main() {
+    fatal::install_panic_hook();
     i18n::set(std::env::var("DBM_LANG").ok().and_then(|v| i18n::Lang::parse(&v)).or_else(|| settings::load().lang).unwrap_or_else(i18n::system));
     if std::env::args().any(|a| a == "--version" || a == "-V" || a == "-v") {
         println!("db-modeling {}", env!("CARGO_PKG_VERSION"));
@@ -78,7 +80,7 @@ fn main() {
         }
         cx.text_system()
             .add_fonts(FONTS.iter().map(|f| Cow::Borrowed(*f)).collect())
-            .expect("valid embedded fonts");
+            .unwrap_or_else(|e| fatal::report(&format!("{}: {e}", i18n::t("Não foi possível carregar as fontes embutidas"))));
         cx.bind_keys(actions::catalog().into_iter().filter_map(|e| e.binding));
         let prefs = settings::load();
         i18n::set(std::env::var("DBM_LANG").ok().and_then(|v| i18n::Lang::parse(&v)).or(prefs.lang).unwrap_or_else(i18n::system));
@@ -127,7 +129,7 @@ fn main() {
             window.set_app_id(APP_ID);
             shell
         })
-        .expect("failed to open window");
+        .unwrap_or_else(|e| fatal::report(&format!("{}: {e}", i18n::t("Não foi possível abrir a janela (sem backend de GPU utilizável?)"))));
         shell::register_global_actions(win, &shell, cx);
     });
 }
