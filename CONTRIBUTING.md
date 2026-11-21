@@ -98,5 +98,5 @@ Use the [release template](.github/RELEASE_TEMPLATE.md) to draft release notes a
 
 ## Reporting Bugs & Suggesting Features
 
-* **Bugs & Feature Requests:** Open an issue on [GitHub Issues](https://github.com/dbmodeling/dbml/issues) with reproduction steps or a clear use case.
+* **Bugs & Feature Requests:** Open    an issue on [GitHub Issues](https://github.com/dbmodeling/dbml/issues) with reproduction steps or a clear use case.
 * **Security Vulnerabilities:** Please report privately via [GitHub Security Advisories](https://github.com/dbmodeling/dbml/security/advisories/new) as described in [SECURITY.md](SECURITY.md).
