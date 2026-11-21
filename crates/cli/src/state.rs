@@ -96,6 +96,10 @@ where
         .map_err(|e| anyhow::anyhow!("write task failed: {e}"))?
 }
 
+/// Tempo que as edições (`apply_patch`) esperam antes de ir para o disco; rajadas de patches
+/// viram uma única gravação atômica. Salvar, trocar de arquivo e encerrar gravam na hora.
+pub const WRITE_DEBOUNCE: std::time::Duration = std::time::Duration::from_millis(150);
+
 /// Estado do documento ativo. Todos os campos mudam juntos sob um único lock
 /// ([`AppState::doc`]), então arquivo, sidecar, conteúdo e hash nunca ficam dessincronizados.
 #[derive(Debug, Clone)]
@@ -104,7 +108,12 @@ pub struct DocState {
     pub layout_path: PathBuf,
     pub content: String,
     pub layout: Option<String>,
+    /// Hash do que está gravado em disco (usado pelo watcher para ignorar as próprias gravações).
     pub last_saved_hash: u64,
+    /// `content` tem edições ainda não gravadas (gravação adiada, ver [`WRITE_DEBOUNCE`]).
+    pub dirty: bool,
+    /// Já existe uma gravação adiada agendada.
+    pub flush_scheduled: bool,
 }
 
 impl DocState {
@@ -162,6 +171,14 @@ async fn scan_dbml_dir(dir: &Path) -> Vec<PathBuf> {
     out
 }
 
+async fn is_file(path: &Path) -> bool {
+    tokio::fs::metadata(path).await.is_ok_and(|m| m.is_file())
+}
+
+async fn path_exists(path: &Path) -> bool {
+    tokio::fs::try_exists(path).await.unwrap_or(false)
+}
+
 fn layout_path_for(file: &Path) -> PathBuf {
     PathBuf::from(format!("{}.layout.json", file.display()))
 }
@@ -173,13 +190,18 @@ impl AppState {
     ///
     /// Returns an error if creating or reading the active `.dbml` file fails.
     pub async fn new(target: PathBuf) -> anyhow::Result<Self> {
-        let target_abs = std::fs::canonicalize(&target).unwrap_or(target);
-        let (project_dir, file_path) = if target_abs.is_dir() {
+        let target_abs = tokio::fs::canonicalize(&target).await.unwrap_or(target);
+        let target_is_dir = tokio::fs::metadata(&target_abs)
+            .await
+            .is_ok_and(|m| m.is_dir());
+        let (project_dir, file_path) = if target_is_dir {
             let files = scan_dbml_dir(&target_abs).await;
-            let session = crate::session::load();
-            let chosen = session
-                .active_file
-                .filter(|p| p.is_file() && p.starts_with(&target_abs))
+            let session = crate::session::load_async().await;
+            let remembered = match session.active_file {
+                Some(p) if p.starts_with(&target_abs) && is_file(&p).await => Some(p),
+                _ => None,
+            };
+            let chosen = remembered
                 .or_else(|| files.into_iter().next())
                 .unwrap_or_else(|| target_abs.join("schema.dbml"));
             (Some(target_abs.clone()), chosen)
@@ -191,7 +213,7 @@ impl AppState {
         let layout_path = layout_path_for(&file_path);
 
         // Cria arquivo com template inicial se não existir
-        if !file_path.exists() {
+        if !path_exists(&file_path).await {
             let initial_dbml = "// DBML Document\n\nTable users {\n  id int [pk]\n  name varchar\n  email varchar [unique]\n}\n\nTable posts {\n  id int [pk]\n  user_id int\n  title varchar\n}\n\nRef: posts.user_id > users.id\n";
             atomic_write(&file_path, initial_dbml).await?;
         }
@@ -202,18 +224,15 @@ impl AppState {
 
         let hash = compute_hash(&content);
 
-        let layout = if layout_path.exists() {
-            tokio::fs::read_to_string(&layout_path).await.ok()
-        } else {
-            None
-        };
+        let layout = tokio::fs::read_to_string(&layout_path).await.ok();
 
         let (tx, _) = broadcast::channel(100);
 
-        crate::session::save(&crate::session::CliSession {
+        crate::session::save_async(crate::session::CliSession {
             last_target: Some(target_abs.clone()),
             active_file: Some(file_path.clone()),
-        });
+        })
+        .await;
 
         Ok(Self {
             token: generate_token().into(),
@@ -225,6 +244,8 @@ impl AppState {
                 content,
                 layout,
                 last_saved_hash: hash,
+                dirty: false,
+                flush_scheduled: false,
             })),
             tx,
             lifecycle: Arc::default(),
@@ -232,10 +253,59 @@ impl AppState {
     }
 
     /// Encerra o servidor: sinaliza sockets e watcher, espera as tasks rastreadas (até `grace`) e
-    /// então aguarda o lock do documento, o que garante que gravações pendentes terminaram.
+    /// grava as edições ainda pendentes (o que também aguarda gravações em andamento, pois elas
+    /// seguram o lock do documento).
     pub async fn shutdown(&self, grace: std::time::Duration) {
         self.lifecycle.shutdown(grace).await;
-        let _ = self.doc.write().await;
+        if let Err(err) = self.flush().await {
+            eprintln!("Failed to save pending changes on shutdown: {err:#}");
+        }
+    }
+
+    /// Grava agora as edições pendentes do documento ativo (no-op se não há nenhuma).
+    ///
+    /// # Errors
+    ///
+    /// Retorna erro se a gravação atômica falha; as edições continuam pendentes em memória.
+    pub async fn flush(&self) -> anyhow::Result<()> {
+        let doc = self.write_doc().await;
+        detach(async move {
+            let mut doc = doc;
+            Self::flush_locked(&mut doc).await
+        })
+        .await
+    }
+
+    async fn flush_locked(doc: &mut DocState) -> anyhow::Result<()> {
+        if !doc.dirty {
+            return Ok(());
+        }
+        atomic_write(&doc.file_path, &doc.content).await?;
+        doc.last_saved_hash = compute_hash(&doc.content);
+        doc.dirty = false;
+        Ok(())
+    }
+
+    /// Agenda a gravação adiada: espera [`WRITE_DEBOUNCE`] (ou o início do encerramento) e grava.
+    fn schedule_flush(&self) {
+        let state = self.clone();
+        let mut shutdown = self.lifecycle.subscribe();
+        self.lifecycle.spawn(async move {
+            tokio::select! {
+                () = tokio::time::sleep(WRITE_DEBOUNCE) => {}
+                _ = shutdown.changed() => {}
+            }
+            let doc = state.write_doc().await;
+            let result = detach(async move {
+                let mut doc = doc;
+                doc.flush_scheduled = false;
+                Self::flush_locked(&mut doc).await
+            })
+            .await;
+            if let Err(err) = result {
+                eprintln!("Failed to save changes: {err:#}");
+            }
+        });
     }
 
     /// Token de sessão desta execução (exigido em `/ws` e `/api/*`).
@@ -315,32 +385,36 @@ impl AppState {
                 canonical.display()
             );
         }
-        if !canonical.is_file() {
+        if !is_file(&canonical).await {
             anyhow::bail!("File not found: {}", canonical.display());
         }
-        let mut doc = self.doc.write().await;
-        let new_layout_path = layout_path_for(&canonical);
-        let new_content = tokio::fs::read_to_string(&canonical).await?;
-        let new_layout = if new_layout_path.exists() {
-            tokio::fs::read_to_string(&new_layout_path).await.ok()
-        } else {
-            None
-        };
+        let doc = self.write_doc().await;
+        let this = self.clone();
+        detach(async move {
+            let mut doc = doc;
+            // Edições pendentes do documento atual vão para o disco antes de trocá-lo.
+            Self::flush_locked(&mut doc).await?;
+            let new_layout_path = layout_path_for(&canonical);
+            let new_content = tokio::fs::read_to_string(&canonical).await?;
+            let new_layout = tokio::fs::read_to_string(&new_layout_path).await.ok();
 
-        doc.last_saved_hash = compute_hash(&new_content);
-        doc.content = new_content;
-        doc.layout = new_layout;
-        doc.layout_path = new_layout_path;
-        doc.file_path.clone_from(&canonical);
+            doc.last_saved_hash = compute_hash(&new_content);
+            doc.content = new_content;
+            doc.layout = new_layout;
+            doc.layout_path = new_layout_path;
+            doc.file_path.clone_from(&canonical);
 
-        crate::session::save(&crate::session::CliSession {
-            last_target: Some(self.target_path.clone()),
-            active_file: Some(canonical),
-        });
+            crate::session::save_async(crate::session::CliSession {
+                last_target: Some(this.target_path.clone()),
+                active_file: Some(canonical),
+            })
+            .await;
 
-        let update = self.document_message("update", &doc).await;
-        let _ = self.tx.send(update);
-        Ok(())
+            let update = this.document_message("update", &doc).await;
+            let _ = this.tx.send(update);
+            Ok(())
+        })
+        .await
     }
 
     fn ensure_active(doc: &DocState, expected_file: &str) -> anyhow::Result<()> {
@@ -372,17 +446,30 @@ impl AppState {
             expected_source.to_owned(),
             new_text.to_owned(),
         );
+        let this = self.clone();
         detach(async move {
             let mut doc = doc;
             Self::ensure_active(&doc, &expected_file)?;
-            let current = tokio::fs::read_to_string(&doc.file_path).await?;
-            let updated = patch_text(current, &expected_source, start, end, &new_text)?;
-            Self::persist(&mut doc, updated).await
+            // Com edições pendentes a memória é a fonte da verdade; sem elas, o disco (detecta
+            // alterações externas mesmo com o watcher desligado).
+            let current = if doc.dirty {
+                doc.content.clone()
+            } else {
+                tokio::fs::read_to_string(&doc.file_path).await?
+            };
+            doc.content = patch_text(current, &expected_source, start, end, &new_text)?;
+            doc.dirty = true;
+            if !doc.flush_scheduled {
+                doc.flush_scheduled = true;
+                this.schedule_flush();
+            }
+            Ok(())
         })
         .await
     }
 
-    /// Confere que o arquivo em disco ainda é `expected_source` (o botão "salvar" do front).
+    /// Grava as edições pendentes e confere que o arquivo em disco é `expected_source` (o botão
+    /// "salvar" do front).
     ///
     /// # Errors
     ///
@@ -392,12 +479,20 @@ impl AppState {
         expected_file: &str,
         expected_source: &str,
     ) -> anyhow::Result<()> {
-        let doc = self.doc.read().await;
-        Self::ensure_active(&doc, expected_file)?;
-        if tokio::fs::read_to_string(&doc.file_path).await? != expected_source {
-            anyhow::bail!("Document changed outside this editor; reload or reconcile changes");
-        }
-        Ok(())
+        let doc = self.write_doc().await;
+        let (expected_file, expected_source) =
+            (expected_file.to_owned(), expected_source.to_owned());
+        detach(async move {
+            let mut doc = doc;
+            Self::ensure_active(&doc, &expected_file)?;
+            // Salvar = gravar as edições pendentes agora e conferir o que ficou no disco.
+            Self::flush_locked(&mut doc).await?;
+            if tokio::fs::read_to_string(&doc.file_path).await? != expected_source {
+                anyhow::bail!("Document changed outside this editor; reload or reconcile changes");
+            }
+            Ok(())
+        })
+        .await
     }
 
     /// Atomically persists `new_content` to the active `.dbml` file and updates in-memory state.
@@ -422,6 +517,7 @@ impl AppState {
         atomic_write(&doc.file_path, &new_content).await?;
         doc.last_saved_hash = compute_hash(&new_content);
         doc.content = new_content;
+        doc.dirty = false;
         Ok(())
     }
 

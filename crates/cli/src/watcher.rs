@@ -48,6 +48,8 @@ pub fn start_file_watcher(state: AppState) -> anyhow::Result<()> {
             if hash == doc.last_saved_hash {
                 continue;
             }
+            // Alteração externa: vence sobre edições ainda não gravadas (o cliente reconcilia).
+            doc.dirty = false;
             doc.last_saved_hash = hash;
             doc.content.clone_from(&source);
             let message = serde_json::json!({
@@ -87,6 +89,8 @@ mod tests {
                     content: String::new(),
                     layout: None,
                     last_saved_hash: 0,
+                    dirty: false,
+                    flush_scheduled: false,
                 })),
                 tx,
                 lifecycle: Arc::default(),

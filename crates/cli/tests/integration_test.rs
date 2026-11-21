@@ -192,6 +192,142 @@ async fn cancelling_the_caller_does_not_abort_a_write() {
     let _ = tokio::fs::remove_dir_all(&dir).await;
 }
 
+struct Doc {
+    dir: std::path::PathBuf,
+    file: std::path::PathBuf,
+    state: dbml_cli::state::AppState,
+    name: String,
+}
+
+impl Doc {
+    async fn new(tag: &str) -> Self {
+        let dir = std::env::temp_dir().join(format!("dbml_{tag}_{}", std::process::id()));
+        let _ = tokio::fs::remove_dir_all(&dir).await;
+        tokio::fs::create_dir_all(&dir).await.unwrap();
+        let file = dir.join("schema.dbml");
+        tokio::fs::write(&file, "Table a { id int }\n")
+            .await
+            .unwrap();
+        let state = dbml_cli::state::AppState::new(file.clone()).await.unwrap();
+        let name = state
+            .doc
+            .read()
+            .await
+            .file_path
+            .to_string_lossy()
+            .into_owned();
+        Self {
+            dir,
+            file,
+            state,
+            name,
+        }
+    }
+
+    async fn content(&self) -> String {
+        self.state.doc.read().await.content.clone()
+    }
+
+    async fn disk(&self) -> String {
+        tokio::fs::read_to_string(&self.file).await.unwrap()
+    }
+
+    /// Insere `text` no início, partindo do conteúdo atual em memória.
+    async fn prepend(&self, text: &str) {
+        let source = self.content().await;
+        self.state
+            .apply_patch(&self.name, &source, 0, 0, text)
+            .await
+            .unwrap();
+    }
+}
+
+impl Drop for Doc {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.dir);
+    }
+}
+
+#[tokio::test]
+async fn patches_are_debounced_into_a_single_delayed_write() {
+    let d = Doc::new("debounce").await;
+    for i in 0..20 {
+        d.prepend(&format!("// {i}\n")).await;
+    }
+    // Nada foi para o disco ainda; a memória já tem as 20 edições.
+    assert_eq!(d.disk().await, "Table a { id int }\n");
+    assert!(d.content().await.starts_with("// 19\n"));
+    assert!(d.state.doc.read().await.dirty);
+
+    tokio::time::sleep(dbml_cli::state::WRITE_DEBOUNCE * 4).await;
+    assert_eq!(d.disk().await, d.content().await);
+    assert!(!d.state.doc.read().await.dirty);
+    let doc = d.state.doc.read().await.clone();
+    assert_eq!(
+        doc.last_saved_hash,
+        dbml_cli::state::compute_hash(&doc.content)
+    );
+}
+
+#[tokio::test]
+async fn save_document_flushes_pending_edits() {
+    let d = Doc::new("flush_save").await;
+    d.prepend("// editado\n").await;
+    let expected = d.content().await;
+    assert_ne!(d.disk().await, expected);
+    d.state.verify_document(&d.name, &expected).await.unwrap();
+    assert_eq!(d.disk().await, expected);
+}
+
+#[tokio::test]
+async fn switching_files_flushes_pending_edits() {
+    let d = Doc::new("flush_switch").await;
+    let other = d.dir.join("other.dbml");
+    tokio::fs::write(&other, "Table o { id int }\n")
+        .await
+        .unwrap();
+    // `Doc::new` abriu um arquivo único; reabre a pasta para poder trocar de arquivo.
+    let state = dbml_cli::state::AppState::new(d.dir.clone()).await.unwrap();
+    let active = state.doc.read().await.file_path.clone();
+    let source = state.doc.read().await.content.clone();
+    state
+        .apply_patch(&active.to_string_lossy(), &source, 0, 0, "// pendente\n")
+        .await
+        .unwrap();
+    let target = if active == other {
+        d.file.clone()
+    } else {
+        other.clone()
+    };
+    state.switch_file(target).await.unwrap();
+    let saved = tokio::fs::read_to_string(&active).await.unwrap();
+    assert!(saved.starts_with("// pendente\n"), "{saved}");
+}
+
+#[tokio::test]
+async fn shutdown_flushes_pending_edits() {
+    let d = Doc::new("flush_shutdown").await;
+    d.prepend("// antes de sair\n").await;
+    assert_ne!(d.disk().await, d.content().await);
+    d.state.shutdown(std::time::Duration::from_secs(1)).await;
+    assert_eq!(d.disk().await, d.content().await);
+    assert!(d.disk().await.starts_with("// antes de sair\n"));
+}
+
+#[tokio::test]
+async fn stale_patch_is_still_rejected_while_edits_are_pending() {
+    let d = Doc::new("stale_pending").await;
+    let original = d.content().await;
+    d.prepend("// um\n").await;
+    let err = d
+        .state
+        .apply_patch(&d.name, &original, 0, 0, "// velho\n")
+        .await
+        .unwrap_err();
+    assert!(err.to_string().contains("changed"), "{err}");
+    assert!(d.content().await.starts_with("// um\n"));
+}
+
 #[tokio::test]
 async fn concurrent_patches_never_lose_an_edit() {
     let dir = std::env::temp_dir().join(format!("dbml_patch_race_{}", std::process::id()));
@@ -221,6 +357,7 @@ async fn concurrent_patches_never_lose_an_edit() {
         1,
         "exatamente um patch vence: {r1:?} / {r2:?}"
     );
+    state.flush().await.unwrap();
     let on_disk = tokio::fs::read_to_string(&file).await.unwrap();
     assert_eq!(on_disk, *state.doc.read().await.content);
     assert!(on_disk.starts_with("// um\n") ^ on_disk.starts_with("// dois\n"));
