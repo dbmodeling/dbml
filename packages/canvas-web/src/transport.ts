@@ -229,6 +229,18 @@ export class VsCodeTransport implements HostTransport {
   }
 }
 
+export const RECONNECT_BASE_MS = 1000;
+export const RECONNECT_MAX_MS = 30000;
+
+/**
+ * Espera antes da próxima tentativa de reconexão: backoff exponencial com
+ * jitter ("equal jitter": metade fixa + metade aleatória), limitado a 30 s.
+ */
+export function reconnectDelay(attempt: number, random: () => number = Math.random): number {
+  const ceiling = Math.min(RECONNECT_MAX_MS, RECONNECT_BASE_MS * 2 ** Math.max(0, attempt));
+  return Math.round(ceiling / 2 + (random() * ceiling) / 2);
+}
+
 /** Transporte para execução dentro do navegador conectado ao servidor Axum CLI */
 export class WebSocketTransport implements HostTransport {
   private ws: WebSocket | null = null;
@@ -240,6 +252,9 @@ export class WebSocketTransport implements HostTransport {
   ) => void;
   private externalChangeCallback?: (newSource: string, documentId?: string) => void;
   private reconnectTimer: number | null = null;
+  private reconnectAttempts = 0;
+  /** Aba oculta: nenhuma tentativa agendada até `visibilitychange`. */
+  private waitingVisible = false;
   private requestSeq = 0;
   private pending = new Map<number, { resolve: () => void; reject: (e: Error) => void }>();
   private request(type: string, payload: unknown): Promise<void> {
@@ -255,12 +270,37 @@ export class WebSocketTransport implements HostTransport {
 
   constructor(url = `ws://${window.location.host}/ws`) {
     this.url = url;
+    document.addEventListener('visibilitychange', () => this.onVisibility());
     this.connect();
+  }
+
+  private onVisibility(): void {
+    if (document.hidden || !this.waitingVisible) return;
+    this.waitingVisible = false;
+    this.reconnectAttempts = 0;
+    this.connect();
+  }
+
+  private scheduleReconnect(): void {
+    if (this.reconnectTimer !== null) return;
+    if (document.hidden) {
+      this.waitingVisible = true;
+      return;
+    }
+    const delay = reconnectDelay(this.reconnectAttempts++);
+    this.reconnectTimer = window.setTimeout(() => {
+      this.reconnectTimer = null;
+      this.connect();
+    }, delay);
   }
 
   private connect(): void {
     try {
       this.ws = new WebSocket(this.url);
+
+      this.ws.onopen = () => {
+        this.reconnectAttempts = 0;
+      };
 
       this.ws.onmessage = (event) => {
         try {
@@ -292,15 +332,11 @@ export class WebSocketTransport implements HostTransport {
       this.ws.onclose = () => {
         for (const p of this.pending.values()) p.reject(new Error('Connection lost; reconnect and save again'));
         this.pending.clear();
-        if (!this.reconnectTimer) {
-          this.reconnectTimer = window.setTimeout(() => {
-            this.reconnectTimer = null;
-            this.connect();
-          }, 2000);
-        }
+        this.scheduleReconnect();
       };
     } catch (e) {
       console.warn('Falha ao conectar WebSocket:', e);
+      this.scheduleReconnect();
     }
   }
 
