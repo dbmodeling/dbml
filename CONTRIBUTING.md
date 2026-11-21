@@ -43,9 +43,10 @@ DB Modeling shares a single Rust core across three targets:
    git clone https://github.com/<your-username>/dbml.git
    cd dbml
    ```
-2. Create a feature or fix branch:
+2. Create your branch from `develop`, following the [branch naming rules](#branching-model):
    ```bash
-   git checkout -b feat/my-feature
+   git switch develop && git pull
+   git switch -c feat/my-feature
    ```
 
 ---
@@ -71,9 +72,49 @@ If you change UI behavior, keyboard shortcuts, or visual styling in `crates/app`
 
 ---
 
+## Branching Model
+
+```
+develop ──▶ feat|bug|improve|chore|ci/<desc> ──PR (squash)──────▶ develop
+develop ──▶ release/<version> ────────────────PR (merge commit)─▶ main ──tag v*──▶ release
+develop ─────────────────────────────────────PR (merge commit)─▶ main
+main    ──▶ hotfix/<desc> ───PR (merge commit)─▶ main ──PR main→develop (squash)─▶ develop
+```
+
+| Pull request into | Accepted source branches |
+| :--- | :--- |
+| `develop` | `feat/…`, `bug/…`, `improve/…`, `chore/…`, `ci/…` (lowercase kebab-case), `dependabot/…`, `main` (hotfix back-merge) |
+| `main` | `develop`, `release/vX.Y.Z`, `hotfix/…`, `dependabot/…` (security updates) |
+
+* `develop` and `main` only change through pull requests. The single required check is **`CI ok`**.
+* PRs into `develop` are **squash-merged**; PRs into `main` use a **merge commit**.
+* After a hotfix lands on `main`, open the `main → develop` back-merge right away.
+* Only organization owners can force-push or delete `develop` and `main` (for exceptional
+  rebase fixes).
+
+## Continuous Integration
+
+Each commit runs the full suite once before other work builds on it, and the gate is the pull request:
+
+| Event | What runs |
+| :--- | :--- |
+| Push to a work branch (no PR) | Nothing. Run the checks below locally. |
+| Draft PR | Light checks only (branch name, `cargo fmt`). |
+| PR into `develop` | Full suite, only for the areas changed (Rust / Web / scripts). |
+| Merge (push) into `develop` | Full suite, unfiltered. **This is the only run that saves the build cache.** |
+| PR `develop → main` | No re-run: the `gate` job requires the push run of the same commit on `develop` to have passed. |
+| PR `release/*`, `hotfix/*`, `dependabot/*` → `main` | Full suite. |
+
+Why PRs never save cache: GitHub scopes a PR's cache to its merge ref, so no other run can restore
+it. It only fills the 10 GB repository quota and evicts the `develop` cache. Without the cache,
+Windows/macOS build GPUI from scratch (~19 min instead of ~3 min).
+
+Dependabot opens at most one grouped PR per ecosystem every Monday (06:00 America/Manaus) against
+`develop`, without auto-rebase. Comment `@dependabot rebase` to refresh one.
+
 ## Checks Before Opening a Pull Request
 
-CI runs the following checks on every pull request (see [`.github/workflows/ci.yml`](.github/workflows/ci.yml)):
+CI runs the following checks on pull requests (see [`.github/workflows/ci.yml`](.github/workflows/ci.yml)):
 
 ```bash
 # 1. Check formatting
