@@ -49,7 +49,8 @@ export class DbmlCustomEditorProvider implements vscode.CustomTextEditorProvider
     provider.diagnostics = diagnostics;
     context.subscriptions.push(vscode.workspace.onDidCloseTextDocument((document) => diagnostics.delete(document.uri)));
     return vscode.window.registerCustomEditorProvider(DbmlCustomEditorProvider.viewType, provider, {
-      webviewOptions: { retainContextWhenHidden: true },
+      // Webview oculta é descartada (libera DOM, canvas e instância Wasm); ao voltar, 'ready' reenvia texto, layout e sessão.
+      webviewOptions: { retainContextWhenHidden: false },
       supportsMultipleEditorsPerDocument: true,
     });
   }

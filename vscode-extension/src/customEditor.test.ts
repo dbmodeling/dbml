@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 import { DbmlCustomEditorProvider } from './customEditor.js';
-import { openEditor } from './test/harness.js';
+import { nodeCliHost } from './cliHost.node.js';
+import { fakeContext, openEditor } from './test/harness.js';
 import { mockState, resetMock, Uri } from './test/vscode-mock.js';
 
 beforeEach(() => resetMock());
@@ -101,6 +102,16 @@ describe('validação das mensagens da Webview', () => {
     await h.send(null);
     await h.send('x');
     expect(h.posted).toHaveLength(0);
+  });
+});
+
+describe('registro do editor', () => {
+  it('não retém o contexto da webview quando a aba fica oculta (DOM, canvas e Wasm são liberados)', () => {
+    const { context } = fakeContext();
+    DbmlCustomEditorProvider.register(context, { delete() {} } as never, nodeCliHost);
+    const reg = mockState.registeredEditors.find((r) => r.viewType === 'dbmodeling.editor');
+    expect(reg).toBeDefined();
+    expect(reg!.options.webviewOptions.retainContextWhenHidden).toBeFalsy();
   });
 });
 

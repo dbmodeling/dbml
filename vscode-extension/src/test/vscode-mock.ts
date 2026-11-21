@@ -112,6 +112,7 @@ export interface MockState {
   warningAnswers: Array<string | undefined>;
   saveDialogResult: Uri | undefined;
   writeError: Error | undefined;
+  registeredEditors: Array<{ viewType: string; provider: unknown; options: any }>;
 }
 
 function fresh(): MockState {
@@ -129,6 +130,7 @@ function fresh(): MockState {
     warningAnswers: [],
     saveDialogResult: undefined,
     writeError: undefined,
+    registeredEditors: [],
   };
 }
 
@@ -229,6 +231,10 @@ export const workspace = {
 };
 
 export const window = {
+  registerCustomEditorProvider(viewType: string, provider: unknown, options: unknown) {
+    mockState.registeredEditors.push({ viewType, provider, options });
+    return { dispose() {} };
+  },
   async showSaveDialog(): Promise<Uri | undefined> {
     return mockState.saveDialogResult;
   },
