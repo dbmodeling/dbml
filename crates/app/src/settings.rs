@@ -55,7 +55,9 @@ fn width(v: &str, default: f32) -> f32 {
 }
 
 pub fn load() -> Settings {
-    let Some(p) = path() else { return Settings::default() };
+    let Some(p) = path() else {
+        return Settings::default();
+    };
     match std::fs::read_to_string(&p) {
         Ok(text) => parse(&text),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Settings::default(),
@@ -115,10 +117,10 @@ fn serialize(s: &Settings) -> String {
         Some(Mode::Light) => "light",
         _ => "dark",
     };
-    let translucent = s
-        .translucent
-        .unwrap_or_else(crate::platform::supports_blur);
-    let lang = s.lang.map_or_else(String::new, |lang| format!("lang={}\n", lang.as_str()));
+    let translucent = s.translucent.unwrap_or_else(crate::platform::supports_blur);
+    let lang = s
+        .lang
+        .map_or_else(String::new, |lang| format!("lang={}\n", lang.as_str()));
     format!(
         "{lang}mode={mode}\ntranslucent={translucent}\nsidebar_w={}\neditor_w={}\ninspector_w={}\ncol_type_w={}\nui_scale={:.2}\ninspector_auto_hide={}\nsidebar_open={}\ninspector_open={}\n",
         s.sidebar_w.round(),
@@ -148,7 +150,14 @@ mod tests {
         use crate::i18n::Lang;
         assert_eq!(parse("mode=light\n").lang, None);
         assert!(!serialize(&Settings::default()).contains("lang="));
-        assert_eq!(parse(&serialize(&Settings { lang: Some(Lang::PtBr), ..Settings::default() })).lang, Some(Lang::PtBr));
+        assert_eq!(
+            parse(&serialize(&Settings {
+                lang: Some(Lang::PtBr),
+                ..Settings::default()
+            }))
+            .lang,
+            Some(Lang::PtBr)
+        );
         assert_eq!(parse("lang=invalid\n").lang, None);
     }
 

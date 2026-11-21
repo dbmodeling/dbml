@@ -728,7 +728,12 @@ impl Shell {
         if let Some(path) = &doc.path
             && let Err(e) = crate::session::save_edges(path, doc.diagram.read(cx).edges())
         {
-            eprintln!("{}", crate::i18n::t("não foi possível gravar o layout de {}: {}").replacen("{}", &path.display().to_string(), 1).replacen("{}", &e.to_string(), 1));
+            eprintln!(
+                "{}",
+                crate::i18n::t("não foi possível gravar o layout de {}: {}")
+                    .replacen("{}", &path.display().to_string(), 1)
+                    .replacen("{}", &e.to_string(), 1)
+            );
         }
     }
 
@@ -914,8 +919,15 @@ impl Shell {
     /// Agenda `analyze` + `lint` do texto atual para 120 ms depois, em segundo plano. Cada edição
     /// invalida a anterior (geração), então digitar rápido analisa só o texto final. O resultado
     /// atualiza diagnósticos, sublinhados e, se `apply_schema`, o canvas.
-    fn schedule_analysis(&mut self, editor: &Entity<EditorState>, apply_schema: bool, cx: &mut Context<Self>) {
-        let Some(i) = self.doc_index(editor) else { return };
+    fn schedule_analysis(
+        &mut self,
+        editor: &Entity<EditorState>,
+        apply_schema: bool,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(i) = self.doc_index(editor) else {
+            return;
+        };
         let doc = &mut self.docs[i];
         doc.parse_gen += 1;
         let generation = doc.parse_gen;
@@ -928,7 +940,9 @@ impl Shell {
                 .spawn(async move { (dbml_analysis::analyze(&text), dbml_analysis::lint(&text)) })
                 .await;
             this.update(cx, |this, cx| {
-                let Some(i) = this.doc_index(&editor) else { return };
+                let Some(i) = this.doc_index(&editor) else {
+                    return;
+                };
                 let doc = &mut this.docs[i];
                 if doc.parse_gen != generation {
                     return;
@@ -951,7 +965,9 @@ impl Shell {
     /// Grava as posições dos cartões no sidecar (`<arquivo>.dbml.layout.json`) quando mudam
     /// (arrastar, desfazer/refazer, reorganizar, tabela nova), com debounce e em segundo plano.
     fn save_layout(&mut self, i: usize, cx: &mut Context<Self>) {
-        let Some(doc) = self.docs.get_mut(i) else { return };
+        let Some(doc) = self.docs.get_mut(i) else {
+            return;
+        };
         let Some(path) = doc.path.clone() else { return };
         let pos = doc.diagram.read(cx).positions().clone();
         if pos == doc.layout_saved {
@@ -963,7 +979,12 @@ impl Shell {
             bg.timer(std::time::Duration::from_millis(400)).await;
             bg.spawn(async move {
                 if let Err(e) = crate::session::save_positions(&path, &pos) {
-                    eprintln!("{}", crate::i18n::t("não foi possível gravar o layout de {}: {}").replacen("{}", &path.display().to_string(), 1).replacen("{}", &e.to_string(), 1));
+                    eprintln!(
+                        "{}",
+                        crate::i18n::t("não foi possível gravar o layout de {}: {}")
+                            .replacen("{}", &path.display().to_string(), 1)
+                            .replacen("{}", &e.to_string(), 1)
+                    );
                 }
             })
             .await;
@@ -989,7 +1010,9 @@ impl Shell {
             return;
         }
         self.recovery_active = !live.is_empty();
-        let Some(dir) = crate::recovery::dir() else { return };
+        let Some(dir) = crate::recovery::dir() else {
+            return;
+        };
         let bg = cx.background_executor().clone();
         self.recovery_task = Some(cx.spawn(async move |_, _| {
             bg.timer(std::time::Duration::from_millis(1500)).await;
@@ -1006,7 +1029,9 @@ impl Shell {
     /// herda o id da cópia, então ela continua sendo regravada/apagada normalmente. Abas de
     /// arquivo voltam sem caminho: gravar exige "Salvar como", nada sobrescreve o disco calado.
     fn adopt_recovery(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(dir) = crate::recovery::dir() else { return };
+        let Some(dir) = crate::recovery::dir() else {
+            return;
+        };
         let entries = crate::recovery::read_all(&dir);
         if entries.is_empty() {
             return;
@@ -1034,7 +1059,11 @@ impl Shell {
     }
 
     fn open_path(&mut self, path: PathBuf, window: &mut Window, cx: &mut Context<Self>) {
-        if let Some(i) = self.docs.iter().position(|d| d.path.as_ref() == Some(&path)) {
+        if let Some(i) = self
+            .docs
+            .iter()
+            .position(|d| d.path.as_ref() == Some(&path))
+        {
             self.active = i;
             self.save_session(cx);
             cx.notify();
@@ -1045,7 +1074,9 @@ impl Shell {
         self.loading += 1;
         cx.notify();
         cx.spawn_in(window, async move |this, cx| {
-            let result = bg.spawn(async move { std::fs::read_to_string(&read_path) }).await;
+            let result = bg
+                .spawn(async move { std::fs::read_to_string(&read_path) })
+                .await;
             this.update_in(cx, |this, window, cx| {
                 this.loading = this.loading.saturating_sub(1);
                 this.finish_open(path, result, window, cx);
@@ -1055,8 +1086,18 @@ impl Shell {
         .detach();
     }
 
-    fn finish_open(&mut self, path: PathBuf, result: std::io::Result<String>, window: &mut Window, cx: &mut Context<Self>) {
-        if let Some(i) = self.docs.iter().position(|d| d.path.as_ref() == Some(&path)) {
+    fn finish_open(
+        &mut self,
+        path: PathBuf,
+        result: std::io::Result<String>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(i) = self
+            .docs
+            .iter()
+            .position(|d| d.path.as_ref() == Some(&path))
+        {
             self.active = i;
             self.save_session(cx);
             cx.notify();
@@ -1077,9 +1118,15 @@ impl Shell {
             Err(e) => {
                 eprintln!("Could not open {}: {e}", path.display());
                 let hint = match e.kind() {
-                    std::io::ErrorKind::NotFound => "O arquivo foi movido ou removido. Escolha o arquivo novamente.",
-                    std::io::ErrorKind::PermissionDenied => "Sem acesso ao arquivo. Verifique as permissões ou abra uma cópia.",
-                    std::io::ErrorKind::InvalidData => "O arquivo não está em UTF-8. Abra uma cópia salva em UTF-8.",
+                    std::io::ErrorKind::NotFound => {
+                        "O arquivo foi movido ou removido. Escolha o arquivo novamente."
+                    }
+                    std::io::ErrorKind::PermissionDenied => {
+                        "Sem acesso ao arquivo. Verifique as permissões ou abra uma cópia."
+                    }
+                    std::io::ErrorKind::InvalidData => {
+                        "O arquivo não está em UTF-8. Abra uma cópia salva em UTF-8."
+                    }
                     _ => "Não foi possível abrir o arquivo. Selecione-o novamente.",
                 };
                 window.push_notification(crate::i18n::t(hint), cx);
@@ -1233,7 +1280,10 @@ impl Shell {
             }
         }
         if let Some(active_path) = session.active_file.as_ref()
-            && let Some(idx) = self.docs.iter().position(|d| d.path.as_ref() == Some(active_path))
+            && let Some(idx) = self
+                .docs
+                .iter()
+                .position(|d| d.path.as_ref() == Some(active_path))
         {
             self.active = idx;
         }
@@ -1366,15 +1416,19 @@ impl Shell {
         cx.spawn_in(window, async move |this, cx| {
             let Ok(Ok(Some(path))) = rx.await else { return };
             this.update_in(cx, |this, window, cx| {
-                if let Some(i) = this.doc_index(&editor) { this.write(i, path, window, cx); }
+                if let Some(i) = this.doc_index(&editor) {
+                    this.write(i, path, window, cx);
+                }
             })
-                .ok();
+            .ok();
         })
         .detach();
     }
 
     fn doc_index(&self, editor: &Entity<EditorState>) -> Option<usize> {
-        self.docs.iter().position(|doc| doc.editor.entity_id() == editor.entity_id())
+        self.docs
+            .iter()
+            .position(|doc| doc.editor.entity_id() == editor.entity_id())
     }
 
     fn schedule_autosave(&mut self, i: usize, window: &mut Window, cx: &mut Context<Self>) {
@@ -1391,7 +1445,11 @@ impl Shell {
             let Ok(Some((path, text, saved))) = this.update_in(cx, |this, _, cx| {
                 let doc = &this.docs[this.doc_index(&editor)?];
                 let path = doc.path.clone().filter(|_| doc.dirty)?;
-                Some((path, doc.editor.read(cx).value().to_string(), doc.saved_text.clone()))
+                Some((
+                    path,
+                    doc.editor.read(cx).value().to_string(),
+                    doc.saved_text.clone(),
+                ))
             }) else {
                 return;
             };
@@ -1406,7 +1464,10 @@ impl Shell {
                     crate::session::atomic_write_sync(&write_path, &write_text).map_err(Some)
                 })
                 .await;
-            this.update_in(cx, |this, window, cx| this.finish_autosave(&editor, &path, &text, result, window, cx)).ok();
+            this.update_in(cx, |this, window, cx| {
+                this.finish_autosave(&editor, &path, &text, result, window, cx)
+            })
+            .ok();
         }));
     }
 
@@ -1420,7 +1481,9 @@ impl Shell {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let Some(i) = self.doc_index(editor) else { return };
+        let Some(i) = self.doc_index(editor) else {
+            return;
+        };
         let doc = &mut self.docs[i];
         if doc.path.as_deref() != Some(path) {
             return;
@@ -1434,7 +1497,10 @@ impl Shell {
                 doc.save_armed = None;
             }
             Err(None) => {
-                window.push_notification(crate::i18n::t("O arquivo mudou no disco. Salve manualmente para confirmar."), cx);
+                window.push_notification(
+                    crate::i18n::t("O arquivo mudou no disco. Salve manualmente para confirmar."),
+                    cx,
+                );
             }
             Err(Some(e)) => {
                 eprintln!("Could not save {}: {e}", path.display());
@@ -1486,7 +1552,10 @@ impl Shell {
             loop {
                 bg.timer(std::time::Duration::from_millis(1500)).await;
                 let Ok(paths) = this.update_in(cx, |this, _, _| {
-                    this.docs.iter().filter_map(|d| d.path.clone()).collect::<Vec<_>>()
+                    this.docs
+                        .iter()
+                        .filter_map(|d| d.path.clone())
+                        .collect::<Vec<_>>()
                 }) else {
                     return;
                 };
@@ -1504,19 +1573,40 @@ impl Shell {
                             .collect::<Vec<_>>()
                     })
                     .await;
-                if this.update_in(cx, |this, window, cx| this.apply_disk_reads(reads, window, cx)).is_err() {
+                if this
+                    .update_in(cx, |this, window, cx| {
+                        this.apply_disk_reads(reads, window, cx)
+                    })
+                    .is_err()
+                {
                     return;
                 }
             }
         })
     }
 
-    fn apply_disk_reads(&mut self, reads: Vec<(PathBuf, Option<String>)>, window: &mut Window, cx: &mut Context<Self>) {
+    fn apply_disk_reads(
+        &mut self,
+        reads: Vec<(PathBuf, Option<String>)>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         use crate::disk_sync::{Watch, watch_decision};
         for (path, disk) in reads {
-            let Some(i) = self.docs.iter().position(|d| d.path.as_ref() == Some(&path)) else { continue };
+            let Some(i) = self
+                .docs
+                .iter()
+                .position(|d| d.path.as_ref() == Some(&path))
+            else {
+                continue;
+            };
             let doc = &mut self.docs[i];
-            let decision = watch_decision(&doc.saved_text, &doc.last_text, disk.as_deref(), doc.watch_warned.as_deref());
+            let decision = watch_decision(
+                &doc.saved_text,
+                &doc.last_text,
+                disk.as_deref(),
+                doc.watch_warned.as_deref(),
+            );
             match decision {
                 Watch::Idle => {}
                 Watch::Reload(text) => self.reload_doc(i, &text, window, cx),
@@ -1535,7 +1625,9 @@ impl Shell {
     /// Adota `text` (lido do disco) como conteúdo salvo e atual da aba `i`. A versão anterior
     /// do buffer entra no histórico, então Desfazer a recupera.
     fn reload_doc(&mut self, i: usize, text: &str, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(doc) = self.docs.get_mut(i) else { return };
+        let Some(doc) = self.docs.get_mut(i) else {
+            return;
+        };
         let new_arc: std::sync::Arc<str> = std::sync::Arc::from(text);
         let changed = doc.last_text != new_arc;
         if changed {
@@ -1549,8 +1641,16 @@ impl Shell {
         doc.save_armed = None;
         let editor = doc.editor.clone();
         let diagram = doc.diagram.clone();
-        let edges = doc.path.as_deref().map(crate::session::load_edges).unwrap_or_default();
-        let saved_positions = doc.path.as_deref().map(crate::session::load_positions).unwrap_or_default();
+        let edges = doc
+            .path
+            .as_deref()
+            .map(crate::session::load_edges)
+            .unwrap_or_default();
+        let saved_positions = doc
+            .path
+            .as_deref()
+            .map(crate::session::load_positions)
+            .unwrap_or_default();
         let title = doc.title.clone();
         if editor.read(cx).value().as_ref() != text {
             self.suppress_history = true;
@@ -1565,19 +1665,34 @@ impl Shell {
             cx.notify();
         });
         if changed {
-            window.push_notification(crate::i18n::t("{} foi recarregado do disco.").replace("{}", &title), cx);
+            window.push_notification(
+                crate::i18n::t("{} foi recarregado do disco.").replace("{}", &title),
+                cx,
+            );
         }
         self.publish_recovery(cx);
         cx.notify();
     }
 
     /// Salvar explícito (Ctrl+S, fechar aba, sair): síncrono porque o chamador precisa do resultado.
-    fn write(&mut self, i: usize, path: PathBuf, window: &mut Window, cx: &mut Context<Self>) -> bool {
-        let Some(doc) = self.docs.get_mut(i) else { return false };
+    fn write(
+        &mut self,
+        i: usize,
+        path: PathBuf,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let Some(doc) = self.docs.get_mut(i) else {
+            return false;
+        };
         let text = doc.editor.read(cx).value().to_string();
         if doc.path.as_deref() == Some(path.as_path()) {
             let disk = crate::disk_sync::read_disk(&path);
-            if !crate::disk_sync::save_allowed(&doc.saved_text, disk.as_deref(), doc.save_armed.as_deref()) {
+            if !crate::disk_sync::save_allowed(
+                &doc.saved_text,
+                disk.as_deref(),
+                doc.save_armed.as_deref(),
+            ) {
                 doc.save_armed = disk.map(|d| std::sync::Arc::from(d.as_str()));
                 window.push_notification(
                     crate::i18n::t("O arquivo mudou no disco desde que foi aberto. Salve de novo para sobrescrever."),
@@ -1595,9 +1710,14 @@ impl Shell {
                 doc.watch_warned = None;
                 doc.save_armed = None;
                 self.publish_recovery(cx);
-                let Some(doc) = self.docs.get_mut(i) else { return true };
+                let Some(doc) = self.docs.get_mut(i) else {
+                    return true;
+                };
                 doc.autosave = None;
-                window.push_notification(crate::i18n::t("Salvo em {}").replace("{}", &path.display().to_string()), cx);
+                window.push_notification(
+                    crate::i18n::t("Salvo em {}").replace("{}", &path.display().to_string()),
+                    cx,
+                );
                 doc.title = file_title(&path);
                 doc.path = Some(path.clone());
                 // arquivo novo/"salvar como": leva estilo das relações e posições para o sidecar
@@ -1642,10 +1762,15 @@ impl Shell {
         };
         let editor = doc.editor.clone();
         if let Some(path) = doc.path.clone() {
-            if self.write(i, path, window, cx) { self.force_close_tab_at(i, cx); }
+            if self.write(i, path, window, cx) {
+                self.force_close_tab_at(i, cx);
+            }
             return;
         }
-        let dir = self.project.clone().unwrap_or_else(|| std::env::current_dir().unwrap_or_default());
+        let dir = self
+            .project
+            .clone()
+            .unwrap_or_else(|| std::env::current_dir().unwrap_or_default());
         let rx = cx.prompt_for_new_path(&dir, Some(&doc.title));
         cx.spawn_in(window, async move |this, cx| {
             let Ok(Ok(Some(path))) = rx.await else { return };
@@ -1655,8 +1780,10 @@ impl Shell {
                 {
                     this.force_close_tab_at(i, cx);
                 }
-            }).ok();
-        }).detach();
+            })
+            .ok();
+        })
+        .detach();
     }
 
     fn close_tab_at(&mut self, i: usize, window: &mut Window, cx: &mut Context<Self>) {
@@ -1675,60 +1802,73 @@ impl Shell {
             let title = title.clone();
             let shell = shell.clone();
             let editor = editor.clone();
-            dialog_frame(dialog, &g, 440., Some(crate::i18n::t("Alterações não salvas"))).content(
-                move |content, _, _| {
-                    let shell_save = shell.clone();
-                    let shell_discard = shell.clone();
-                    let editor_save = editor.clone();
-                    let editor_discard = editor.clone();
-                    content.child(
-                        div()
-                            .flex()
-                            .flex_col()
-                            .gap(px(16.))
-                            .child(div().text_size(TEXT_SM).child(crate::i18n::t("Deseja salvar as alterações feitas em \"{}\"?").replace("{}", &title)))
-                            .child(
-                                div()
-                                    .flex()
-                                    .justify_end()
-                                    .gap(px(8.))
-                                    .child(
-                                        Button::new("dlg-cancel-close")
-                                            .ghost()
-                                            .small()
-                                            .label(crate::i18n::t("Cancelar"))
-                                            .on_click(|_, window, cx| {
-                                                window.close_dialog(cx);
-                                            }),
-                                    )
-                                    .child(
-                                        Button::new("dlg-discard-close")
-                                            .ghost()
-                                            .small()
-                                            .label(crate::i18n::t("Descartar alterações"))
-                                            .on_click(move |_, window, cx| {
-                                                window.close_dialog(cx);
-                                                shell_discard.update(cx, |s, cx| {
-                                                    if let Some(i) = s.doc_index(&editor_discard) { s.force_close_tab_at(i, cx); }
-                                                });
-                                            }),
-                                    )
-                                    .child(
-                                        Button::new("dlg-save-close")
-                                            .primary()
-                                            .small()
-                                            .label(crate::i18n::t("Salvar"))
-                                            .on_click(move |_, window, cx| {
-                                                window.close_dialog(cx);
-                                                shell_save.update(cx, |s, cx| {
-                                                    if let Some(i) = s.doc_index(&editor_save) { s.save_and_close_tab_at(i, window, cx); }
-                                                });
-                                            }),
-                                    ),
-                            ),
-                    )
-                },
+            dialog_frame(
+                dialog,
+                &g,
+                440.,
+                Some(crate::i18n::t("Alterações não salvas")),
             )
+            .content(move |content, _, _| {
+                let shell_save = shell.clone();
+                let shell_discard = shell.clone();
+                let editor_save = editor.clone();
+                let editor_discard = editor.clone();
+                content.child(
+                    div()
+                        .flex()
+                        .flex_col()
+                        .gap(px(16.))
+                        .child(
+                            div().text_size(TEXT_SM).child(
+                                crate::i18n::t("Deseja salvar as alterações feitas em \"{}\"?")
+                                    .replace("{}", &title),
+                            ),
+                        )
+                        .child(
+                            div()
+                                .flex()
+                                .justify_end()
+                                .gap(px(8.))
+                                .child(
+                                    Button::new("dlg-cancel-close")
+                                        .ghost()
+                                        .small()
+                                        .label(crate::i18n::t("Cancelar"))
+                                        .on_click(|_, window, cx| {
+                                            window.close_dialog(cx);
+                                        }),
+                                )
+                                .child(
+                                    Button::new("dlg-discard-close")
+                                        .ghost()
+                                        .small()
+                                        .label(crate::i18n::t("Descartar alterações"))
+                                        .on_click(move |_, window, cx| {
+                                            window.close_dialog(cx);
+                                            shell_discard.update(cx, |s, cx| {
+                                                if let Some(i) = s.doc_index(&editor_discard) {
+                                                    s.force_close_tab_at(i, cx);
+                                                }
+                                            });
+                                        }),
+                                )
+                                .child(
+                                    Button::new("dlg-save-close")
+                                        .primary()
+                                        .small()
+                                        .label(crate::i18n::t("Salvar"))
+                                        .on_click(move |_, window, cx| {
+                                            window.close_dialog(cx);
+                                            shell_save.update(cx, |s, cx| {
+                                                if let Some(i) = s.doc_index(&editor_save) {
+                                                    s.save_and_close_tab_at(i, window, cx);
+                                                }
+                                            });
+                                        }),
+                                ),
+                        ),
+                )
+            })
         });
     }
 
@@ -1868,7 +2008,8 @@ impl Shell {
             window.focus(&handle, cx);
             return;
         }
-        let input = cx.new(|cx| InputState::new(window, cx).placeholder(crate::i18n::t("Filtrar tabelas…")));
+        let input = cx
+            .new(|cx| InputState::new(window, cx).placeholder(crate::i18n::t("Filtrar tabelas…")));
         let handle = input.read(cx).focus_handle(cx);
         window.focus(&handle, cx);
         let sub = cx.subscribe_in(
@@ -2061,10 +2202,15 @@ impl Shell {
                     tables: &tables,
                     enum_name: enum_name.as_deref(),
                     relation: relation.as_ref().map(|((from, from_col), (to, to_col))| {
-                        ((from.as_str(), from_col.as_str()), (to.as_str(), to_col.as_str()))
+                        (
+                            (from.as_str(), from_col.as_str()),
+                            (to.as_str(), to_col.as_str()),
+                        )
                     }),
                 };
-                let svg = diagram_export::to_svg_with_selection(&schema, &pos, &edges, &theme, &selection);
+                let svg = diagram_export::to_svg_with_selection(
+                    &schema, &pos, &edges, &theme, &selection,
+                );
                 let fonts = &crate::FONTS;
                 match kind {
                     ImageKind::Svg => Ok(embed_svg_fonts(svg).into_bytes()),
@@ -2187,9 +2333,15 @@ impl Shell {
         };
         let text = doc.editor.read(cx).value().to_string();
         match dbml_edit::add_column_preset_text(&text, &table, preset) {
-            None => window.push_notification(crate::i18n::t("Tabela '{}' não encontrada").replace("{}", &table), cx),
+            None => window.push_notification(
+                crate::i18n::t("Tabela '{}' não encontrada").replace("{}", &table),
+                cx,
+            ),
             Some(new) if new == text => {
-                window.push_notification(crate::i18n::t("{}: as colunas já existem").replace("{}", preset.label()), cx);
+                window.push_notification(
+                    crate::i18n::t("{}: as colunas já existem").replace("{}", preset.label()),
+                    cx,
+                );
             }
             Some(new) => self.edit_text(false, window, cx, move |_| Some(new)),
         }
@@ -2252,7 +2404,11 @@ impl Shell {
                 .masked(true)
         });
         let path = input(window, cx, "/path/to/database.sqlite");
-        let schemas = input(window, cx, crate::i18n::t("todos os schemas (ou: public, sales)"));
+        let schemas = input(
+            window,
+            cx,
+            crate::i18n::t("todos os schemas (ou: public, sales)"),
+        );
         let shell_entity = cx.entity().clone();
         let has_existing = self
             .doc()
@@ -3043,11 +3199,16 @@ impl Shell {
         };
         let doc = &self.docs[i];
         if let Some(path) = doc.path.clone() {
-            if self.write(i, path, window, cx) { self.save_next_and_quit(window, cx); }
+            if self.write(i, path, window, cx) {
+                self.save_next_and_quit(window, cx);
+            }
             return;
         }
         let editor = doc.editor.clone();
-        let dir = self.project.clone().unwrap_or_else(|| std::env::current_dir().unwrap_or_default());
+        let dir = self
+            .project
+            .clone()
+            .unwrap_or_else(|| std::env::current_dir().unwrap_or_default());
         let rx = cx.prompt_for_new_path(&dir, Some(&doc.title));
         cx.spawn_in(window, async move |this, cx| {
             let Ok(Ok(Some(path))) = rx.await else { return };
@@ -3057,8 +3218,10 @@ impl Shell {
                 {
                     this.save_next_and_quit(window, cx);
                 }
-            }).ok();
-        }).detach();
+            })
+            .ok();
+        })
+        .detach();
     }
 
     fn open_palette(&mut self, _: &OpenPalette, window: &mut Window, cx: &mut Context<Self>) {
@@ -3247,7 +3410,8 @@ impl Shell {
 
     fn show_shortcuts(&mut self, _: &ShowShortcuts, window: &mut Window, cx: &mut Context<Self>) {
         let g = Glass::of_scaled(self.mode, self.translucent, self.ui_scale);
-        let filter = cx.new(|cx| InputState::new(window, cx).placeholder(crate::i18n::t("Filtrar atalhos")));
+        let filter =
+            cx.new(|cx| InputState::new(window, cx).placeholder(crate::i18n::t("Filtrar atalhos")));
         window.open_dialog(cx, move |dialog, _, _| {
             let filter = filter.clone();
             dialog_bare(dialog, &g, 800.).content(move |content, window, cx| {
@@ -3387,18 +3551,21 @@ impl Shell {
         self.set_theme(Mode::Dark, self.translucent, window, cx);
     }
 
-
     fn lang_portuguese(&mut self, _: &LangPortuguese, _: &mut Window, cx: &mut Context<Self>) {
         self.lang_pref = Some(crate::i18n::Lang::PtBr);
         crate::i18n::set(crate::i18n::Lang::PtBr);
-        for doc in &self.docs { doc.diagram.update(cx, |_, cx| cx.notify()); }
+        for doc in &self.docs {
+            doc.diagram.update(cx, |_, cx| cx.notify());
+        }
         self.apply_appearance(cx);
     }
 
     fn lang_english(&mut self, _: &LangEnglish, _: &mut Window, cx: &mut Context<Self>) {
         self.lang_pref = Some(crate::i18n::Lang::En);
         crate::i18n::set(crate::i18n::Lang::En);
-        for doc in &self.docs { doc.diagram.update(cx, |_, cx| cx.notify()); }
+        for doc in &self.docs {
+            doc.diagram.update(cx, |_, cx| cx.notify());
+        }
         self.apply_appearance(cx);
     }
 
@@ -3564,8 +3731,10 @@ impl Shell {
                     });
                     self.with_diagram(cx, |d| d.rename(&old, &value));
                 } else {
-                    window
-                        .push_notification(crate::i18n::t("Nome de tabela inválido: use letras, números e _."), cx);
+                    window.push_notification(
+                        crate::i18n::t("Nome de tabela inválido: use letras, números e _."),
+                        cx,
+                    );
                 }
             }
             EditTarget::TableNote(table) => {
@@ -3580,8 +3749,10 @@ impl Shell {
                         dbml_edit::rename_column(t, &table, &old, &value)
                     });
                 } else {
-                    window
-                        .push_notification(crate::i18n::t("Nome de coluna inválido: use letras, números e _."), cx);
+                    window.push_notification(
+                        crate::i18n::t("Nome de coluna inválido: use letras, números e _."),
+                        cx,
+                    );
                 }
             }
             EditTarget::ColType(table, col) if !value.is_empty() => {
@@ -3624,7 +3795,10 @@ impl Shell {
                     });
                     self.with_diagram(cx, |d| d.rename_enum(&old, &value));
                 } else {
-                    window.push_notification(crate::i18n::t("Nome de enum inválido: use letras, números e _."), cx);
+                    window.push_notification(
+                        crate::i18n::t("Nome de enum inválido: use letras, números e _."),
+                        cx,
+                    );
                 }
             }
             EditTarget::EnumVal(en, old) if value != old => {
@@ -3633,8 +3807,10 @@ impl Shell {
                         dbml_edit::rename_enum_value(t, &en, &old, &value)
                     });
                 } else {
-                    window
-                        .push_notification(crate::i18n::t("Valor de enum inválido: use letras, números e _."), cx);
+                    window.push_notification(
+                        crate::i18n::t("Valor de enum inválido: use letras, números e _."),
+                        cx,
+                    );
                 }
             }
             EditTarget::NewEnumVal(en) if !value.is_empty() => {
@@ -3643,8 +3819,10 @@ impl Shell {
                         dbml_edit::add_enum_value(t, &en, &value)
                     });
                 } else {
-                    window
-                        .push_notification(crate::i18n::t("Valor de enum inválido: use letras, números e _."), cx);
+                    window.push_notification(
+                        crate::i18n::t("Valor de enum inválido: use letras, números e _."),
+                        cx,
+                    );
                 }
             }
             _ => {}
@@ -3766,7 +3944,10 @@ impl Shell {
         let Some(doc) = self.doc() else { return };
         let names = doc.diagram.read(cx).selection();
         if names.is_empty() {
-            window.push_notification(crate::i18n::t("Selecione tabelas (Shift+clique) para agrupar."), cx);
+            window.push_notification(
+                crate::i18n::t("Selecione tabelas (Shift+clique) para agrupar."),
+                cx,
+            );
             return;
         }
         self.edit_text(true, window, cx, |t| {
@@ -3923,7 +4104,8 @@ impl Shell {
         self.ui_scale = (scale * 100.0).round() / 100.0;
         self.apply_appearance(cx);
         window.push_notification(
-            crate::i18n::t("Escala da interface: {}%").replace("{}", &((self.ui_scale * 100.0).round() as i32).to_string()),
+            crate::i18n::t("Escala da interface: {}%")
+                .replace("{}", &((self.ui_scale * 100.0).round() as i32).to_string()),
             cx,
         );
     }
@@ -4058,12 +4240,27 @@ fn connection_hint(message: &str, sqlite: bool) -> &'static str {
         return empty;
     }
     let message = message.to_ascii_lowercase();
-    if ["authenticat", "login failed", "access denied for user", "password", "28p01", "18456"]
-        .iter().any(|reason| message.contains(reason))
+    if [
+        "authenticat",
+        "login failed",
+        "access denied for user",
+        "password",
+        "28p01",
+        "18456",
+    ]
+    .iter()
+    .any(|reason| message.contains(reason))
     {
         "O banco recusou a autenticação. Confira o usuário e a senha."
-    } else if ["timeout", "timed out", "time out", "connection refused", "could not resolve"]
-        .iter().any(|reason| message.contains(reason))
+    } else if [
+        "timeout",
+        "timed out",
+        "time out",
+        "connection refused",
+        "could not resolve",
+    ]
+    .iter()
+    .any(|reason| message.contains(reason))
     {
         "O banco não respondeu. Confira o host, a porta e se o serviço está rodando."
     } else if message.contains("could not read the catalog") {
@@ -4087,7 +4284,9 @@ fn export_write_hint(error: &std::io::Error) -> &'static str {
         std::io::ErrorKind::PermissionDenied => {
             "Sem permissão para gravar neste local. Escolha outra pasta."
         }
-        std::io::ErrorKind::StorageFull => "O disco está cheio. Libere espaço ou escolha outra pasta.",
+        std::io::ErrorKind::StorageFull => {
+            "O disco está cheio. Libere espaço ou escolha outra pasta."
+        }
         _ => "Não foi possível gravar o arquivo. Tente outro nome ou outra pasta.",
     }
 }
@@ -4571,11 +4770,15 @@ mod tests {
     fn export_write_errors_provide_a_recovery_action() {
         use std::io::{Error, ErrorKind};
 
-        assert!(super::export_write_hint(&Error::from(ErrorKind::PermissionDenied))
-            .contains("Escolha outra pasta"));
+        assert!(
+            super::export_write_hint(&Error::from(ErrorKind::PermissionDenied))
+                .contains("Escolha outra pasta")
+        );
         #[cfg(windows)]
-        assert!(super::export_write_hint(&Error::from_raw_os_error(1224))
-            .contains("exporte com outro nome"));
+        assert!(
+            super::export_write_hint(&Error::from_raw_os_error(1224))
+                .contains("exporte com outro nome")
+        );
     }
 
     #[test]
@@ -4583,7 +4786,10 @@ mod tests {
         let svg = super::embed_svg_fonts("<svg><text>orders</text></svg>".into());
         assert!(svg.starts_with("<svg><style>"));
         assert!(svg.contains("font-family:'Geist Mono';font-weight:500"));
-        assert_eq!(svg.matches("data:font/ttf;base64,").count(), crate::FONTS.len());
+        assert_eq!(
+            svg.matches("data:font/ttf;base64,").count(),
+            crate::FONTS.len()
+        );
         assert!(svg.ends_with("</style><text>orders</text></svg>"));
     }
 
@@ -4596,7 +4802,10 @@ mod tests {
         let text = dbml_edit::add_table("", &name);
         assert_eq!(name, "new_table");
         assert!(dbml_analysis::analyze(&text).table(&name).is_some());
-        assert_ne!(dbml_edit::unique_table_name(&text, super::NEW_TABLE_NAME), name);
+        assert_ne!(
+            dbml_edit::unique_table_name(&text, super::NEW_TABLE_NAME),
+            name
+        );
     }
 
     #[test]

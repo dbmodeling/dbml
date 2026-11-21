@@ -235,9 +235,7 @@ impl InputHighlighter for DbmlHighlighter {
                             .or_else(|| resolver.style(name))
                     })
                     .unwrap_or_default();
-                if let Some((_, color)) =
-                    marks.iter().find(|(r, _)| r.start <= at && at < r.end)
-                {
+                if let Some((_, color)) = marks.iter().find(|(r, _)| r.start <= at && at < r.end) {
                     style.underline = Some(UnderlineStyle {
                         color: Some(*color),
                         thickness: px(1.),
@@ -351,8 +349,10 @@ pub fn install(editor: &mut EditorState, cx: &mut Context<EditorState>) -> DiagM
     editor.set_highlighter_factory(
         Rc::new(move |lang: &str| {
             (lang == "dbml").then(|| {
-                Box::new(DbmlHighlighter { marks: shared.clone(), ..Default::default() })
-                    as Box<dyn InputHighlighter>
+                Box::new(DbmlHighlighter {
+                    marks: shared.clone(),
+                    ..Default::default()
+                }) as Box<dyn InputHighlighter>
             })
         }),
         cx,

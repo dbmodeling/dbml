@@ -25,7 +25,10 @@ pub fn atomic_write_bytes(path: &Path, content: &[u8]) -> std::io::Result<()> {
     };
     let parent = target.parent().unwrap_or_else(|| Path::new("."));
     std::fs::create_dir_all(parent)?;
-    let file_name = target.file_name().and_then(|n| n.to_str()).unwrap_or("file");
+    let file_name = target
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("file");
     let seq = TMP_SEQ.fetch_add(1, Ordering::Relaxed);
     let tmp_path = parent.join(format!(".{file_name}.tmp-{}-{seq}", std::process::id()));
     let permissions = std::fs::metadata(&target).ok().map(|m| m.permissions());
@@ -39,12 +42,16 @@ pub fn atomic_write_bytes(path: &Path, content: &[u8]) -> std::io::Result<()> {
     let mut file = options.open(&tmp_path)?;
     let result = (|| {
         file.write_all(content)?;
-        if let Some(permissions) = permissions { file.set_permissions(permissions)?; }
+        if let Some(permissions) = permissions {
+            file.set_permissions(permissions)?;
+        }
         file.sync_all()?;
         drop(file);
         std::fs::rename(&tmp_path, &target)
     })();
-    if result.is_err() { let _ = std::fs::remove_file(&tmp_path); }
+    if result.is_err() {
+        let _ = std::fs::remove_file(&tmp_path);
+    }
     result?;
     // Persiste a entrada de diretório do rename (não existe em Windows; melhor esforço).
     #[cfg(unix)]
@@ -79,7 +86,12 @@ pub fn load_positions(dbml: &Path) -> std::collections::HashMap<String, (f32, f3
         .map(|tables| {
             tables
                 .iter()
-                .filter_map(|(k, p)| Some((k.clone(), (p.get("x")?.as_f64()? as f32, p.get("y")?.as_f64()? as f32))))
+                .filter_map(|(k, p)| {
+                    Some((
+                        k.clone(),
+                        (p.get("x")?.as_f64()? as f32, p.get("y")?.as_f64()? as f32),
+                    ))
+                })
                 .collect()
         })
         .unwrap_or_default()
@@ -88,8 +100,13 @@ pub fn load_positions(dbml: &Path) -> std::collections::HashMap<String, (f32, f3
 /// Grava `tables` no sidecar preservando as demais chaves (`edges`, `viewport`, `colors`...) e
 /// as entradas de tabelas que não estão em `pos`. Sidecar existente que não é um objeto JSON não
 /// é sobrescrito (erro). Escrita atômica.
-pub fn save_positions(dbml: &Path, pos: &std::collections::HashMap<String, (f32, f32)>) -> std::io::Result<()> {
-    let _guard = SIDECAR_LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+pub fn save_positions(
+    dbml: &Path,
+    pos: &std::collections::HashMap<String, (f32, f32)>,
+) -> std::io::Result<()> {
+    let _guard = SIDECAR_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     let p = sidecar_path(dbml);
     let mut v = match std::fs::read_to_string(&p) {
         Ok(t) => serde_json::from_str(&t).map_err(std::io::Error::other)?,
@@ -101,9 +118,9 @@ pub fn save_positions(dbml: &Path, pos: &std::collections::HashMap<String, (f32,
         }
         Err(e) => return Err(e),
     };
-    let obj = v
-        .as_object_mut()
-        .ok_or_else(|| std::io::Error::other(crate::i18n::t("sidecar de layout não é um objeto JSON")))?;
+    let obj = v.as_object_mut().ok_or_else(|| {
+        std::io::Error::other(crate::i18n::t("sidecar de layout não é um objeto JSON"))
+    })?;
     let tables = obj
         .entry("tables")
         .or_insert_with(|| serde_json::Value::Object(serde_json::Map::new()));
@@ -139,7 +156,9 @@ pub fn load_edges(dbml: &Path) -> diagram_export::EdgeStyles {
 /// Grava `edges` no sidecar preservando as demais chaves (`tables`, `viewport`…). Sidecar
 /// existente que não é um objeto JSON não é sobrescrito (erro), para não perder dados.
 pub fn save_edges(dbml: &Path, edges: &diagram_export::EdgeStyles) -> std::io::Result<()> {
-    let _guard = SIDECAR_LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let _guard = SIDECAR_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     let p = sidecar_path(dbml);
     let mut v = match std::fs::read_to_string(&p) {
         Ok(t) => serde_json::from_str(&t).map_err(std::io::Error::other)?,
@@ -151,9 +170,9 @@ pub fn save_edges(dbml: &Path, edges: &diagram_export::EdgeStyles) -> std::io::R
         }
         Err(e) => return Err(e),
     };
-    let obj = v
-        .as_object_mut()
-        .ok_or_else(|| std::io::Error::other(crate::i18n::t("sidecar de layout não é um objeto JSON")))?;
+    let obj = v.as_object_mut().ok_or_else(|| {
+        std::io::Error::other(crate::i18n::t("sidecar de layout não é um objeto JSON"))
+    })?;
     let sorted: BTreeMap<_, _> = edges.iter().collect();
     obj.insert(
         "edges".into(),
@@ -266,7 +285,9 @@ static LAST_NOTICE: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(Non
 
 /// Registra um aviso; repetir a mesma mensagem em seguida não empilha.
 pub fn notice(message: String) {
-    let (Ok(mut last), Ok(mut queue)) = (LAST_NOTICE.lock(), NOTICES.lock()) else { return };
+    let (Ok(mut last), Ok(mut queue)) = (LAST_NOTICE.lock(), NOTICES.lock()) else {
+        return;
+    };
     if last.as_deref() != Some(message.as_str()) {
         *last = Some(message.clone());
         queue.push(message);
@@ -281,7 +302,10 @@ fn notice_recovered() {
 }
 
 pub fn take_notices() -> Vec<String> {
-    NOTICES.lock().map(|mut q| std::mem::take(&mut *q)).unwrap_or_default()
+    NOTICES
+        .lock()
+        .map(|mut q| std::mem::take(&mut *q))
+        .unwrap_or_default()
 }
 
 /// Copia o arquivo ilegível para `<nome>.bak` antes de ser substituído por padrões e avisa.
@@ -289,12 +313,18 @@ pub fn quarantine(p: &Path, reason: &str) {
     let mut bak = p.as_os_str().to_owned();
     bak.push(".bak");
     let bak = PathBuf::from(bak);
-    eprintln!("{}: {} ({reason})", crate::i18n::t("arquivo de estado ilegível"), p.display());
+    eprintln!(
+        "{}: {} ({reason})",
+        crate::i18n::t("arquivo de estado ilegível"),
+        p.display()
+    );
     match std::fs::copy(p, &bak) {
         Ok(_) => notice(
-            crate::i18n::t("Não foi possível ler {}. Uma cópia ficou em {} e o app usa os padrões.")
-                .replacen("{}", &p.display().to_string(), 1)
-                .replacen("{}", &bak.display().to_string(), 1),
+            crate::i18n::t(
+                "Não foi possível ler {}. Uma cópia ficou em {} e o app usa os padrões.",
+            )
+            .replacen("{}", &p.display().to_string(), 1)
+            .replacen("{}", &bak.display().to_string(), 1),
         ),
         Err(e) => notice(
             crate::i18n::t("Não foi possível ler {} e a cópia de segurança falhou: {}")
@@ -327,7 +357,9 @@ pub fn save(state: &SessionState) {
 pub fn save_to(p: &Path, state: &SessionState) {
     let mut payload = state.clone();
     payload.version = 1;
-    let Ok(json) = serde_json::to_string_pretty(&payload) else { return };
+    let Ok(json) = serde_json::to_string_pretty(&payload) else {
+        return;
+    };
     note_write_result(p, atomic_write_sync(p, &json));
 }
 
@@ -353,7 +385,7 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn atomic_write_preserves_permissions_and_symlinks() {
-        use std::os::unix::fs::{symlink, PermissionsExt};
+        use std::os::unix::fs::{PermissionsExt, symlink};
         let dir = std::env::temp_dir().join(format!("dbm-atomic-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let target = dir.join("target.dbml");
@@ -363,8 +395,16 @@ mod tests {
         symlink(&target, &link).unwrap();
         super::atomic_write_sync(&link, "after").unwrap();
         assert_eq!(std::fs::read_to_string(&target).unwrap(), "after");
-        assert!(std::fs::symlink_metadata(&link).unwrap().file_type().is_symlink());
-        assert_eq!(std::fs::metadata(&target).unwrap().permissions().mode() & 0o777, 0o600);
+        assert!(
+            std::fs::symlink_metadata(&link)
+                .unwrap()
+                .file_type()
+                .is_symlink()
+        );
+        assert_eq!(
+            std::fs::metadata(&target).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
         std::fs::remove_dir_all(dir).unwrap();
     }
 
@@ -375,7 +415,10 @@ mod tests {
         let target = dir.join("export.png");
         std::fs::write(&target, b"old").unwrap();
         atomic_write_bytes(&target, &[0x89, b'P', b'N', b'G', 0, 255]).unwrap();
-        assert_eq!(std::fs::read(&target).unwrap(), [0x89, b'P', b'N', b'G', 0, 255]);
+        assert_eq!(
+            std::fs::read(&target).unwrap(),
+            [0x89, b'P', b'N', b'G', 0, 255]
+        );
         let leftovers: Vec<_> = std::fs::read_dir(&dir)
             .unwrap()
             .filter_map(Result::ok)
@@ -394,7 +437,10 @@ mod tests {
         // rename de arquivo sobre diretório não vazio falha: nada pode ficar para trás
         assert!(atomic_write_sync(&target, "x").is_err());
         assert!(target.join("child").is_dir());
-        let entries = std::fs::read_dir(&dir).unwrap().filter_map(Result::ok).count();
+        let entries = std::fs::read_dir(&dir)
+            .unwrap()
+            .filter_map(Result::ok)
+            .count();
         assert_eq!(entries, 1);
         std::fs::remove_dir_all(dir).unwrap();
     }
@@ -467,7 +513,10 @@ mod tests {
             serde_json::from_str(&std::fs::read_to_string(&side).unwrap()).unwrap();
         assert_eq!(v["tables"]["a"]["x"], 1);
         assert_eq!(v["extra"], true);
-        assert_eq!(v["edges"]["a.id->b.id"], serde_json::json!({ "straight": true }));
+        assert_eq!(
+            v["edges"]["a.id->b.id"],
+            serde_json::json!({ "straight": true })
+        );
         assert_eq!(
             v["edges"]["b.x->a.id"],
             serde_json::json!({ "dx": 40.0, "dy": -25.0 })
@@ -505,7 +554,8 @@ mod tests {
         assert_eq!(loaded["enum:status"], (10.0, 20.5));
         // tabela que não está em `pos` permanece, com as demais propriedades
         assert_eq!(loaded["old"], (1.0, 2.0));
-        let v: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&side).unwrap()).unwrap();
+        let v: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&side).unwrap()).unwrap();
         assert_eq!(v["tables"]["old"]["color"], "#fff");
         assert_eq!(v["viewport"]["zoom"], 2);
         assert_eq!(v["edges"]["a.id->b.id"]["straight"], true);
@@ -527,8 +577,15 @@ mod tests {
         std::fs::write(&corrupt, "{not valid json").unwrap();
         assert_eq!(load_from(&corrupt), SessionState::default());
         // o arquivo ilegível é preservado em .bak antes de ser substituído
-        assert_eq!(std::fs::read_to_string(dir.join("session.json.bak")).unwrap(), "{not valid json");
-        assert!(take_notices().iter().any(|n| n.contains("session.json.bak")));
+        assert_eq!(
+            std::fs::read_to_string(dir.join("session.json.bak")).unwrap(),
+            "{not valid json"
+        );
+        assert!(
+            take_notices()
+                .iter()
+                .any(|n| n.contains("session.json.bak"))
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 

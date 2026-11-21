@@ -435,7 +435,11 @@ impl Glass {
                     c(0xffffffff)
                 },
                 grid: c(0x0000001f),
-                card: if translucent { c(0xffffffcc) } else { c(0xffffffff) },
+                card: if translucent {
+                    c(0xffffffcc)
+                } else {
+                    c(0xffffffff)
+                },
                 island: c(0xffffffdb),
                 edge: c(0x14141e1f),
                 edge_soft: c(0x14141e14),

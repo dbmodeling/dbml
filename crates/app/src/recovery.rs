@@ -28,7 +28,12 @@ pub struct Entry {
 
 impl From<&Live> for Entry {
     fn from(l: &Live) -> Self {
-        Self { id: l.id, title: l.title.clone(), path: l.path.clone(), text: l.text.to_string() }
+        Self {
+            id: l.id,
+            title: l.title.clone(),
+            path: l.path.clone(),
+            text: l.text.to_string(),
+        }
     }
 }
 
@@ -98,7 +103,9 @@ pub fn dump_live_for_panic() {
 /// Cópias deixadas por uma execução anterior, em ordem de criação. Arquivos ilegíveis ficam
 /// de fora (e no disco, para inspeção).
 pub fn read_all(dir: &Path) -> Vec<Entry> {
-    let Ok(rd) = std::fs::read_dir(dir) else { return Vec::new() };
+    let Ok(rd) = std::fs::read_dir(dir) else {
+        return Vec::new();
+    };
     let mut out: Vec<Entry> = rd
         .flatten()
         .filter(|e| e.path().extension().is_some_and(|x| x == "json"))
@@ -113,7 +120,12 @@ mod tests {
     use super::*;
 
     fn live(id: u64, text: &str) -> Live {
-        Live { id, title: format!("t{id}.dbml"), path: Some(PathBuf::from("/x/a.dbml")), text: text.into() }
+        Live {
+            id,
+            title: format!("t{id}.dbml"),
+            path: Some(PathBuf::from("/x/a.dbml")),
+            text: text.into(),
+        }
     }
 
     fn temp(name: &str) -> PathBuf {
@@ -150,12 +162,18 @@ mod tests {
         dump(&dir, &[live(1, "a")]).unwrap();
         dump(&dir, &[live(2, "b")]).unwrap();
         std::fs::write(dir.join("9.json"), "{ruim").unwrap();
-        assert_eq!(read_all(&dir).iter().map(|e| e.id).collect::<Vec<_>>(), [1, 2]);
+        assert_eq!(
+            read_all(&dir).iter().map(|e| e.id).collect::<Vec<_>>(),
+            [1, 2]
+        );
         let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]
     fn missing_dir_reads_empty() {
-        assert_eq!(read_all(Path::new("/nonexistent/dbm-recovery")), Vec::<Entry>::new());
+        assert_eq!(
+            read_all(Path::new("/nonexistent/dbm-recovery")),
+            Vec::<Entry>::new()
+        );
     }
 }

@@ -17,7 +17,12 @@ pub enum Watch {
 
 /// `disk`: conteúdo atual do arquivo (`None` se removido/ilegível); `saved`: texto da última
 /// leitura/gravação; `current`: texto do editor; `warned`: conteúdo do disco já avisado.
-pub fn watch_decision(saved: &str, current: &str, disk: Option<&str>, warned: Option<&str>) -> Watch {
+pub fn watch_decision(
+    saved: &str,
+    current: &str,
+    disk: Option<&str>,
+    warned: Option<&str>,
+) -> Watch {
     let Some(disk) = disk else { return Watch::Idle };
     if disk == saved {
         return Watch::Idle;
@@ -58,20 +63,35 @@ mod tests {
 
     #[test]
     fn clean_document_reloads_external_change() {
-        assert_eq!(watch_decision("a", "a", Some("b"), None), Watch::Reload("b".into()));
+        assert_eq!(
+            watch_decision("a", "a", Some("b"), None),
+            Watch::Reload("b".into())
+        );
     }
 
     #[test]
     fn dirty_document_raises_conflict_once() {
-        assert_eq!(watch_decision("a", "edit", Some("b"), None), Watch::Conflict("b".into()));
-        assert_eq!(watch_decision("a", "edit", Some("b"), Some("b")), Watch::Idle);
+        assert_eq!(
+            watch_decision("a", "edit", Some("b"), None),
+            Watch::Conflict("b".into())
+        );
+        assert_eq!(
+            watch_decision("a", "edit", Some("b"), Some("b")),
+            Watch::Idle
+        );
         // outra mudança externa depois do aviso: avisa de novo
-        assert_eq!(watch_decision("a", "edit", Some("c"), Some("b")), Watch::Conflict("c".into()));
+        assert_eq!(
+            watch_decision("a", "edit", Some("c"), Some("b")),
+            Watch::Conflict("c".into())
+        );
     }
 
     #[test]
     fn edit_equal_to_disk_adopts_disk() {
-        assert_eq!(watch_decision("a", "b", Some("b"), None), Watch::Reload("b".into()));
+        assert_eq!(
+            watch_decision("a", "b", Some("b"), None),
+            Watch::Reload("b".into())
+        );
     }
 
     #[test]
@@ -85,6 +105,9 @@ mod tests {
 
     #[test]
     fn read_disk_returns_none_for_missing_file() {
-        assert_eq!(read_disk(std::path::Path::new("/nonexistent/dbm-nope.dbml")), None);
+        assert_eq!(
+            read_disk(std::path::Path::new("/nonexistent/dbm-nope.dbml")),
+            None
+        );
     }
 }

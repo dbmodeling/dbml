@@ -224,7 +224,12 @@ pub fn catalog() -> Vec<Entry> {
         ),
         e("", ThemeLight, "Aparência", "Tema: Claro"),
         e("", ThemeDark, "Aparência", "Tema: Escuro"),
-        e("", LangPortuguese, "Aparência", "Idioma: Português (Brasil)"),
+        e(
+            "",
+            LangPortuguese,
+            "Aparência",
+            "Idioma: Português (Brasil)",
+        ),
         e("", LangEnglish, "Aparência", "Language: English"),
         e(
             "ctrl-shift-=",

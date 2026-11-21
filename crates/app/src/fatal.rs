@@ -21,7 +21,11 @@ fn append_log(message: &str) {
     if let Some(dir) = path.parent() {
         let _ = std::fs::create_dir_all(dir);
     }
-    if let Ok(mut file) = std::fs::OpenOptions::new().create(true).append(true).open(path) {
+    if let Ok(mut file) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+    {
         let _ = file.write_all(log_line(crate::session::now_secs(), message).as_bytes());
     }
 }
@@ -36,7 +40,11 @@ pub fn dialog_candidates(os: &str, title: &str, message: &str) -> Vec<(&'static 
                 "osascript",
                 vec![
                     "-e".into(),
-                    format!("display alert \"{}\" message \"{}\" as critical", esc(title), esc(message)),
+                    format!(
+                        "display alert \"{}\" message \"{}\" as critical",
+                        esc(title),
+                        esc(message)
+                    ),
                 ],
             )]
         }
@@ -56,9 +64,29 @@ pub fn dialog_candidates(os: &str, title: &str, message: &str) -> Vec<(&'static 
             )]
         }
         _ => vec![
-            ("zenity", vec!["--error".into(), "--title".into(), title.into(), "--text".into(), message.into()]),
-            ("kdialog", vec!["--error".into(), message.into(), "--title".into(), title.into()]),
-            ("xmessage", vec!["-center".into(), format!("{title}: {message}")]),
+            (
+                "zenity",
+                vec![
+                    "--error".into(),
+                    "--title".into(),
+                    title.into(),
+                    "--text".into(),
+                    message.into(),
+                ],
+            ),
+            (
+                "kdialog",
+                vec![
+                    "--error".into(),
+                    message.into(),
+                    "--title".into(),
+                    title.into(),
+                ],
+            ),
+            (
+                "xmessage",
+                vec!["-center".into(), format!("{title}: {message}")],
+            ),
         ],
     }
 }
@@ -86,7 +114,9 @@ pub fn report(message: &str) -> ! {
         crate::i18n::t("DB Modeling não conseguiu iniciar"),
         &format!(
             "{message}\n\n{}",
-            crate::i18n::t("Verifique o driver de vídeo (Vulkan/OpenGL no Linux, DirectX no Windows, Metal no macOS) e abra o app de novo.")
+            crate::i18n::t(
+                "Verifique o driver de vídeo (Vulkan/OpenGL no Linux, DirectX no Windows, Metal no macOS) e abra o app de novo."
+            )
         ),
     );
     std::process::exit(1);

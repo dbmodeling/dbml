@@ -12,8 +12,8 @@ mod glass;
 mod handoff;
 mod harness;
 mod history;
-mod ide;
 mod i18n;
+mod ide;
 mod import_sql;
 mod motion;
 mod platform;
@@ -62,22 +62,40 @@ impl AssetSource for AppAssets {
 
 fn main() {
     fatal::install_panic_hook();
-    i18n::set(std::env::var("DBM_LANG").ok().and_then(|v| i18n::Lang::parse(&v)).or_else(|| settings::load().lang).unwrap_or_else(i18n::system));
+    i18n::set(
+        std::env::var("DBM_LANG")
+            .ok()
+            .and_then(|v| i18n::Lang::parse(&v))
+            .or_else(|| settings::load().lang)
+            .unwrap_or_else(i18n::system),
+    );
     if std::env::args().any(|a| a == "--version" || a == "-V" || a == "-v") {
         println!("db-modeling {}", env!("CARGO_PKG_VERSION"));
         return;
     }
     if std::env::args().any(|a| a == "--help" || a == "-h") {
         println!("dbmodeling {}", env!("CARGO_PKG_VERSION"));
-        println!("{}", i18n::t("Modelagem visual de esquemas de banco de dados no canvas ou em texto DBML\n"));
+        println!(
+            "{}",
+            i18n::t("Modelagem visual de esquemas de banco de dados no canvas ou em texto DBML\n")
+        );
         println!("{}", i18n::t("Uso: db-modeling [ARQUIVO.dbml | PASTA]\n"));
         println!("{}", i18n::t("Opções:"));
-        println!("{}", i18n::t("  -v, -V, --version   Mostra a versão do aplicativo"));
-        println!("{}", i18n::t("  -h, --help          Mostra esta mensagem de ajuda"));
+        println!(
+            "{}",
+            i18n::t("  -v, -V, --version   Mostra a versão do aplicativo")
+        );
+        println!(
+            "{}",
+            i18n::t("  -h, --help          Mostra esta mensagem de ajuda")
+        );
         return;
     }
     // `app arquivo.dbml` abre o arquivo; `app pasta/` abre o projeto; sem argumento, o exemplo
-    let start = std::env::args().nth(1).map(PathBuf::from).map(|p| std::path::absolute(&p).unwrap_or(p));
+    let start = std::env::args()
+        .nth(1)
+        .map(PathBuf::from)
+        .map(|p| std::path::absolute(&p).unwrap_or(p));
     // Instância única por usuário: a segunda instância entrega o argumento à primeira e sai.
     // Desligada em build de debug/harness para `cargo run` não colidir com o app instalado.
     if !harness::ENABLED
@@ -93,7 +111,9 @@ fn main() {
     let app = gpui_kit::application().with_assets(AppAssets);
     // macOS: o Finder entrega "Abrir com" e documentos soltos no ícone como evento, não em argv
     app.on_open_urls(|urls| {
-        handoff::push(handoff::Request { paths: handoff::paths_from_urls(&urls) });
+        handoff::push(handoff::Request {
+            paths: handoff::paths_from_urls(&urls),
+        });
     });
     app.run(|cx| {
         gpui_kit::init(cx);
@@ -102,10 +122,21 @@ fn main() {
         }
         cx.text_system()
             .add_fonts(FONTS.iter().map(|f| Cow::Borrowed(*f)).collect())
-            .unwrap_or_else(|e| fatal::report(&format!("{}: {e}", i18n::t("Não foi possível carregar as fontes embutidas"))));
+            .unwrap_or_else(|e| {
+                fatal::report(&format!(
+                    "{}: {e}",
+                    i18n::t("Não foi possível carregar as fontes embutidas")
+                ))
+            });
         cx.bind_keys(actions::catalog().into_iter().filter_map(|e| e.binding));
         let prefs = settings::load();
-        i18n::set(std::env::var("DBM_LANG").ok().and_then(|v| i18n::Lang::parse(&v)).or(prefs.lang).unwrap_or_else(i18n::system));
+        i18n::set(
+            std::env::var("DBM_LANG")
+                .ok()
+                .and_then(|v| i18n::Lang::parse(&v))
+                .or(prefs.lang)
+                .unwrap_or_else(i18n::system),
+        );
         let env_mode = match crate::harness::var("DBM_MODE").as_deref() {
             Some("light" | "light-translucent") => Some(Mode::Light),
             Some("dark" | "dark-translucent") => Some(Mode::Dark),
@@ -137,10 +168,12 @@ fn main() {
         };
         let (win, shell) = gpui_kit::open_window(opts, cx, |window, cx| {
             // tema: DBM_MODE (harness de screenshot) > preferência salva > sistema
-            let mode = env_mode.or(prefs.mode).unwrap_or(match window.appearance() {
-                WindowAppearance::Light | WindowAppearance::VibrantLight => Mode::Light,
-                _ => Mode::Dark,
-            });
+            let mode = env_mode
+                .or(prefs.mode)
+                .unwrap_or(match window.appearance() {
+                    WindowAppearance::Light | WindowAppearance::VibrantLight => Mode::Light,
+                    _ => Mode::Dark,
+                });
             shell::apply_theme_scaled(mode, translucent, prefs.ui_scale, cx);
             let shell = cx.new(|cx| shell::Shell::new(start, mode, translucent, window, cx));
             let focus = shell.focus_handle(cx);
@@ -149,7 +182,12 @@ fn main() {
             window.set_app_id(APP_ID);
             shell
         })
-        .unwrap_or_else(|e| fatal::report(&format!("{}: {e}", i18n::t("Não foi possível abrir a janela (sem backend de GPU utilizável?)"))));
+        .unwrap_or_else(|e| {
+            fatal::report(&format!(
+                "{}: {e}",
+                i18n::t("Não foi possível abrir a janela (sem backend de GPU utilizável?)")
+            ))
+        });
         shell::register_global_actions(win, &shell, cx);
     });
 }

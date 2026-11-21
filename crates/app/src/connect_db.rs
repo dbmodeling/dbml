@@ -131,9 +131,10 @@ pub fn introspect_blocking(
         .map_err(|e| e.to_string())?;
     let tables = dbml_analysis::analyze(&outcome.dbml).tables.len();
     if tables == 0 {
-        return Err(
-            crate::i18n::t("Conectado, mas nenhuma tabela foi encontrada. Verifique o banco e o schema.").into(),
-        );
+        return Err(crate::i18n::t(
+            "Conectado, mas nenhuma tabela foi encontrada. Verifique o banco e o schema.",
+        )
+        .into());
     }
     Ok(Generated {
         dbml: outcome.dbml,
@@ -175,9 +176,14 @@ pub fn summarize_test(server: &str, schemas: &[String]) -> String {
         .join(", ");
     let more = schemas.len().saturating_sub(SHOWN);
     if more > 0 {
-        crate::i18n::t("Conectado a {}. Schemas: {} (+{} a mais).").replacen("{}", server, 1).replacen("{}", &shown, 1).replacen("{}", &more.to_string(), 1)
+        crate::i18n::t("Conectado a {}. Schemas: {} (+{} a mais).")
+            .replacen("{}", server, 1)
+            .replacen("{}", &shown, 1)
+            .replacen("{}", &more.to_string(), 1)
     } else {
-        crate::i18n::t("Conectado a {}. Schemas: {}.").replacen("{}", server, 1).replacen("{}", &shown, 1)
+        crate::i18n::t("Conectado a {}. Schemas: {}.")
+            .replacen("{}", server, 1)
+            .replacen("{}", &shown, 1)
     }
 }
 

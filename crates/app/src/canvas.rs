@@ -6,6 +6,7 @@ use crate::glass::{
     FONT_MONO, Glass, Mode, TABLE_COLORS, TEXT_SM, TEXT_XS, card_shadow, elevation, hex,
 };
 use crate::motion::{self, Tween};
+use diagram_export::{EdgeStyle, EdgeStyles};
 use gpui_kit::assets::IconName;
 use gpui_kit::component::button::{Button, ButtonVariants};
 use gpui_kit::component::menu::PopupMenu;
@@ -13,7 +14,6 @@ use gpui_kit::component::tooltip::Tooltip;
 use gpui_kit::component::{Icon, Sizable};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
-use diagram_export::{EdgeStyle, EdgeStyles};
 use schema::Schema;
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -343,9 +343,13 @@ impl Diagram {
     }
 
     fn resize_viewport(&mut self, origin: Point<Pixels>, size: Size<Pixels>) {
-        if !self.needs_fit && (self.selected.is_some() || self.selected_enum.is_some())
-            && f32::from(self.size.width) > 0. && f32::from(self.size.height) > 0.
-            && f32::from(size.width) > 0. && f32::from(size.height) > 0. {
+        if !self.needs_fit
+            && (self.selected.is_some() || self.selected_enum.is_some())
+            && f32::from(self.size.width) > 0.
+            && f32::from(self.size.height) > 0.
+            && f32::from(size.width) > 0.
+            && f32::from(size.height) > 0.
+        {
             let mut dx = f32::from(size.width - self.size.width) / 2.;
             let mut dy = f32::from(size.height - self.size.height) / 2.;
             if let Some(name) = &self.selected
@@ -364,7 +368,9 @@ impl Diagram {
             }
             self.pan.0 += dx;
             self.pan.1 += dy;
-            if let Some(tween) = &mut self.viewport_motion { tween.translate(dx, dy); }
+            if let Some(tween) = &mut self.viewport_motion {
+                tween.translate(dx, dy);
+            }
         }
         self.origin = origin;
         self.size = size;
@@ -515,7 +521,12 @@ impl Diagram {
         if (self.schema.tables.is_empty() && self.schema.enums.is_empty()) || w < 1. || h < 1. {
             return;
         }
-        let (mut x0, mut y0, mut x1, mut y1) = (f32::INFINITY, f32::INFINITY, f32::NEG_INFINITY, f32::NEG_INFINITY);
+        let (mut x0, mut y0, mut x1, mut y1) = (
+            f32::INFINITY,
+            f32::INFINITY,
+            f32::NEG_INFINITY,
+            f32::NEG_INFINITY,
+        );
         for t in &self.schema.tables {
             let (x, y) = self.positions()[&t.qualified_name()];
             x0 = x0.min(x);
@@ -619,7 +630,12 @@ impl Diagram {
                         return None;
                     }
                     let (x, y) = *self.pos.get(&q)?;
-                    Some(layout::Rect { x, y, w: CARD_W, h: card_h(t.columns.len()) })
+                    Some(layout::Rect {
+                        x,
+                        y,
+                        w: CARD_W,
+                        h: card_h(t.columns.len()),
+                    })
                 })
                 .collect();
             diagram_export::relation_segments(ax, ay, bx, by, &obstacles)
@@ -668,8 +684,16 @@ impl Diagram {
         if let Some(hit) = self.route_cache.borrow().geoms.get(&idx) {
             return hit.clone();
         }
-        let geom = self.schema.refs.get(idx).and_then(|r| self.compute_ref_geom(r)).map(Rc::new);
-        self.route_cache.borrow_mut().geoms.insert(idx, geom.clone());
+        let geom = self
+            .schema
+            .refs
+            .get(idx)
+            .and_then(|r| self.compute_ref_geom(r))
+            .map(Rc::new);
+        self.route_cache
+            .borrow_mut()
+            .geoms
+            .insert(idx, geom.clone());
         geom
     }
 
@@ -687,7 +711,12 @@ impl Diagram {
             let (source_key, target_key, _, _, _, segs) = &*geom;
             segs.iter()
                 .any(|c| crate::canvas_geom::point_hits_curve(p, c, 6. / self.zoom))
-                .then(|| ((source_key.clone(), r.from.column.clone()), (target_key.clone(), r.to.column.clone())))
+                .then(|| {
+                    (
+                        (source_key.clone(), r.from.column.clone()),
+                        (target_key.clone(), r.to.column.clone()),
+                    )
+                })
         })
     }
 
@@ -699,15 +728,15 @@ impl Diagram {
             let (s, t, key, curve, auto, segs) = &*geom;
             // alça no meio do trecho desenhado (a rota que desvia pode não ser a curva)
             let mid = diagram_export::curve_mid(&segs[segs.len() / 2]);
-            self.is_selected_ref(s, r, t).then(|| (key.clone(), *curve, *auto, mid))
+            self.is_selected_ref(s, r, t)
+                .then(|| (key.clone(), *curve, *auto, mid))
         })
     }
 
     /// O ponto (mundo) cai na alça da relação selecionada (círculo de ~8 px no ponto médio).
     fn on_edge_handle(&self, p: (f32, f32)) -> bool {
-        self.selected_edge().is_some_and(|(_, _, _, m)| {
-            (p.0 - m.x).hypot(p.1 - m.y) <= 8. / self.zoom
-        })
+        self.selected_edge()
+            .is_some_and(|(_, _, _, m)| (p.0 - m.x).hypot(p.1 - m.y) <= 8. / self.zoom)
     }
 
     pub fn edges(&self) -> &EdgeStyles {
@@ -726,7 +755,10 @@ impl Diagram {
         };
         let old = self.edges.get(&key).copied().unwrap_or_default();
         let (ox, oy) = if old.straight {
-            let (s, a) = (diagram_export::curve_mid(&curve), diagram_export::curve_mid(&auto));
+            let (s, a) = (
+                diagram_export::curve_mid(&curve),
+                diagram_export::curve_mid(&auto),
+            );
             ((s.x - a.x) / 0.75, (s.y - a.y) / 0.75)
         } else {
             (old.dx, old.dy)
@@ -752,7 +784,10 @@ impl Diagram {
         let cur = self.edges.get(&key).copied();
         let next = match cur {
             _ if reset => None,
-            Some(s) if s.straight => Some(EdgeStyle { straight: false, ..s }),
+            Some(s) if s.straight => Some(EdgeStyle {
+                straight: false,
+                ..s
+            }),
             s => Some(EdgeStyle {
                 straight: true,
                 ..s.unwrap_or_default()
@@ -1094,9 +1129,13 @@ impl Diagram {
         let (pan_x, pan_y) = self.pan;
         // cursor da ação em curso: vale na janela toda (o cartão sob o ponteiro não o troca)
         let drag_cursor = match &self.drag {
-            Some(Drag::Pan { .. } | Drag::Cards { .. } | Drag::Group { .. } | Drag::Enum { .. } | Drag::Edge { .. }) => {
-                Some(CursorStyle::ClosedHand)
-            }
+            Some(
+                Drag::Pan { .. }
+                | Drag::Cards { .. }
+                | Drag::Group { .. }
+                | Drag::Enum { .. }
+                | Drag::Edge { .. },
+            ) => Some(CursorStyle::ClosedHand),
             Some(Drag::Marquee { .. } | Drag::Link { .. }) => Some(CursorStyle::Crosshair),
             None if self.space => Some(CursorStyle::OpenHand),
             None => None,
@@ -1149,9 +1188,9 @@ impl Diagram {
             })
             .collect();
         // alça da relação selecionada: ponto da curva em t=0.5
-        let handle = self.selected_edge().map(|(_, _, _, m)| {
-            point(px(m.x * z + pan_x), px(m.y * z + pan_y))
-        });
+        let handle = self
+            .selected_edge()
+            .map(|(_, _, _, m)| point(px(m.x * z + pan_x), px(m.y * z + pan_y)));
         // rótulos N/1: 9px para dentro da aresta, acima da linha (centrados numa caixa de 12px)
         let labels: Vec<(Point<Pixels>, &'static str, f32)> = edges
             .iter()
@@ -1445,7 +1484,8 @@ impl Diagram {
                     }
                     for e in edges {
                         let (a, b) = (bounds.origin + e.a, bounds.origin + e.b);
-                        let pts: Vec<_> = e.pts.iter().map(|c| c.map(|p| bounds.origin + p)).collect();
+                        let pts: Vec<_> =
+                            e.pts.iter().map(|c| c.map(|p| bounds.origin + p)).collect();
                         let color = motion::color(line, stroke, e.lit);
                         // Halo sob o traço da relação ativa.
                         if e.lit > 0.
@@ -2102,7 +2142,10 @@ impl Diagram {
                                     .flex()
                                     .items_center()
                                     .text_color(g.text_faint)
-                                    .child(crate::i18n::t("+{} a mais").replace("{}", &overflow.to_string())),
+                                    .child(
+                                        crate::i18n::t("+{} a mais")
+                                            .replace("{}", &overflow.to_string()),
+                                    ),
                             )
                         }),
                 );
@@ -2231,12 +2274,12 @@ impl Diagram {
         };
         // botão de ferramenta: a ativa ganha o fundo `sel`; desabilitado = esmaecido, sem clique
         let mut tool_btn = |id: &'static str,
-                        icon: IconName,
-                        tip: &'static str,
-                        action: Box<dyn Action>,
-                        on: bool,
-                        enabled: bool,
-                        side: f32| {
+                            icon: IconName,
+                            tip: &'static str,
+                            action: Box<dyn Action>,
+                            on: bool,
+                            enabled: bool,
+                            side: f32| {
             let tip_action = action.boxed_clone();
             let active = motion::value(
                 (ElementId::from(id), "active"),
@@ -2279,7 +2322,11 @@ impl Diagram {
                 .items_center()
                 .justify_center()
                 .text_color(motion::color(g.text_muted, active_color, active))
-                .bg(motion::color(g.hover.opacity(hover), active_background, active))
+                .bg(motion::color(
+                    g.hover.opacity(hover),
+                    active_background,
+                    active,
+                ))
                 .opacity(if enabled { 1. - 0.18 * press } else { 0.4 })
                 .on_hover(cx.listener(move |this, over, _, cx| {
                     this.hovered_tool = if *over { Some(id) } else { None };
@@ -2505,7 +2552,10 @@ impl Diagram {
                             .into_any_element(),
                         crate::i18n::t("Não nulo · UQ único"),
                     ))
-                    .child(row(bar(1.5, g.rel_line), crate::i18n::t("Relação (coluna → coluna)")))
+                    .child(row(
+                        bar(1.5, g.rel_line),
+                        crate::i18n::t("Relação (coluna → coluna)"),
+                    ))
                     .child(row(
                         badge("N·1", gpui_kit::transparent_black(), g.text_muted, 1.)
                             .into_any_element(),
@@ -2729,7 +2779,11 @@ fn context_menu_items(on: CtxOn) -> Vec<CtxItem> {
     let it = |label, keys, action: Box<dyn Action>| Some((label, keys, action, false));
     if on == CtxOn::Edge {
         return vec![
-            it(crate::i18n::t("Relação: reta/curva"), "", Box::new(ToggleEdgeStraight)),
+            it(
+                crate::i18n::t("Relação: reta/curva"),
+                "",
+                Box::new(ToggleEdgeStraight),
+            ),
             it(
                 crate::i18n::t("Relação: restaurar curva automática"),
                 "",
@@ -2740,16 +2794,33 @@ fn context_menu_items(on: CtxOn) -> Vec<CtxItem> {
     if on == CtxOn::Table {
         vec![
             it(crate::i18n::t("Renomear"), "F2", Box::new(RenameSelected)),
-            it(crate::i18n::t("Duplicar"), "Ctrl+D", Box::new(DuplicateTable)),
-            it(crate::i18n::t("Ver no DBML"), "Ctrl+Alt+D", Box::new(RevealInDbml)),
+            it(
+                crate::i18n::t("Duplicar"),
+                "Ctrl+D",
+                Box::new(DuplicateTable),
+            ),
+            it(
+                crate::i18n::t("Ver no DBML"),
+                "Ctrl+Alt+D",
+                Box::new(RevealInDbml),
+            ),
             it(
                 crate::i18n::t("Agrupar tabelas selecionadas"),
                 "Ctrl+G",
                 Box::new(GroupSelection),
             ),
-            it(crate::i18n::t("Desagrupar"), "Ctrl+Shift+G", Box::new(UngroupSelection)),
+            it(
+                crate::i18n::t("Desagrupar"),
+                "Ctrl+Shift+G",
+                Box::new(UngroupSelection),
+            ),
             None,
-            Some((crate::i18n::t("Excluir tabela"), "Delete", Box::new(DeleteSelection), true)),
+            Some((
+                crate::i18n::t("Excluir tabela"),
+                "Delete",
+                Box::new(DeleteSelection),
+                true,
+            )),
         ]
     } else {
         vec![
@@ -2757,7 +2828,11 @@ fn context_menu_items(on: CtxOn) -> Vec<CtxItem> {
             it(crate::i18n::t("Novo enum"), "E", Box::new(NewEnum)),
             it("Auto-layout", "Ctrl+L", Box::new(Relayout)),
             it(crate::i18n::t("Ajustar à tela"), "", Box::new(FitView)),
-            it(crate::i18n::t("Alternar editor DBML"), "Ctrl+E", Box::new(ToggleEditor)),
+            it(
+                crate::i18n::t("Alternar editor DBML"),
+                "Ctrl+E",
+                Box::new(ToggleEditor),
+            ),
         ]
     }
 }

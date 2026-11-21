@@ -30,7 +30,10 @@ pub fn push(request: Request) {
 }
 
 pub fn take() -> Vec<Request> {
-    INBOX.lock().map(|mut inbox| std::mem::take(&mut *inbox)).unwrap_or_default()
+    INBOX
+        .lock()
+        .map(|mut inbox| std::mem::take(&mut *inbox))
+        .unwrap_or_default()
 }
 
 /// Converte URLs entregues pelo sistema (`file:///Users/a/b%20c.dbml`) em caminhos. Caminhos
@@ -50,7 +53,11 @@ fn path_from_url(url: &str) -> Option<PathBuf> {
     let decoded = percent_decode(rest)?;
     // `file:///C:/x` → `C:/x` (Windows)
     let bytes = decoded.as_bytes();
-    let path = if bytes.len() >= 3 && bytes[0] == b'/' && bytes[1].is_ascii_alphabetic() && bytes[2] == b':' {
+    let path = if bytes.len() >= 3
+        && bytes[0] == b'/'
+        && bytes[1].is_ascii_alphabetic()
+        && bytes[2] == b':'
+    {
         decoded[1..].to_owned()
     } else {
         decoded
@@ -85,20 +92,29 @@ fn new_token() -> String {
     h.write_u32(std::process::id());
     h.write_u64(crate::session::now_secs());
     let a = h.finish();
-    let b = std::collections::hash_map::RandomState::new().build_hasher().finish();
+    let b = std::collections::hash_map::RandomState::new()
+        .build_hasher()
+        .finish();
     format!("{a:016x}{b:016x}")
 }
 
 /// Envia `paths` para a instância que escreveu o lock em `dir`. `true` = entregue (o chamador
 /// deve sair); `false` = não há instância viva (lock ausente, velho ou recusado).
 pub fn try_forward(dir: &Path, paths: &[PathBuf]) -> bool {
-    let Ok(lock) = std::fs::read_to_string(lock_path(dir)) else { return false };
+    let Ok(lock) = std::fs::read_to_string(lock_path(dir)) else {
+        return false;
+    };
     let mut parts = lock.split_whitespace();
-    let (Some(port), Some(token)) = (parts.next().and_then(|p| p.parse::<u16>().ok()), parts.next()) else {
+    let (Some(port), Some(token)) = (
+        parts.next().and_then(|p| p.parse::<u16>().ok()),
+        parts.next(),
+    ) else {
         return false;
     };
     let addr = SocketAddr::from((Ipv4Addr::LOCALHOST, port));
-    let Ok(mut stream) = TcpStream::connect_timeout(&addr, Duration::from_millis(500)) else { return false };
+    let Ok(mut stream) = TcpStream::connect_timeout(&addr, Duration::from_millis(500)) else {
+        return false;
+    };
     let _ = stream.set_write_timeout(Some(Duration::from_secs(2)));
     let _ = stream.set_read_timeout(Some(Duration::from_secs(2)));
     let mut message = format!("{token}\n");
@@ -106,7 +122,9 @@ pub fn try_forward(dir: &Path, paths: &[PathBuf]) -> bool {
         message.push_str(&p.to_string_lossy());
         message.push('\n');
     }
-    if stream.write_all(message.as_bytes()).is_err() || stream.shutdown(std::net::Shutdown::Write).is_err() {
+    if stream.write_all(message.as_bytes()).is_err()
+        || stream.shutdown(std::net::Shutdown::Write).is_err()
+    {
         return false;
     }
     // a instância responde "ok" só depois de validar o token
@@ -127,11 +145,13 @@ pub fn serve(dir: &Path, on_request: impl Fn(Request) + Send + 'static) -> std::
         use std::os::unix::fs::PermissionsExt;
         let _ = std::fs::set_permissions(&lock, std::fs::Permissions::from_mode(0o600));
     }
-    std::thread::Builder::new().name("instance-listener".into()).spawn(move || {
-        for stream in listener.incoming().flatten() {
-            handle(stream, &token, &on_request);
-        }
-    })?;
+    std::thread::Builder::new()
+        .name("instance-listener".into())
+        .spawn(move || {
+            for stream in listener.incoming().flatten() {
+                handle(stream, &token, &on_request);
+            }
+        })?;
     Ok(())
 }
 
@@ -205,7 +225,11 @@ mod tests {
         let dir = temp_dir("stale");
         assert!(!try_forward(&dir, &[]));
         // porta que ninguém escuta
-        let port = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap().local_addr().unwrap().port();
+        let port = TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
+            .unwrap()
+            .local_addr()
+            .unwrap()
+            .port();
         std::fs::write(lock_path(&dir), format!("{port} tok\n")).unwrap();
         assert!(!try_forward(&dir, &[]));
         std::fs::write(lock_path(&dir), "lixo").unwrap();

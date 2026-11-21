@@ -403,7 +403,11 @@ impl Shell {
                                     .size(px(15.))
                                     .text_color(g.text_faint),
                             )
-                            .tooltip_with_action(crate::i18n::t("Exportar DBML"), &SaveFile, Some(actions::CTX))
+                            .tooltip_with_action(
+                                crate::i18n::t("Exportar DBML"),
+                                &SaveFile,
+                                Some(actions::CTX),
+                            )
                             .on_click(|_, window, cx| {
                                 window.dispatch_action(Box::new(SaveFile), cx);
                             }),
@@ -432,7 +436,11 @@ impl Shell {
                             .h(px(28.))
                             .rounded(px(7.))
                             .icon(Icon::new(theme_icon).size(px(15.)).text_color(g.text_faint))
-                            .tooltip_with_action(crate::i18n::t("Alternar tema"), &ToggleTheme, Some(actions::CTX))
+                            .tooltip_with_action(
+                                crate::i18n::t("Alternar tema"),
+                                &ToggleTheme,
+                                Some(actions::CTX),
+                            )
                             .on_click(|_, window, cx| {
                                 window.dispatch_action(Box::new(ToggleTheme), cx);
                             }),
@@ -817,11 +825,7 @@ impl Shell {
     /// Botão Aparência do rail + popover de 310px: tema, escala da interface e painéis.
     fn appearance_popover(&self, g: &Glass, cx: &mut Context<Self>) -> Popover {
         let g = *g;
-        let (mode, ui_scale, auto_hide) = (
-            self.mode,
-            self.ui_scale,
-            self.inspector_auto_hide,
-        );
+        let (mode, ui_scale, auto_hide) = (self.mode, self.ui_scale, self.inspector_auto_hide);
         let shell = cx.entity().downgrade();
         let on_open = shell.clone();
         let epoch = self.popover_epoch;
@@ -1008,76 +1012,140 @@ impl Shell {
                                 }),
                         )
                 };
-                motion::enter(("appearance-enter", epoch), div()
-                    .relative()
-                    .p(px(6.))
-                    .w(px(310.))
-                    .rounded(px(12.))
-                    .bg(g.modal.alpha(1.))
-                    .border_1()
-                    .border_color(g.edge_strong)
-                    .shadow(elevation(g.mode))
-                    .flex()
-                    .flex_col()
-                    .child(
-                        div()
-                            .flex()
-                            .flex_col()
-                            .gap(px(8.))
-                            .pt(px(8.))
-                            .pb(px(12.))
-                            .border_b_1()
-                            .border_color(g.edge_soft)
-                            .child(div().px(px(8.)).child(label(crate::i18n::t("TEMA"), "Ctrl T")))
-                            .child(
-                                div().px(px(8.)).child(track()
-                                    .child(theme_opt("theme-light", crate::i18n::t("Claro"), IconName::Sun, Mode::Light, Box::new(ThemeLight)))
-                                    .child(theme_opt("theme-dark", crate::i18n::t("Escuro"), IconName::Moon, Mode::Dark, Box::new(ThemeDark)))),
-                            )
-                    )
-                    .child(
-                        div().flex().flex_col().gap(px(8.)).px(px(8.)).py(px(12.))
-                            .border_b_1().border_color(g.edge_soft)
-                            .child(label(crate::i18n::t("IDIOMA"), ""))
-                            .child(track()
-                                .child(selected("lang-pt", crate::i18n::current() == crate::i18n::Lang::PtBr, seg("lang-pt", "Português", None, crate::i18n::current() == crate::i18n::Lang::PtBr)
-                                    .on_click(|_, window, cx| window.dispatch_action(Box::new(LangPortuguese), cx))))
-                                .child(selected("lang-en", crate::i18n::current() == crate::i18n::Lang::En, seg("lang-en", "English", None, crate::i18n::current() == crate::i18n::Lang::En)
-                                    .on_click(|_, window, cx| window.dispatch_action(Box::new(LangEnglish), cx))))),
-                    )
-                    .child(
-                        div()
-                            .flex()
-                            .flex_col()
-                            .gap(px(8.))
-                            .px(px(8.))
-                            .py(px(12.))
-                            .border_b_1()
-                            .border_color(g.edge_soft)
-                            .child(label(crate::i18n::t("ESCALA DA UI"), "Ctrl Shift = / -"))
-                            .child(
-                                track()
-                                    .child(scale("scale-100", "100%", 1.0))
-                                    .child(scale("scale-115", "115%", 1.15))
-                                    .child(scale("scale-130", "130%", 1.30)),
-                            ),
-                    )
-                    .child(
-                        div()
-                            .flex()
-                            .flex_col()
-                            .gap(px(2.))
-                            .pt(px(10.))
-                            .pb(px(4.))
-                            .child(div().px(px(8.)).pb(px(4.)).child(label(crate::i18n::t("PAINÉIS"), "")))
-                            .child(toggle(
-                                "pref-auto-collapse",
-                                crate::i18n::t("Recolher inspetor automaticamente"),
-                                crate::i18n::t("Esconde-o quando nada está selecionado"),
-                                auto_hide,
-                                Box::new(ToggleAutoCollapseInspector),
-                            )),
-                    ))
+                motion::enter(
+                    ("appearance-enter", epoch),
+                    div()
+                        .relative()
+                        .p(px(6.))
+                        .w(px(310.))
+                        .rounded(px(12.))
+                        .bg(g.modal.alpha(1.))
+                        .border_1()
+                        .border_color(g.edge_strong)
+                        .shadow(elevation(g.mode))
+                        .flex()
+                        .flex_col()
+                        .child(
+                            div()
+                                .flex()
+                                .flex_col()
+                                .gap(px(8.))
+                                .pt(px(8.))
+                                .pb(px(12.))
+                                .border_b_1()
+                                .border_color(g.edge_soft)
+                                .child(
+                                    div()
+                                        .px(px(8.))
+                                        .child(label(crate::i18n::t("TEMA"), "Ctrl T")),
+                                )
+                                .child(
+                                    div().px(px(8.)).child(
+                                        track()
+                                            .child(theme_opt(
+                                                "theme-light",
+                                                crate::i18n::t("Claro"),
+                                                IconName::Sun,
+                                                Mode::Light,
+                                                Box::new(ThemeLight),
+                                            ))
+                                            .child(theme_opt(
+                                                "theme-dark",
+                                                crate::i18n::t("Escuro"),
+                                                IconName::Moon,
+                                                Mode::Dark,
+                                                Box::new(ThemeDark),
+                                            )),
+                                    ),
+                                ),
+                        )
+                        .child(
+                            div()
+                                .flex()
+                                .flex_col()
+                                .gap(px(8.))
+                                .px(px(8.))
+                                .py(px(12.))
+                                .border_b_1()
+                                .border_color(g.edge_soft)
+                                .child(label(crate::i18n::t("IDIOMA"), ""))
+                                .child(
+                                    track()
+                                        .child(selected(
+                                            "lang-pt",
+                                            crate::i18n::current() == crate::i18n::Lang::PtBr,
+                                            seg(
+                                                "lang-pt",
+                                                "Português",
+                                                None,
+                                                crate::i18n::current() == crate::i18n::Lang::PtBr,
+                                            )
+                                            .on_click(
+                                                |_, window, cx| {
+                                                    window.dispatch_action(
+                                                        Box::new(LangPortuguese),
+                                                        cx,
+                                                    )
+                                                },
+                                            ),
+                                        ))
+                                        .child(selected(
+                                            "lang-en",
+                                            crate::i18n::current() == crate::i18n::Lang::En,
+                                            seg(
+                                                "lang-en",
+                                                "English",
+                                                None,
+                                                crate::i18n::current() == crate::i18n::Lang::En,
+                                            )
+                                            .on_click(
+                                                |_, window, cx| {
+                                                    window
+                                                        .dispatch_action(Box::new(LangEnglish), cx)
+                                                },
+                                            ),
+                                        )),
+                                ),
+                        )
+                        .child(
+                            div()
+                                .flex()
+                                .flex_col()
+                                .gap(px(8.))
+                                .px(px(8.))
+                                .py(px(12.))
+                                .border_b_1()
+                                .border_color(g.edge_soft)
+                                .child(label(crate::i18n::t("ESCALA DA UI"), "Ctrl Shift = / -"))
+                                .child(
+                                    track()
+                                        .child(scale("scale-100", "100%", 1.0))
+                                        .child(scale("scale-115", "115%", 1.15))
+                                        .child(scale("scale-130", "130%", 1.30)),
+                                ),
+                        )
+                        .child(
+                            div()
+                                .flex()
+                                .flex_col()
+                                .gap(px(2.))
+                                .pt(px(10.))
+                                .pb(px(4.))
+                                .child(
+                                    div()
+                                        .px(px(8.))
+                                        .pb(px(4.))
+                                        .child(label(crate::i18n::t("PAINÉIS"), "")),
+                                )
+                                .child(toggle(
+                                    "pref-auto-collapse",
+                                    crate::i18n::t("Recolher inspetor automaticamente"),
+                                    crate::i18n::t("Esconde-o quando nada está selecionado"),
+                                    auto_hide,
+                                    Box::new(ToggleAutoCollapseInspector),
+                                )),
+                        ),
+                )
             })
     }
 
@@ -1244,7 +1312,10 @@ impl Shell {
         });
         let folder_files: Vec<PathBuf> = if !self.files.is_empty() {
             self.files.clone()
-        } else if root_dir.as_ref().is_some_and(|dir| *dir == self.loose_files.0) {
+        } else if root_dir
+            .as_ref()
+            .is_some_and(|dir| *dir == self.loose_files.0)
+        {
             self.loose_files.1.clone()
         } else {
             Vec::new()
@@ -1846,7 +1917,11 @@ impl Shell {
                                     .font_family(FONT_MONO)
                                     .text_size(px(11.))
                                     .text_color(g.text_faint)
-                                    .child(crate::i18n::t("{} · linha {}").replacen("{}", &doc.title, 1).replacen("{}", &line.to_string(), 1)),
+                                    .child(
+                                        crate::i18n::t("{} · linha {}")
+                                            .replacen("{}", &doc.title, 1)
+                                            .replacen("{}", &line.to_string(), 1),
+                                    ),
                             ),
                     ),
             );
@@ -2257,7 +2332,11 @@ impl Shell {
                 .px(px(8.))
                 .border_t_1()
                 .border_color(g.edge_soft)
-                .child(div().px(px(6.)).child(sec_header(crate::i18n::t("TABELAS"), Some(n), None)));
+                .child(div().px(px(6.)).child(sec_header(
+                    crate::i18n::t("TABELAS"),
+                    Some(n),
+                    None,
+                )));
             for (i, (name, color, grp)) in multi.iter().enumerate() {
                 let tbl_click = name.clone();
                 list = list.child(
@@ -2292,7 +2371,10 @@ impl Shell {
                                 .font_family(FONT)
                                 .text_size(px(11.5))
                                 .text_color(g.text_faint)
-                                .child(grp.clone().unwrap_or_else(|| crate::i18n::t("sem grupo").into())),
+                                .child(
+                                    grp.clone()
+                                        .unwrap_or_else(|| crate::i18n::t("sem grupo").into()),
+                                ),
                         ),
                 );
             }
@@ -2495,9 +2577,10 @@ impl Shell {
                         .into_any_element()
                 }
             };
-            let group_sub = group
-                .as_ref()
-                .map_or_else(|| crate::i18n::t("sem grupo").to_string(), |gr| gr.name.clone());
+            let group_sub = group.as_ref().map_or_else(
+                || crate::i18n::t("sem grupo").to_string(),
+                |gr| gr.name.clone(),
+            );
             let ident = div()
                 .flex_none()
                 .flex()
@@ -2535,15 +2618,19 @@ impl Shell {
                                 .text_size(px(11.5))
                                 .text_color(g.text_faint)
                                 .truncate()
-                                .child(crate::i18n::t("Tabela · {} · F2 para renomear").replace("{}", &group_sub)),
+                                .child(
+                                    crate::i18n::t("Tabela · {} · F2 para renomear")
+                                        .replace("{}", &group_sub),
+                                ),
                         ),
                 );
 
             let group_el: AnyElement = {
                 let has_group = group.is_some();
-                let gr_name = group
-                    .as_ref()
-                    .map_or_else(|| crate::i18n::t("Sem grupo").to_string(), |gr| gr.name.clone());
+                let gr_name = group.as_ref().map_or_else(
+                    || crate::i18n::t("Sem grupo").to_string(),
+                    |gr| gr.name.clone(),
+                );
                 let gc = group_tint.unwrap_or(g.accent);
                 let tbl = t_qname.clone();
                 let groups_for_menu = all_groups.clone();
@@ -2645,55 +2732,68 @@ impl Shell {
                                 .child(div().h(px(1.)).my(px(4.)).mx(px(6.)).bg(g_menu.edge_soft));
                         }
                         let h = g_menu.hover;
-                        motion::enter(("group-menu-enter", epoch), col.relative().p(px(5.)).w(px(200.))
-                            .rounded(px(11.)).bg(g_menu.modal.alpha(1.)).border_1()
-                            .border_color(g_menu.edge_strong).shadow(elevation(g_menu.mode)).child(
-                            div()
-                                .id("grp-opt-none")
-                                .role(Role::MenuItem)
-                                .h(px(30.))
-                                .px(px(10.))
-                                .rounded(px(7.))
-                                .flex()
-                                .items_center()
-                                .gap(px(10.))
-                                .text_size(px(13.))
-                                .text_color(g_menu.text)
-                                .cursor_pointer()
-                                .hover(move |s| s.bg(h))
-                                .on_click(move |_, window, cx| {
-                                    window.dispatch_action(
-                                        if has_group {
-                                            Box::new(UngroupSelection)
-                                        } else {
-                                            Box::new(GroupSelection)
-                                        },
-                                        cx,
-                                    );
-                                })
-                                .child(
-                                    Icon::new(if has_group {
-                                        IconName::X
-                                    } else {
-                                        IconName::Plus
-                                    })
-                                    .size(px(14.))
-                                    .text_color(g_menu.text_faint),
-                                )
-                                .child(if has_group {
-                                    crate::i18n::t("Sem grupo")
-                                } else {
-                                    crate::i18n::t("Criar grupo")
-                                })
-                                .child(div().flex_1())
+                        motion::enter(
+                            ("group-menu-enter", epoch),
+                            col.relative()
+                                .p(px(5.))
+                                .w(px(200.))
+                                .rounded(px(11.))
+                                .bg(g_menu.modal.alpha(1.))
+                                .border_1()
+                                .border_color(g_menu.edge_strong)
+                                .shadow(elevation(g_menu.mode))
                                 .child(
                                     div()
-                                        .font_family(FONT_MONO)
-                                        .text_size(px(11.))
-                                        .text_color(g_menu.text_faint)
-                                        .child(if has_group { "Ctrl Shift G" } else { "Ctrl G" }),
+                                        .id("grp-opt-none")
+                                        .role(Role::MenuItem)
+                                        .h(px(30.))
+                                        .px(px(10.))
+                                        .rounded(px(7.))
+                                        .flex()
+                                        .items_center()
+                                        .gap(px(10.))
+                                        .text_size(px(13.))
+                                        .text_color(g_menu.text)
+                                        .cursor_pointer()
+                                        .hover(move |s| s.bg(h))
+                                        .on_click(move |_, window, cx| {
+                                            window.dispatch_action(
+                                                if has_group {
+                                                    Box::new(UngroupSelection)
+                                                } else {
+                                                    Box::new(GroupSelection)
+                                                },
+                                                cx,
+                                            );
+                                        })
+                                        .child(
+                                            Icon::new(if has_group {
+                                                IconName::X
+                                            } else {
+                                                IconName::Plus
+                                            })
+                                            .size(px(14.))
+                                            .text_color(g_menu.text_faint),
+                                        )
+                                        .child(if has_group {
+                                            crate::i18n::t("Sem grupo")
+                                        } else {
+                                            crate::i18n::t("Criar grupo")
+                                        })
+                                        .child(div().flex_1())
+                                        .child(
+                                            div()
+                                                .font_family(FONT_MONO)
+                                                .text_size(px(11.))
+                                                .text_color(g_menu.text_faint)
+                                                .child(if has_group {
+                                                    "Ctrl Shift G"
+                                                } else {
+                                                    "Ctrl G"
+                                                }),
+                                        ),
                                 ),
-                        ))
+                        )
                     })
                     .into_any_element()
             };
@@ -3073,7 +3173,11 @@ impl Shell {
                         div()
                             .id(SharedString::from(id))
                             .role(Role::Switch)
-                            .aria_label(crate::i18n::t("{} em {}").replacen("{}", label, 1).replacen("{}", &c.name, 1))
+                            .aria_label(
+                                crate::i18n::t("{} em {}")
+                                    .replacen("{}", label, 1)
+                                    .replacen("{}", &c.name, 1),
+                            )
                             .flex_1()
                             .h(px(22.))
                             .rounded(px(5.))
@@ -3470,7 +3574,9 @@ impl Shell {
                     let (h, t) = (g.hover, g.text);
                     move |s| s.bg(h).text_color(t)
                 })
-                .tooltip(|window, cx| Tooltip::new(crate::i18n::t("Adicionar coluna")).build(window, cx))
+                .tooltip(|window, cx| {
+                    Tooltip::new(crate::i18n::t("Adicionar coluna")).build(window, cx)
+                })
                 .on_click(cx.listener(move |this, _, window, cx| {
                     this.add_column_to(add_col_table.clone(), window, cx);
                 }))
@@ -3511,7 +3617,9 @@ impl Shell {
                     let (h, t) = (g.hover, g.text);
                     move |s| s.bg(h).text_color(t)
                 })
-                .tooltip(|window, cx| Tooltip::new(crate::i18n::t("Adicionar índice")).build(window, cx))
+                .tooltip(|window, cx| {
+                    Tooltip::new(crate::i18n::t("Adicionar índice")).build(window, cx)
+                })
                 .on_click(cx.listener(move |this, _, window, cx| {
                     let Some(first_col) = add_idx_col.clone() else {
                         return;
@@ -3538,7 +3646,9 @@ impl Shell {
                         .text_size(px(11.5))
                         .line_height(px(17.))
                         .text_color(g.text_faint)
-                        .child(crate::i18n::t("Sem índices · a chave primária é indexada automaticamente")),
+                        .child(crate::i18n::t(
+                            "Sem índices · a chave primária é indexada automaticamente",
+                        )),
                 );
             } else {
                 for (idx, ix) in t.indexes.iter().enumerate() {
@@ -3767,7 +3877,11 @@ impl Shell {
                 .px(px(14.))
                 .border_t_1()
                 .border_color(g.edge_soft)
-                .child(sec_header(crate::i18n::t("ÍNDICES"), Some(n_idx), Some(add_idx_btn)))
+                .child(sec_header(
+                    crate::i18n::t("ÍNDICES"),
+                    Some(n_idx),
+                    Some(add_idx_btn),
+                ))
                 .child(indexes_el);
 
             // ── RELAÇÕES ───────────────────────────────────────────────
@@ -3776,7 +3890,9 @@ impl Shell {
                     .text_size(px(11.5))
                     .line_height(px(17.))
                     .text_color(g.text_faint)
-                    .child(crate::i18n::t("Sem relações · arraste de uma coluna para outra tabela"))
+                    .child(crate::i18n::t(
+                        "Sem relações · arraste de uma coluna para outra tabela",
+                    ))
             } else {
                 let mut rels = div().flex().flex_col().gap(px(4.));
                 for (ri, r) in refs.iter().enumerate() {
@@ -3884,7 +4000,11 @@ impl Shell {
                 .px(px(14.))
                 .border_t_1()
                 .border_color(g.edge_soft)
-                .child(sec_header(crate::i18n::t("RELAÇÕES"), Some(refs.len()), None))
+                .child(sec_header(
+                    crate::i18n::t("RELAÇÕES"),
+                    Some(refs.len()),
+                    None,
+                ))
                 .child(rels_el);
 
             (
@@ -4270,7 +4390,10 @@ impl Shell {
                             ),
                     )
                     .child(block(crate::i18n::t("VALORES"), Some(n_vals)).child(values_list))
-                    .child(block(crate::i18n::t("REFERENCIADO POR"), Some(refs_by.len())).child(refs_list)),
+                    .child(
+                        block(crate::i18n::t("REFERENCIADO POR"), Some(refs_by.len()))
+                            .child(refs_list),
+                    ),
                 Some(footer_danger(
                     "insp-del-enum",
                     crate::i18n::t("Excluir enum").to_string(),
@@ -4360,29 +4483,37 @@ impl Shell {
                                         .text_color(g.text_faint),
                                 )
                                 .tooltip(crate::i18n::t("Mais opções"))
-                                .map(|button| motion::dropdown("inspector-more-motion", button, Anchor::TopRight, self.focus.clone(), |menu, _, _| {
-                                    menu.menu_with_icon(
-                                        crate::i18n::t("Duplicar tabela"),
-                                        Icon::new(IconName::Copy),
-                                        Box::new(DuplicateTable),
+                                .map(|button| {
+                                    motion::dropdown(
+                                        "inspector-more-motion",
+                                        button,
+                                        Anchor::TopRight,
+                                        self.focus.clone(),
+                                        |menu, _, _| {
+                                            menu.menu_with_icon(
+                                                crate::i18n::t("Duplicar tabela"),
+                                                Icon::new(IconName::Copy),
+                                                Box::new(DuplicateTable),
+                                            )
+                                            .menu_with_icon(
+                                                crate::i18n::t("Renomear"),
+                                                Icon::new(IconName::SquarePen),
+                                                Box::new(RenameSelected),
+                                            )
+                                            .menu_with_icon(
+                                                crate::i18n::t("Revelar no DBML"),
+                                                Icon::new(IconName::Code),
+                                                Box::new(RevealInDbml),
+                                            )
+                                            .separator()
+                                            .menu_with_icon(
+                                                crate::i18n::t("Excluir tabela"),
+                                                Icon::new(IconName::Trash),
+                                                Box::new(DeleteSelection),
+                                            )
+                                        },
                                     )
-                                    .menu_with_icon(
-                                        crate::i18n::t("Renomear"),
-                                        Icon::new(IconName::SquarePen),
-                                        Box::new(RenameSelected),
-                                    )
-                                    .menu_with_icon(
-                                        crate::i18n::t("Revelar no DBML"),
-                                        Icon::new(IconName::Code),
-                                        Box::new(RevealInDbml),
-                                    )
-                                    .separator()
-                                    .menu_with_icon(
-                                        crate::i18n::t("Excluir tabela"),
-                                        Icon::new(IconName::Trash),
-                                        Box::new(DeleteSelection),
-                                    )
-                                })),
+                                }),
                         )
                     })
                     .child(Self::pane_icon_btn(
@@ -4427,7 +4558,11 @@ impl Shell {
                 },
             )
         } else {
-            (IconName::RefreshCw, g.ok, crate::i18n::t("sincronizado").to_string())
+            (
+                IconName::RefreshCw,
+                g.ok,
+                crate::i18n::t("sincronizado").to_string(),
+            )
         };
         div()
             .size_full()
@@ -4462,7 +4597,11 @@ impl Shell {
                             .items_center()
                             .gap(px(8.))
                             .child(Icon::new(IconName::ChevronRight).size(px(12.)))
-                            .child(div().text_color(g.text).child(crate::i18n::t("Tabela {}").replace("{}", &name)))
+                            .child(
+                                div()
+                                    .text_color(g.text)
+                                    .child(crate::i18n::t("Tabela {}").replace("{}", &name)),
+                            )
                     }))
                     .child(div().flex_1())
                     .child(
@@ -4782,7 +4921,11 @@ impl Shell {
                         .child(format!(
                             "{} {}",
                             problems,
-                            crate::i18n::t(if problems == 1 { "problema" } else { "problemas" })
+                            crate::i18n::t(if problems == 1 {
+                                "problema"
+                            } else {
+                                "problemas"
+                            })
                         )),
                 )
                 .child(
@@ -4791,7 +4934,11 @@ impl Shell {
                         .items_center()
                         .gap(px(5.))
                         .child(Icon::new(IconName::Table2).size(px(12.)))
-                        .child(crate::i18n::t("{} tabelas · {} relações").replacen("{}", &s.tables.len().to_string(), 1).replacen("{}", &s.refs.len().to_string(), 1)),
+                        .child(
+                            crate::i18n::t("{} tabelas · {} relações")
+                                .replacen("{}", &s.tables.len().to_string(), 1)
+                                .replacen("{}", &s.refs.len().to_string(), 1),
+                        ),
                 )
                 .child(
                     div()
@@ -4987,72 +5134,87 @@ fn export_dropdown(
             .rounded(px(7.))
             .icon(Icon::new(icon).size(px(15.)).text_color(g.text_faint))
             .tooltip(tip)
-            .map(|button| motion::dropdown(id, button, Anchor::TopRight, focus.clone(), move |menu, _, _| {
-                let mut menu = menu.min_w(px(290.)).label(if code {
-                    crate::i18n::t("EXPORTAR CÓDIGO")
-                } else {
-                    crate::i18n::t("EXPORTAR IMAGEM")
-                });
-                for (action, name, desc, ext, icon) in rows.iter() {
-                    let (name, desc, ext, icon) = (*name, *desc, *ext, *icon);
-                    menu = menu.menu_element(action.boxed_clone(), move |_, _| {
-                        div()
-                            .flex()
-                            .items_center()
-                            .gap(px(10.))
-                            .w_full()
-                            .min_h(if code { px(26.) } else { px(48.) })
-                            .py(if code { px(0.) } else { px(5.) })
-                            .child(
+            .map(|button| {
+                motion::dropdown(
+                    id,
+                    button,
+                    Anchor::TopRight,
+                    focus.clone(),
+                    move |menu, _, _| {
+                        let mut menu = menu.min_w(px(290.)).label(if code {
+                            crate::i18n::t("EXPORTAR CÓDIGO")
+                        } else {
+                            crate::i18n::t("EXPORTAR IMAGEM")
+                        });
+                        for (action, name, desc, ext, icon) in rows.iter() {
+                            let (name, desc, ext, icon) = (*name, *desc, *ext, *icon);
+                            menu = menu.menu_element(action.boxed_clone(), move |_, _| {
                                 div()
                                     .flex()
-                                    .flex_none()
-                                    .size(if code { px(16.) } else { px(28.) })
                                     .items_center()
-                                    .justify_center()
-                                    .when(!code, |d| d.rounded(px(7.)).bg(g.input))
-                                    .child(Icon::new(icon).size(px(15.)).text_color(g.text_muted)),
-                            )
-                            .child(
-                                div()
-                                    .flex()
-                                    .flex_col()
-                                    .flex_1()
-                                    .min_w_0()
-                                    .gap(px(2.))
+                                    .gap(px(10.))
+                                    .w_full()
+                                    .min_h(if code { px(26.) } else { px(48.) })
+                                    .py(if code { px(0.) } else { px(5.) })
                                     .child(
-                                        div().text_size(TEXT_SM).line_height(px(18.))
-                                            .font_weight(FontWeight::MEDIUM).child(crate::i18n::t(name)),
+                                        div()
+                                            .flex()
+                                            .flex_none()
+                                            .size(if code { px(16.) } else { px(28.) })
+                                            .items_center()
+                                            .justify_center()
+                                            .when(!code, |d| d.rounded(px(7.)).bg(g.input))
+                                            .child(
+                                                Icon::new(icon)
+                                                    .size(px(15.))
+                                                    .text_color(g.text_muted),
+                                            ),
                                     )
-                                    .when(!desc.is_empty(), |d| {
-                                        d.child(
-                                            div()
-                                                .text_size(px(11.5))
-                                                .line_height(px(15.))
-                                                .text_color(g.text_faint)
-                                                .child(crate::i18n::t(desc)),
-                                        )
-                                    }),
-                            )
-                            .child(
-                                div()
-                                    .flex()
-                                    .flex_none()
-                                    .items_center()
-                                    .justify_center()
-                                    .w(px(44.))
-                                    .h(px(20.))
-                                    .rounded(px(4.))
-                                    .bg(g.input)
-                                    .font_family(FONT_MONO)
-                                    .text_size(px(10.5))
-                                    .font_weight(FontWeight::MEDIUM)
-                                    .text_color(g.text_muted)
-                                    .child(ext),
-                            )
-                    });
-                }
-                menu
-            })),
+                                    .child(
+                                        div()
+                                            .flex()
+                                            .flex_col()
+                                            .flex_1()
+                                            .min_w_0()
+                                            .gap(px(2.))
+                                            .child(
+                                                div()
+                                                    .text_size(TEXT_SM)
+                                                    .line_height(px(18.))
+                                                    .font_weight(FontWeight::MEDIUM)
+                                                    .child(crate::i18n::t(name)),
+                                            )
+                                            .when(!desc.is_empty(), |d| {
+                                                d.child(
+                                                    div()
+                                                        .text_size(px(11.5))
+                                                        .line_height(px(15.))
+                                                        .text_color(g.text_faint)
+                                                        .child(crate::i18n::t(desc)),
+                                                )
+                                            }),
+                                    )
+                                    .child(
+                                        div()
+                                            .flex()
+                                            .flex_none()
+                                            .items_center()
+                                            .justify_center()
+                                            .w(px(44.))
+                                            .h(px(20.))
+                                            .rounded(px(4.))
+                                            .bg(g.input)
+                                            .font_family(FONT_MONO)
+                                            .text_size(px(10.5))
+                                            .font_weight(FontWeight::MEDIUM)
+                                            .text_color(g.text_muted)
+                                            .child(ext),
+                                    )
+                            });
+                        }
+                        menu
+                    },
+                )
+            }),
     )
 }
