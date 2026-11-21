@@ -1244,8 +1244,8 @@ impl Shell {
         });
         let folder_files: Vec<PathBuf> = if !self.files.is_empty() {
             self.files.clone()
-        } else if let Some(dir) = &root_dir {
-            scan(dir)
+        } else if root_dir.as_ref().is_some_and(|dir| *dir == self.loose_files.0) {
+            self.loose_files.1.clone()
         } else {
             Vec::new()
         };
@@ -4809,6 +4809,16 @@ impl Shell {
                 );
         } else {
             bar = bar.child(div().flex_1());
+        }
+        if self.loading > 0 {
+            bar = bar.child(
+                div()
+                    .id("status-loading")
+                    .role(Role::Status)
+                    .aria_label(crate::i18n::t("Abrindo…"))
+                    .text_color(g.text_muted)
+                    .child(crate::i18n::t("Abrindo…")),
+            );
         }
         if let Some(branch) = &self.git_branch.1 {
             bar = bar.child(

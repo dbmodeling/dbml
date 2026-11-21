@@ -412,6 +412,7 @@ const TRANSLATIONS: &[(&str, &str)] = &[
     ("problema", "problem"),
     ("problemas", "problems"),
     ("Salvo em {}", "Saved to {}"),
+    ("Abrindo…", "Opening…"),
     ("DB Modeling não conseguiu iniciar", "DB Modeling could not start"),
     ("DB Modeling encerrou com um erro", "DB Modeling stopped on an error"),
     ("Verifique o driver de vídeo (Vulkan/OpenGL no Linux, DirectX no Windows, Metal no macOS) e abra o app de novo.", "Check the graphics driver (Vulkan/OpenGL on Linux, DirectX on Windows, Metal on macOS) and open the app again."),
