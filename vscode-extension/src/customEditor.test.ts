@@ -104,6 +104,31 @@ describe('validação das mensagens da Webview', () => {
   });
 });
 
+describe('conexão com o banco', () => {
+  const request = {
+    dialect: 'sqlite',
+    host: '',
+    port: null,
+    database: '',
+    user: '',
+    password: '',
+    path: '/tmp/a.db',
+    trust_server_certificate: false,
+    schemas: [],
+  };
+
+  it('workspace não confiável bloqueia check_cli, test_connection e introspect', async () => {
+    mockState.isTrusted = false;
+    const h = await openEditor(DbmlCustomEditorProvider);
+    await h.send({ command: 'check_cli', id: 1 });
+    await h.send({ command: 'test_connection', id: 2, request });
+    await h.send({ command: 'introspect', id: 3, request });
+    expect(h.posted.find((m) => m.type === 'result' && m.id === 1).error).toMatch(/untrusted/);
+    expect(h.posted.find((m) => m.type === 'test_connection_result' && m.id === 2).error).toMatch(/untrusted/);
+    expect(h.posted.find((m) => m.type === 'introspect_result' && m.id === 3).error).toMatch(/untrusted/);
+  });
+});
+
 describe('open_file', () => {
   const folder = { uri: Uri.file('/ws'), name: 'ws', index: 0 };
   const opened = () => mockState.executed.filter((e) => e.command === 'vscode.openWith');

@@ -1,4 +1,5 @@
 import * as vscode from 'vscode';
+import { getTrustedCliPath } from './cliPath.js';
 import { checkCli, runIntrospect, runTestConnection } from './introspect.js';
 import { parseWebviewMessage, type WebviewMessage } from './messages.js';
 import { isAllowedDbmlUri } from './uriPolicy.js';
@@ -187,14 +188,12 @@ export class DbmlCustomEditorProvider implements vscode.CustomTextEditorProvider
             break;
           }
           case 'check_cli': {
-            const cliPath = vscode.workspace.getConfiguration('dbmodeling').get<string>('cliPath') || 'dbml';
-            await checkCli(cliPath);
+            await checkCli(await getTrustedCliPath(this.context));
             break;
           }
           case 'test_connection': {
-            const cliPath = vscode.workspace.getConfiguration('dbmodeling').get<string>('cliPath') || 'dbml';
             try {
-              const result = await runTestConnection(cliPath, message.request);
+              const result = await runTestConnection(await getTrustedCliPath(this.context), message.request);
               webview.postMessage({ type: 'test_connection_result', id: message.id, result });
             } catch (e) {
               webview.postMessage({
@@ -206,9 +205,8 @@ export class DbmlCustomEditorProvider implements vscode.CustomTextEditorProvider
             break;
           }
           case 'introspect': {
-            const cliPath = vscode.workspace.getConfiguration('dbmodeling').get<string>('cliPath') || 'dbml';
             try {
-              const result = await runIntrospect(cliPath, message.request);
+              const result = await runIntrospect(await getTrustedCliPath(this.context), message.request);
               webview.postMessage({ type: 'introspect_result', id: message.id, result });
             } catch (e) {
               webview.postMessage({

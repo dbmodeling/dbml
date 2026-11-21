@@ -25,6 +25,13 @@
     "onCustomEditor:dbmodeling.editor",
     "onLanguage:dbml"
   ],
+  "capabilities": {
+    "untrustedWorkspaces": {
+      "supported": "limited",
+      "description": "Em workspaces não confiáveis a conexão com o banco (execução da CLI dbml) fica desativada; o canvas e o editor DBML continuam disponíveis.",
+      "restrictedConfigurations": ["dbmodeling.cliPath"]
+    }
+  },
   "contributes": {
     "configuration": {
       "title": "DB Modeling",
@@ -32,7 +39,8 @@
         "dbmodeling.cliPath": {
           "type": "string",
           "default": "dbml",
-          "description": "Caminho da CLI dbml usada por \"Conectar ao banco\" (importação somente leitura do esquema)."
+          "scope": "machine",
+          "markdownDescription": "Caminho da CLI `dbml` usada por \"Conectar ao banco\" (importação somente leitura do esquema). Só vale nas configurações do usuário; um workspace não pode defini-lo. Um caminho diferente de `dbml` pede confirmação antes do primeiro uso."
         }
       }
     },
