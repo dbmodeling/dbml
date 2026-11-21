@@ -229,6 +229,8 @@ export class Workbench {
   /** Cancela todos os listeners globais (window) no `destroy()`. */
   private readonly abort = new AbortController();
   private destroyed = false;
+  /** Algo além da câmera mudou desde o último quadro. */
+  private fullDirty = false;
   private styleEl: HTMLStyleElement | null = null;
   private resizeObserver: ResizeObserver | null = null;
 
@@ -1024,12 +1026,33 @@ export class Workbench {
 
   // ───────────────────────── renderização ─────────────────────────
 
+  /** Pedido de render completo (cromo + mundo); vence qualquer pedido só de câmera do mesmo quadro. */
   private scheduleRender(): void {
-    if (this.raf !== null || this.destroyed) return;
+    if (this.destroyed) return;
+    this.fullDirty = true;
+    this.requestFrame();
+  }
+
+  /** Pan: muda só o transform do mundo e o fundo em grade, sem refazer o DOM (#108). */
+  private scheduleCamera(): void {
+    if (this.destroyed) return;
+    this.requestFrame();
+  }
+
+  private requestFrame(): void {
+    if (this.raf !== null) return;
     this.raf = requestAnimationFrame(() => {
       this.raf = null;
-      this.renderAll();
+      const full = this.fullDirty;
+      this.fullDirty = false;
+      if (full) this.renderAll();
+      else this.applyCamera();
     });
+  }
+
+  private applyCamera(): void {
+    this.els['world'].style.transform = `translate(${this.pan.x}px, ${this.pan.y}px) scale(${this.zoom})`;
+    this.els['surface'].style.backgroundPosition = `${this.pan.x}px ${this.pan.y}px`;
   }
 
   private renderAll(): void {
@@ -1110,7 +1133,7 @@ export class Workbench {
   private renderWorld(): void {
     const sc = this.scene;
     const w = this.els['world'];
-    w.style.transform = `translate(${this.pan.x}px, ${this.pan.y}px) scale(${this.zoom})`;
+    this.applyCamera();
     // grade de pontos adaptativa (24px no zoom 100%)
     const g = getGlass(this.prefs.mode, 1, this.prefs.translucent);
     const dark = this.prefs.mode === 'dark';
@@ -1118,7 +1141,6 @@ export class Workbench {
     const s = this.els['surface'];
     s.style.backgroundImage = `radial-gradient(${g.grid} 1px, transparent 1.2px)`;
     s.style.backgroundSize = `${step}px ${step}px`;
-    s.style.backgroundPosition = `${this.pan.x}px ${this.pan.y}px`;
     // cursor da ação em curso: vale sobre cartões e linhas também (CSS `data-cursor`)
     const k = this.drag?.kind;
     const cur = k === 'marquee' || k === 'link' ? 'crosshair'
@@ -3368,6 +3390,8 @@ export class Workbench {
     if (d.kind === 'pan') {
       this.pan = { x: this.pan.x + e.clientX - d.lx, y: this.pan.y + e.clientY - d.ly };
       d.lx = e.clientX; d.ly = e.clientY;
+      this.scheduleCamera();
+      return;
     } else if (d.kind === 'edge') {
       const dx = wp.x - d.last.x, dy = wp.y - d.last.y;
       d.last = wp;
@@ -3472,11 +3496,16 @@ export class Workbench {
       // pinça do touchpad chega como Ctrl+roda com delta pequeno: precisa de ganho maior que a roda do mouse
       const gain = Math.abs(e.deltaY) < 50 && e.deltaMode === 0 ? 0.01 : 0.0025;
       this.zoomAt(e.clientX - r.left, e.clientY - r.top, Math.min(Math.max(1 - e.deltaY * gain, 0.5), 2));
-    } else if (e.shiftKey && e.deltaX === 0) {
-      this.pan.x -= e.deltaY;
     } else {
-      this.pan.x -= e.deltaX;
-      this.pan.y -= e.deltaY;
+      if (e.shiftKey && e.deltaX === 0) {
+        this.pan.x -= e.deltaY;
+      } else {
+        this.pan.x -= e.deltaX;
+        this.pan.y -= e.deltaY;
+      }
+      this.queueSaveLayout();
+      this.scheduleCamera();
+      return;
     }
     this.queueSaveLayout();
     this.scheduleRender();
