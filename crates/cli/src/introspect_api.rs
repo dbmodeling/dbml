@@ -4,7 +4,7 @@
 
 use axum::{
     Json,
-    http::{HeaderMap, StatusCode, header},
+    http::StatusCode,
     response::{IntoResponse, Response},
 };
 use db_introspect::{ConnectionParams, Dialect, Options};
@@ -43,27 +43,6 @@ fn parse_dialect(s: &str) -> Option<Dialect> {
         "sqlite" => Some(Dialect::Sqlite),
         _ => None,
     }
-}
-
-/// A page the user is visiting must not be able to drive this endpoint: when the request carries
-/// an `Origin`, it has to be this server's own origin. Requests without `Origin` (curl, native
-/// clients) are allowed; the `application/json` requirement of [`axum::Json`] already forces a
-/// CORS preflight for cross-site pages.
-#[must_use]
-pub fn origin_allowed(headers: &HeaderMap) -> bool {
-    let Some(origin) = headers.get(header::ORIGIN) else {
-        return true;
-    };
-    let (Ok(origin), Some(Ok(host))) = (
-        origin.to_str(),
-        headers.get(header::HOST).map(|h| h.to_str()),
-    ) else {
-        return false;
-    };
-    origin
-        .strip_prefix("http://")
-        .or_else(|| origin.strip_prefix("https://"))
-        .is_some_and(|authority| authority.eq_ignore_ascii_case(host))
 }
 
 #[derive(Serialize)]
@@ -129,14 +108,7 @@ pub async fn run(req: IntrospectRequest) -> Result<IntrospectResponse, (StatusCo
     })
 }
 
-pub async fn test_handler(headers: HeaderMap, Json(req): Json<IntrospectRequest>) -> Response {
-    if !origin_allowed(&headers) {
-        return (
-            StatusCode::FORBIDDEN,
-            Json(serde_json::json!({ "error": "cross-origin request refused" })),
-        )
-            .into_response();
-    }
+pub async fn test_handler(Json(req): Json<IntrospectRequest>) -> Response {
     match run_test(req).await {
         Ok(ok) => Json(ok).into_response(),
         Err((status, error)) => {
@@ -145,14 +117,7 @@ pub async fn test_handler(headers: HeaderMap, Json(req): Json<IntrospectRequest>
     }
 }
 
-pub async fn handler(headers: HeaderMap, Json(req): Json<IntrospectRequest>) -> Response {
-    if !origin_allowed(&headers) {
-        return (
-            StatusCode::FORBIDDEN,
-            Json(serde_json::json!({ "error": "cross-origin request refused" })),
-        )
-            .into_response();
-    }
+pub async fn handler(Json(req): Json<IntrospectRequest>) -> Response {
     match run(req).await {
         Ok(ok) => Json(ok).into_response(),
         Err((status, error)) => {
@@ -164,34 +129,6 @@ pub async fn handler(headers: HeaderMap, Json(req): Json<IntrospectRequest>) -> 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use axum::http::HeaderValue;
-
-    fn headers(origin: Option<&str>, host: &str) -> HeaderMap {
-        let mut h = HeaderMap::new();
-        h.insert(header::HOST, HeaderValue::from_str(host).unwrap());
-        if let Some(o) = origin {
-            h.insert(header::ORIGIN, HeaderValue::from_str(o).unwrap());
-        }
-        h
-    }
-
-    #[test]
-    fn only_same_origin_or_no_origin_is_allowed() {
-        assert!(origin_allowed(&headers(None, "127.0.0.1:3000")));
-        assert!(origin_allowed(&headers(
-            Some("http://127.0.0.1:3000"),
-            "127.0.0.1:3000"
-        )));
-        assert!(!origin_allowed(&headers(
-            Some("https://evil.example"),
-            "127.0.0.1:3000"
-        )));
-        assert!(!origin_allowed(&headers(
-            Some("http://127.0.0.1:9999"),
-            "127.0.0.1:3000"
-        )));
-        assert!(!origin_allowed(&headers(Some("null"), "127.0.0.1:3000")));
-    }
 
     #[tokio::test]
     async fn test_endpoint_validates_and_hides_the_password() {

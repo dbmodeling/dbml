@@ -72,3 +72,34 @@ async fn test_switch_file_rejects_outside_workspace() {
     let _ = tokio::fs::remove_dir_all(&base).await;
     let _ = tokio::fs::remove_file(&outside).await;
 }
+
+#[tokio::test]
+async fn test_switch_file_rejects_non_dbml_and_symlink_escape() {
+    let root = std::env::temp_dir().join(format!("dbml_ws_sec_{}", std::process::id()));
+    let _ = tokio::fs::remove_dir_all(&root).await;
+    let base = root.join("ws");
+    let outside = root.join("outside");
+    tokio::fs::create_dir_all(&base).await.unwrap();
+    tokio::fs::create_dir_all(&outside).await.unwrap();
+
+    tokio::fs::write(base.join("a.dbml"), "Table a { id int [pk] }\n")
+        .await
+        .unwrap();
+    tokio::fs::write(base.join(".env"), "SECRET=1\n")
+        .await
+        .unwrap();
+    tokio::fs::write(outside.join("x.dbml"), "Table x { id int [pk] }\n")
+        .await
+        .unwrap();
+
+    let state = dbml_cli::state::AppState::new(base.clone()).await.unwrap();
+    assert!(state.switch_file(base.join(".env")).await.is_err());
+
+    #[cfg(unix)]
+    {
+        std::os::unix::fs::symlink(outside.join("x.dbml"), base.join("link.dbml")).unwrap();
+        assert!(state.switch_file(base.join("link.dbml")).await.is_err());
+    }
+
+    let _ = tokio::fs::remove_dir_all(&root).await;
+}

@@ -166,11 +166,13 @@ impl AppState {
     /// Returns an error if `new_path` is outside the workspace, is not a file, or cannot be read.
     pub async fn switch_file(&self, new_path: PathBuf) -> anyhow::Result<()> {
         let canonical = tokio::fs::canonicalize(&new_path).await.unwrap_or(new_path);
+        // Only the target file or a `.dbml` file sitting directly in the workspace folder. A
+        // symlink resolves outside the folder, so it fails the parent check.
         let allowed = canonical == self.target_path
-            || self
-                .project_dir
-                .as_ref()
-                .is_some_and(|dir| canonical.starts_with(dir));
+            || self.project_dir.as_ref().is_some_and(|dir| {
+                canonical.parent() == Some(dir.as_path())
+                    && canonical.extension().and_then(|e| e.to_str()) == Some("dbml")
+            });
         if !allowed {
             anyhow::bail!(
                 "Access denied: '{}' is outside the active workspace",

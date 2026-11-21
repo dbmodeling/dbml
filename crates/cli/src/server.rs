@@ -2,11 +2,14 @@ use crate::assets::static_handler;
 use crate::state::AppState;
 use axum::{
     Router,
+    body::Body,
     extract::{
         State,
         ws::{Message, WebSocket, WebSocketUpgrade},
     },
-    response::IntoResponse,
+    http::{HeaderMap, Request, StatusCode, header},
+    middleware::{self, Next},
+    response::{IntoResponse, Response},
     routing::{get, post},
 };
 use futures_util::{SinkExt, StreamExt};
@@ -68,7 +71,66 @@ async fn active_file(state: &AppState, expected_file: &str) -> anyhow::Result<st
 
 const MAX_WS_PAYLOAD_BYTES: usize = 16 * 1024 * 1024;
 
-pub fn create_router(state: AppState) -> Router {
+/// `Host` values (lowercase `name:port`) this server answers to. Anything else is refused, which
+/// defeats DNS rebinding: the attacker's name never matches the allowlist.
+#[must_use]
+pub fn allowed_hosts(bind_host: &str, port: u16) -> Vec<String> {
+    let mut hosts: Vec<String> = ["127.0.0.1", "localhost", "[::1]"]
+        .iter()
+        .map(|h| format!("{h}:{port}"))
+        .collect();
+    let bind = bind_host.trim().to_ascii_lowercase();
+    if !matches!(bind.as_str(), "" | "0.0.0.0" | "::" | "[::]") {
+        let bind = if bind.contains(':') && !bind.starts_with('[') {
+            format!("[{bind}]")
+        } else {
+            bind
+        };
+        let entry = format!("{bind}:{port}");
+        if !hosts.contains(&entry) {
+            hosts.push(entry);
+        }
+    }
+    hosts
+}
+
+/// `Host` must be allowlisted; when `Origin` is present it must name the same allowlisted
+/// authority. Requests without `Origin` (curl, native clients) pass the Origin check.
+#[must_use]
+pub fn request_allowed(headers: &HeaderMap, allowed: &[String]) -> bool {
+    let Some(Ok(host)) = headers.get(header::HOST).map(|h| h.to_str()) else {
+        return false;
+    };
+    let host = host.to_ascii_lowercase();
+    if !allowed.contains(&host) {
+        return false;
+    }
+    let Some(origin) = headers.get(header::ORIGIN) else {
+        return true;
+    };
+    origin
+        .to_str()
+        .ok()
+        .and_then(|o| {
+            o.strip_prefix("http://")
+                .or_else(|| o.strip_prefix("https://"))
+        })
+        .is_some_and(|authority| authority.eq_ignore_ascii_case(&host))
+}
+
+async fn guard(
+    State(allowed): State<std::sync::Arc<Vec<String>>>,
+    req: Request<Body>,
+    next: Next,
+) -> Response {
+    if request_allowed(req.headers(), &allowed) {
+        next.run(req).await
+    } else {
+        (StatusCode::FORBIDDEN, "forbidden host or origin").into_response()
+    }
+}
+
+pub fn create_router(state: AppState, allowed: Vec<String>) -> Router {
     Router::new()
         .route("/ws", get(ws_handler))
         .route("/api/introspect", post(crate::introspect_api::handler))
@@ -77,6 +139,10 @@ pub fn create_router(state: AppState) -> Router {
             post(crate::introspect_api::test_handler),
         )
         .fallback(static_handler)
+        .layer(middleware::from_fn_with_state(
+            std::sync::Arc::new(allowed),
+            guard,
+        ))
         .with_state(state)
 }
 
@@ -261,5 +327,55 @@ mod tests {
         assert!(apply_patch("new".into(), "old", 0, 3, "x").is_err());
         assert!(apply_patch("é".into(), "é", 1, 2, "x").is_err());
         assert_eq!(apply_patch("é".into(), "é", 0, 2, "x").unwrap(), "x");
+    }
+}
+
+#[cfg(test)]
+mod guard_tests {
+    use super::*;
+    use axum::http::HeaderValue;
+
+    fn hdr(origin: Option<&str>, host: &str) -> HeaderMap {
+        let mut h = HeaderMap::new();
+        h.insert(header::HOST, HeaderValue::from_str(host).unwrap());
+        if let Some(o) = origin {
+            h.insert(header::ORIGIN, HeaderValue::from_str(o).unwrap());
+        }
+        h
+    }
+
+    #[test]
+    fn foreign_origin_is_refused() {
+        let a = allowed_hosts("127.0.0.1", 3000);
+        assert!(request_allowed(&hdr(None, "127.0.0.1:3000"), &a));
+        assert!(request_allowed(
+            &hdr(Some("http://localhost:3000"), "localhost:3000"),
+            &a
+        ));
+        assert!(!request_allowed(
+            &hdr(Some("https://evil.example"), "127.0.0.1:3000"),
+            &a
+        ));
+        assert!(!request_allowed(
+            &hdr(Some("http://127.0.0.1:3000"), "localhost:3000"),
+            &a
+        ));
+    }
+
+    #[test]
+    fn rebound_host_is_refused_even_with_matching_origin() {
+        let a = allowed_hosts("127.0.0.1", 3000);
+        assert!(!request_allowed(
+            &hdr(Some("http://evil.example:3000"), "evil.example:3000"),
+            &a
+        ));
+        assert!(!request_allowed(&hdr(None, "evil.example:3000"), &a));
+    }
+
+    #[test]
+    fn custom_bind_host_is_allowed_and_wildcard_is_not() {
+        let a = allowed_hosts("192.168.0.5", 3000);
+        assert!(request_allowed(&hdr(None, "192.168.0.5:3000"), &a));
+        assert!(!allowed_hosts("0.0.0.0", 3000).contains(&"0.0.0.0:3000".to_string()));
     }
 }

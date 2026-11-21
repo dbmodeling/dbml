@@ -122,7 +122,7 @@ async fn main() -> anyhow::Result<()> {
         });
     }
 
-    let app = server::create_router(state);
+    let app = server::create_router(state, server::allowed_hosts(&config.host, port));
 
     // Encerramento gracioso com Ctrl+C
     axum::serve(listener, app)
