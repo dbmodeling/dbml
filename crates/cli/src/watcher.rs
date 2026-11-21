@@ -32,18 +32,17 @@ pub fn start_file_watcher(state: AppState) -> anyhow::Result<()> {
             tokio::time::sleep(Duration::from_millis(60)).await;
             while rx.try_recv().is_ok() {}
 
-            let _guard = state.write_lock.lock().await;
-            let path = state.file_path.read().await.clone();
+            let mut doc = state.doc.write().await;
+            let path = doc.file_path.clone();
             let Ok(source) = tokio::fs::read_to_string(&path).await else {
                 continue;
             };
             let hash = compute_hash(&source);
-            let mut saved_hash = state.last_saved_hash.write().await;
-            if hash == *saved_hash {
+            if hash == doc.last_saved_hash {
                 continue;
             }
-            *saved_hash = hash;
-            state.content.write().await.clone_from(&source);
+            doc.last_saved_hash = hash;
+            doc.content.clone_from(&source);
             let message = serde_json::json!({
                 "type": "external_change",
                 "source": source,
@@ -59,10 +58,10 @@ pub fn start_file_watcher(state: AppState) -> anyhow::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::start_file_watcher;
-    use crate::state::AppState;
+    use crate::state::{AppState, DocState};
     use std::sync::{Arc, mpsc};
     use std::time::Duration;
-    use tokio::sync::{Mutex, RwLock, broadcast};
+    use tokio::sync::{RwLock, broadcast};
 
     #[test]
     fn watcher_does_not_block_runtime_shutdown() {
@@ -75,13 +74,14 @@ mod tests {
                 token: "t".into(),
                 target_path: dir.clone(),
                 project_dir: Some(dir.clone()),
-                file_path: Arc::new(RwLock::new(dir.clone())),
-                layout_path: Arc::new(RwLock::new(dir)),
-                content: Arc::new(RwLock::new(String::new())),
-                layout: Arc::new(RwLock::new(None)),
-                last_saved_hash: Arc::new(RwLock::new(0)),
+                doc: Arc::new(RwLock::new(DocState {
+                    file_path: dir.clone(),
+                    layout_path: dir,
+                    content: String::new(),
+                    layout: None,
+                    last_saved_hash: 0,
+                })),
                 tx,
-                write_lock: Arc::new(Mutex::new(())),
             };
             runtime.block_on(async { start_file_watcher(state).unwrap() });
             drop(runtime);

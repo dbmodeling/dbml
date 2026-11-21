@@ -39,14 +39,6 @@ enum ClientMessage {
     OpenFile(String),
 }
 
-async fn active_file(state: &AppState, expected_file: &str) -> anyhow::Result<std::path::PathBuf> {
-    let path = state.file_path.read().await;
-    if path.to_string_lossy() != expected_file {
-        anyhow::bail!("Active file changed; reload or reconcile changes");
-    }
-    Ok(path.clone())
-}
-
 /// Tamanho máximo de uma mensagem/frame WebSocket (aplicado pelo protocolo, antes da alocação).
 pub const MAX_WS_PAYLOAD_BYTES: usize = 16 * 1024 * 1024;
 
@@ -135,31 +127,7 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
 
     // Subscribe before reading the initial snapshot so file changes are not missed.
     let mut rx = state.tx.subscribe();
-    let init_msg = {
-        let _guard = state.write_lock.lock().await;
-        let content = state.content.read().await.clone();
-        let layout: Option<serde_json::Value> = state
-            .layout
-            .read()
-            .await
-            .as_ref()
-            .and_then(|s| serde_json::from_str(s).ok());
-
-        let title = state.active_title().await;
-        let document_id = state.file_path.read().await.to_string_lossy().into_owned();
-        let files = state.workspace_files().await;
-
-        serde_json::json!({
-            "type": "init",
-            "source": content,
-            "layout": layout,
-            "title": title,
-            "documentId": document_id,
-            "saved": true,
-            "files": files
-        })
-        .to_string()
-    };
+    let init_msg = state.init_message().await;
     if sender.send(Message::Text(init_msg.into())).await.is_err() {
         return;
     }
@@ -218,61 +186,35 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
                     expected_source,
                 } => {
                     state_clone
-                        .apply_patch(&expected_file, &expected_source, byte_start, byte_end, &new_text)
+                        .apply_patch(
+                            &expected_file,
+                            &expected_source,
+                            byte_start,
+                            byte_end,
+                            &new_text,
+                        )
                         .await
                 }
                 ClientMessage::SaveLayout {
                     layout,
                     expected_file,
-                } => {
-                    async {
-                        let _guard = state_clone.write_lock.lock().await;
-                        active_file(&state_clone, &expected_file).await?;
-                        let layout = serde_json::to_string_pretty(&layout)?;
-                        state_clone.save_layout(layout).await
-                    }
-                    .await
-                }
+                } => match serde_json::to_string_pretty(&layout) {
+                    Ok(layout) => state_clone.save_layout_for(&expected_file, layout).await,
+                    Err(err) => Err(err.into()),
+                },
                 ClientMessage::SaveDocument {
                     expected_source,
                     expected_file,
                 } => {
-                    async {
-                        let _guard = state_clone.write_lock.lock().await;
-                        let path = active_file(&state_clone, &expected_file).await?;
-                        if tokio::fs::read_to_string(path).await? != expected_source {
-                            anyhow::bail!(
-                                "Document changed outside this editor; reload or reconcile changes"
-                            );
-                        }
-                        Ok(())
-                    }
-                    .await
+                    state_clone
+                        .verify_document(&expected_file, &expected_source)
+                        .await
                 }
-                ClientMessage::OpenFile(path) => async {
-                    let _guard = state_clone.write_lock.lock().await;
-                    state_clone.switch_file(std::path::PathBuf::from(path)).await?;
-                    let content = state_clone.content.read().await.clone();
-                    let layout: Option<serde_json::Value> = state_clone
-                        .layout
-                        .read()
+                ClientMessage::OpenFile(path) => {
+                    state_clone
+                        .switch_file(std::path::PathBuf::from(path))
                         .await
-                        .as_ref()
-                        .and_then(|s| serde_json::from_str(s).ok());
-                    let document_id = state_clone
-                        .file_path
-                        .read()
-                        .await
-                        .to_string_lossy()
-                        .into_owned();
-                    let update_msg = serde_json::json!({
-                        "type": "update", "source": content, "layout": layout,
-                        "title": state_clone.active_title().await, "files": state_clone.workspace_files().await,
-                        "documentId": document_id, "saved": true
-                    }).to_string();
-                    let _ = state_clone.tx.send(update_msg);
-                    Ok(())
-                }.await,
+                }
             };
             let _ = reply_tx.send(
                 serde_json::json!({

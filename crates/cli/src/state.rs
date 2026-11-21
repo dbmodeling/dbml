@@ -1,10 +1,11 @@
 use anyhow::Context;
+use serde::Serialize;
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
-use tokio::sync::{Mutex, RwLock, broadcast};
+use tokio::sync::{RwLock, broadcast};
 
 static TMP_SEQ: AtomicU64 = AtomicU64::new(0);
 
@@ -82,34 +83,72 @@ pub fn patch_text(
     Ok(current)
 }
 
+/// Estado do documento ativo. Todos os campos mudam juntos sob um único lock
+/// ([`AppState::doc`]), então arquivo, sidecar, conteúdo e hash nunca ficam dessincronizados.
+#[derive(Debug, Clone)]
+pub struct DocState {
+    pub file_path: PathBuf,
+    pub layout_path: PathBuf,
+    pub content: String,
+    pub layout: Option<String>,
+    pub last_saved_hash: u64,
+}
+
+impl DocState {
+    /// Nome do arquivo ativo para exibição.
+    #[must_use]
+    pub fn title(&self) -> &str {
+        self.file_path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("schema.dbml")
+    }
+}
+
+/// Mensagem `init`/`update` enviada aos clientes com o documento completo.
+#[derive(Serialize)]
+struct DocumentMessage<'a> {
+    #[serde(rename = "type")]
+    kind: &'a str,
+    source: &'a str,
+    layout: Option<serde_json::Value>,
+    title: &'a str,
+    #[serde(rename = "documentId")]
+    document_id: std::borrow::Cow<'a, str>,
+    saved: bool,
+    files: Vec<serde_json::Value>,
+}
+
 #[derive(Clone)]
 pub struct AppState {
     /// Token de sessão exigido em `/ws` e `/api/*`.
     pub token: Arc<str>,
     pub target_path: PathBuf,
     pub project_dir: Option<PathBuf>,
-    pub file_path: Arc<RwLock<PathBuf>>,
-    pub layout_path: Arc<RwLock<PathBuf>>,
-    pub content: Arc<RwLock<String>>,
-    pub layout: Arc<RwLock<Option<String>>>,
-    pub last_saved_hash: Arc<RwLock<u64>>,
+    /// Documento ativo (arquivo, sidecar, conteúdo, layout e hash) sob um único lock.
+    pub doc: Arc<RwLock<DocState>>,
     pub tx: broadcast::Sender<String>,
-    pub write_lock: Arc<Mutex<()>>,
 }
 
-fn scan_dbml_dir(dir: &Path) -> Vec<PathBuf> {
+async fn scan_dbml_dir(dir: &Path) -> Vec<PathBuf> {
     let mut out = Vec::new();
-    let Ok(entries) = std::fs::read_dir(dir) else {
+    let Ok(mut entries) = tokio::fs::read_dir(dir).await else {
         return out;
     };
-    for entry in entries.flatten() {
+    while let Ok(Some(entry)) = entries.next_entry().await {
         let p = entry.path();
-        if p.is_file() && p.extension().and_then(|e| e.to_str()) == Some("dbml") {
+        if p.extension().and_then(|e| e.to_str()) == Some("dbml")
+            && entry.file_type().await.is_ok_and(|t| t.is_file())
+        {
             out.push(p);
         }
     }
     out.sort();
     out
+}
+
+fn layout_path_for(file: &Path) -> PathBuf {
+    PathBuf::from(format!("{}.layout.json", file.display()))
 }
 
 impl AppState {
@@ -121,7 +160,7 @@ impl AppState {
     pub async fn new(target: PathBuf) -> anyhow::Result<Self> {
         let target_abs = std::fs::canonicalize(&target).unwrap_or(target);
         let (project_dir, file_path) = if target_abs.is_dir() {
-            let files = scan_dbml_dir(&target_abs);
+            let files = scan_dbml_dir(&target_abs).await;
             let session = crate::session::load();
             let chosen = session
                 .active_file
@@ -134,7 +173,7 @@ impl AppState {
             (parent, target_abs.clone())
         };
 
-        let layout_path = PathBuf::from(format!("{}.layout.json", file_path.display()));
+        let layout_path = layout_path_for(&file_path);
 
         // Cria arquivo com template inicial se não existir
         if !file_path.exists() {
@@ -165,13 +204,14 @@ impl AppState {
             token: generate_token().into(),
             target_path: target_abs,
             project_dir,
-            file_path: Arc::new(RwLock::new(file_path)),
-            layout_path: Arc::new(RwLock::new(layout_path)),
-            content: Arc::new(RwLock::new(content)),
-            layout: Arc::new(RwLock::new(layout)),
-            last_saved_hash: Arc::new(RwLock::new(hash)),
+            doc: Arc::new(RwLock::new(DocState {
+                file_path,
+                layout_path,
+                content,
+                layout,
+                last_saved_hash: hash,
+            })),
             tx,
-            write_lock: Arc::new(Mutex::new(())),
         })
     }
 
@@ -181,20 +221,13 @@ impl AppState {
         &self.token
     }
 
-    pub async fn active_title(&self) -> String {
-        let fp = self.file_path.read().await;
-        fp.file_name()
-            .and_then(|n| n.to_str())
-            .unwrap_or("schema.dbml")
-            .to_string()
-    }
-
-    pub async fn workspace_files(&self) -> Vec<serde_json::Value> {
+    /// Lista os `.dbml` do workspace marcando `active`.
+    pub async fn workspace_files(&self, active: &Path) -> Vec<serde_json::Value> {
         let Some(dir) = &self.project_dir else {
             return Vec::new();
         };
-        let active = self.file_path.read().await.clone();
         scan_dbml_dir(dir)
+            .await
             .into_iter()
             .map(|p| {
                 let name = p
@@ -212,7 +245,36 @@ impl AppState {
             .collect()
     }
 
-    /// Switches the active document to `new_path` within the active workspace.
+    /// Monta a mensagem (`init` ou `update`) com o documento completo a partir de `doc`.
+    ///
+    /// # Panics
+    ///
+    /// Nunca: a serialização de valores JSON em memória não falha.
+    pub async fn document_message(&self, kind: &str, doc: &DocState) -> String {
+        let msg = DocumentMessage {
+            kind,
+            source: &doc.content,
+            layout: doc
+                .layout
+                .as_deref()
+                .and_then(|s| serde_json::from_str(s).ok()),
+            title: doc.title(),
+            document_id: doc.file_path.to_string_lossy(),
+            saved: true,
+            files: self.workspace_files(&doc.file_path).await,
+        };
+        serde_json::to_string(&msg).expect("serialização de DocumentMessage não falha")
+    }
+
+    /// Mensagem `init` do estado atual (para um cliente recém-conectado).
+    pub async fn init_message(&self) -> String {
+        let doc = self.doc.read().await;
+        self.document_message("init", &doc).await
+    }
+
+    /// Switches the active document to `new_path` within the active workspace and broadcasts an
+    /// `update` message describing the new document (sent while the document lock is held, so
+    /// clients see switches in order).
     ///
     /// # Errors
     ///
@@ -233,31 +295,41 @@ impl AppState {
         if !canonical.is_file() {
             anyhow::bail!("File not found: {}", canonical.display());
         }
-        let new_layout_path = PathBuf::from(format!("{}.layout.json", canonical.display()));
+        let mut doc = self.doc.write().await;
+        let new_layout_path = layout_path_for(&canonical);
         let new_content = tokio::fs::read_to_string(&canonical).await?;
-        let new_hash = compute_hash(&new_content);
         let new_layout = if new_layout_path.exists() {
             tokio::fs::read_to_string(&new_layout_path).await.ok()
         } else {
             None
         };
 
-        *self.file_path.write().await = canonical.clone();
-        *self.layout_path.write().await = new_layout_path;
-        *self.last_saved_hash.write().await = new_hash;
-        *self.content.write().await = new_content;
-        *self.layout.write().await = new_layout;
+        doc.last_saved_hash = compute_hash(&new_content);
+        doc.content = new_content;
+        doc.layout = new_layout;
+        doc.layout_path = new_layout_path;
+        doc.file_path.clone_from(&canonical);
 
         crate::session::save(&crate::session::CliSession {
             last_target: Some(self.target_path.clone()),
             active_file: Some(canonical),
         });
 
+        let update = self.document_message("update", &doc).await;
+        let _ = self.tx.send(update);
         Ok(())
     }
 
+    fn ensure_active(doc: &DocState, expected_file: &str) -> anyhow::Result<()> {
+        if doc.file_path.to_string_lossy() == expected_file {
+            Ok(())
+        } else {
+            anyhow::bail!("Active file changed; reload or reconcile changes")
+        }
+    }
+
     /// Lê o arquivo ativo, valida e aplica o patch e persiste o resultado tudo sob um único
-    /// `write_lock`, de modo que dois clientes não percam a edição um do outro.
+    /// lock de escrita, de modo que dois clientes não percam a edição um do outro.
     ///
     /// # Errors
     ///
@@ -271,17 +343,29 @@ impl AppState {
         end: usize,
         new_text: &str,
     ) -> anyhow::Result<()> {
-        let _guard = self.write_lock.lock().await;
-        let path = {
-            let path = self.file_path.read().await;
-            if path.to_string_lossy() != expected_file {
-                anyhow::bail!("Active file changed; reload or reconcile changes");
-            }
-            path.clone()
-        };
-        let current = tokio::fs::read_to_string(&path).await?;
+        let mut doc = self.doc.write().await;
+        Self::ensure_active(&doc, expected_file)?;
+        let current = tokio::fs::read_to_string(&doc.file_path).await?;
         let updated = patch_text(current, expected_source, start, end, new_text)?;
-        self.save_content(updated).await
+        Self::persist(&mut doc, updated).await
+    }
+
+    /// Confere que o arquivo em disco ainda é `expected_source` (o botão "salvar" do front).
+    ///
+    /// # Errors
+    ///
+    /// Retorna erro se o arquivo ativo mudou ou o conteúdo em disco diverge.
+    pub async fn verify_document(
+        &self,
+        expected_file: &str,
+        expected_source: &str,
+    ) -> anyhow::Result<()> {
+        let doc = self.doc.read().await;
+        Self::ensure_active(&doc, expected_file)?;
+        if tokio::fs::read_to_string(&doc.file_path).await? != expected_source {
+            anyhow::bail!("Document changed outside this editor; reload or reconcile changes");
+        }
+        Ok(())
     }
 
     /// Atomically persists `new_content` to the active `.dbml` file and updates in-memory state.
@@ -290,18 +374,14 @@ impl AppState {
     ///
     /// Returns an error if the atomic write fails.
     pub async fn save_content(&self, new_content: String) -> anyhow::Result<()> {
-        let new_hash = compute_hash(&new_content);
+        let mut doc = self.doc.write().await;
+        Self::persist(&mut doc, new_content).await
+    }
 
-        let mut hash_lock = self.last_saved_hash.write().await;
-        let fp = self.file_path.read().await.clone();
-        atomic_write(&fp, &new_content).await?;
-        *hash_lock = new_hash;
-
-        {
-            let mut content_lock = self.content.write().await;
-            *content_lock = new_content;
-        }
-
+    async fn persist(doc: &mut DocState, new_content: String) -> anyhow::Result<()> {
+        atomic_write(&doc.file_path, &new_content).await?;
+        doc.last_saved_hash = compute_hash(&new_content);
+        doc.content = new_content;
         Ok(())
     }
 
@@ -311,10 +391,26 @@ impl AppState {
     ///
     /// Returns an error if the atomic write fails.
     pub async fn save_layout(&self, layout_json: String) -> anyhow::Result<()> {
-        let lp = self.layout_path.read().await.clone();
-        atomic_write(&lp, &layout_json).await?;
-        let mut layout_lock = self.layout.write().await;
-        *layout_lock = Some(layout_json);
+        let mut doc = self.doc.write().await;
+        atomic_write(&doc.layout_path, &layout_json).await?;
+        doc.layout = Some(layout_json);
+        Ok(())
+    }
+
+    /// Como [`Self::save_layout`], mas só grava se `expected_file` ainda é o arquivo ativo.
+    ///
+    /// # Errors
+    ///
+    /// Retorna erro se o arquivo ativo mudou ou a gravação falha.
+    pub async fn save_layout_for(
+        &self,
+        expected_file: &str,
+        layout_json: String,
+    ) -> anyhow::Result<()> {
+        let mut doc = self.doc.write().await;
+        Self::ensure_active(&doc, expected_file)?;
+        atomic_write(&doc.layout_path, &layout_json).await?;
+        doc.layout = Some(layout_json);
         Ok(())
     }
 }

@@ -98,8 +98,13 @@ async fn main() -> anyhow::Result<()> {
             .blue()
             .bold()
     );
-    let fp_display = state.file_path.read().await.display().to_string();
-    let lp_display = state.layout_path.read().await.display().to_string();
+    let (fp_display, lp_display) = {
+        let doc = state.doc.read().await;
+        (
+            doc.file_path.display().to_string(),
+            doc.layout_path.display().to_string(),
+        )
+    };
     println!("  {} {}", "File:    ".bold(), fp_display.cyan());
     println!("  {} {}", "Sidecar: ".bold(), lp_display.cyan());
     println!(
