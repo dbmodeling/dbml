@@ -40,6 +40,7 @@ function getVsCodeApi(): ReturnType<typeof acquireVsCodeApi> {
 /** Transporte para execução dentro da Webview do VS Code */
 export class VsCodeTransport implements HostTransport {
   private vscode: ReturnType<typeof acquireVsCodeApi>;
+  private readonly abort = new AbortController();
   private updateCallback?: (
     source: string,
     layout?: SidecarLayout,
@@ -132,7 +133,20 @@ export class VsCodeTransport implements HostTransport {
           break;
         }
       }
-    });
+    }, { signal: this.abort.signal });
+  }
+
+  /** Remove o listener de mensagens e rejeita o que ainda aguarda resposta do host. */
+  public close(): void {
+    if (this.abort.signal.aborted) return;
+    this.abort.abort();
+    const error = new Error('Connection closed');
+    for (const p of this.pending.values()) p.reject(error);
+    for (const p of this.pendingIntrospect.values()) p.reject(error);
+    for (const p of this.pendingTest.values()) p.reject(error);
+    this.pending.clear();
+    this.pendingIntrospect.clear();
+    this.pendingTest.clear();
   }
 
   public checkDatabaseSupport(): Promise<void> {
@@ -262,6 +276,8 @@ export class WebSocketTransport implements HostTransport {
   private connectionCallback?: (state: ConnectionState) => void;
   private reconnectTimer: number | null = null;
   private reconnectAttempts = 0;
+  private closed = false;
+  private readonly abort = new AbortController();
   /** Aba oculta: nenhuma tentativa agendada até `visibilitychange`. */
   private waitingVisible = false;
   private requestSeq = 0;
@@ -279,19 +295,37 @@ export class WebSocketTransport implements HostTransport {
 
   constructor(url = `ws://${window.location.host}/ws`) {
     this.url = url;
-    document.addEventListener('visibilitychange', () => this.onVisibility());
+    document.addEventListener('visibilitychange', () => this.onVisibility(), { signal: this.abort.signal });
     this.connect();
   }
 
+  /** Encerra o socket e impede novas reconexões (idempotente). */
+  public close(): void {
+    if (this.closed) return;
+    this.closed = true;
+    this.abort.abort();
+    if (this.reconnectTimer !== null) window.clearTimeout(this.reconnectTimer);
+    this.reconnectTimer = null;
+    const ws = this.ws;
+    this.ws = null;
+    if (ws) {
+      ws.onopen = ws.onmessage = ws.onclose = null;
+      ws.close();
+    }
+    for (const p of this.pending.values()) p.reject(new Error('Connection closed'));
+    this.pending.clear();
+    this.connectionCallback = undefined;
+  }
+
   private onVisibility(): void {
-    if (document.hidden || !this.waitingVisible) return;
+    if (this.closed || document.hidden || !this.waitingVisible) return;
     this.waitingVisible = false;
     this.reconnectAttempts = 0;
     this.connect();
   }
 
   private scheduleReconnect(): void {
-    if (this.reconnectTimer !== null) return;
+    if (this.closed || this.reconnectTimer !== null) return;
     if (document.hidden) {
       this.waitingVisible = true;
       return;

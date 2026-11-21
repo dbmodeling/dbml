@@ -323,6 +323,8 @@ export interface HostTransport {
   onError?(callback: (diagnostics: Diagnostic[]) => void): void;
   /** Estado do canal com o host; só transportes que podem cair (WebSocket) o emitem. */
   onConnectionChange?(callback: (state: ConnectionState) => void): void;
+  /** Libera sockets, timers e listeners do transporte; ele não deve ser usado depois. */
+  close?(): void;
   /** Publica os diagnósticos do Wasm no host (ex.: aba Problems do VS Code). */
   sendDiagnostics?(diagnostics: Diagnostic[]): void;
 }

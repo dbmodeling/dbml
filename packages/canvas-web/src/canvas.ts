@@ -19,4 +19,9 @@ export class DbModelingCanvas {
   constructor(container: HTMLElement, transport: HostTransport = NOOP_TRANSPORT, wasm?: WasmApi) {
     this.workbench = mountWorkbench(container, transport, wasm);
   }
+
+  /** Desmonta o workbench (listeners, timers, DOM). Quem criou o transporte chama `transport.close()`. */
+  public destroy(): void {
+    this.workbench.destroy();
+  }
 }

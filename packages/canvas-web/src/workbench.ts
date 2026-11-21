@@ -226,6 +226,11 @@ export class Workbench {
   private menuSub = 'Arquivo';
   private saveTimer: number | null = null;
   private raf: number | null = null;
+  /** Cancela todos os listeners globais (window) no `destroy()`. */
+  private readonly abort = new AbortController();
+  private destroyed = false;
+  private styleEl: HTMLStyleElement | null = null;
+  private resizeObserver: ResizeObserver | null = null;
 
   private els: Record<string, HTMLElement> = {};
 
@@ -236,17 +241,20 @@ export class Workbench {
     this.wasm = wasm || (window as unknown as { DbModelingParser?: WasmApi }).DbModelingParser;
     this.build();
     this.bind();
-    transport.onDocumentUpdated((src, layout, meta) => this.setDocument(src, layout, meta));
+    transport.onDocumentUpdated((src, layout, meta) => { if (!this.destroyed) this.setDocument(src, layout, meta); });
     // edição fora do app (outro editor, git checkout): a CLI avisa via `external_change`
     transport.onFileChangedExternally?.((src, documentId) => {
+      if (this.destroyed) return;
       if (documentId && documentId !== this.documentId) return;
       this.setDocument(src, undefined, { saved: true, documentId });
     });
     transport.onConnectionChange?.((state) => {
+      if (this.destroyed) return;
       this.connection = state;
       this.renderStatus();
     });
     transport.onWorkspaceFilesUpdated?.((files, title) => {
+      if (this.destroyed) return;
       this.files = files;
       if (title) this.title = title;
       this.renderChrome();
@@ -259,6 +267,7 @@ export class Workbench {
     const style = document.createElement('style');
     style.textContent = WORKBENCH_CSS;
     document.head.appendChild(style);
+    this.styleEl = style;
     this.root.innerHTML = '';
     this.wb = document.createElement('div');
     this.wb.className = 'wb';
@@ -1016,7 +1025,7 @@ export class Workbench {
   // ───────────────────────── renderização ─────────────────────────
 
   private scheduleRender(): void {
-    if (this.raf !== null) return;
+    if (this.raf !== null || this.destroyed) return;
     this.raf = requestAnimationFrame(() => {
       this.raf = null;
       this.renderAll();
@@ -2825,10 +2834,12 @@ export class Workbench {
       menu.style.left = `${Math.min(e.clientX, window.innerWidth - menu.offsetWidth - 8)}px`;
       menu.style.top = `${Math.min(e.clientY, window.innerHeight - menu.offsetHeight - 8)}px`;
     });
-    window.addEventListener('mousemove', (e) => this.onMove(e));
-    window.addEventListener('mouseup', () => this.onUp());
+    const { signal } = this.abort;
+    window.addEventListener('mousemove', (e) => this.onMove(e), { signal });
+    window.addEventListener('mouseup', () => this.onUp(), { signal });
     surf.addEventListener('wheel', (e) => this.onWheel(e), { passive: false });
-    new ResizeObserver(() => this.scheduleRender()).observe(surf);
+    this.resizeObserver = new ResizeObserver(() => this.scheduleRender());
+    this.resizeObserver.observe(surf);
     for (const handle of wb.querySelectorAll<HTMLButtonElement>('[data-resize]')) {
       const isLeft = handle.dataset.resize === 'left';
       const panel = () => this.els[isLeft ? (this.editorOpen ? 'editor' : 'sidebar') : 'inspector'];
@@ -2856,16 +2867,16 @@ export class Workbench {
         resize(el, el.getBoundingClientRect().width + (grow ? 24 : -24));
       });
     }
-    window.addEventListener('keydown', (e) => this.onKey(e));
+    window.addEventListener('keydown', (e) => this.onKey(e), { signal });
     window.addEventListener('beforeunload', (e) => {
       if (this.isDirty()) {
         e.preventDefault();
         e.returnValue = '';
       }
-    });
+    }, { signal });
     window.addEventListener('keyup', (e) => {
       if (e.code === 'Space') { this.space = false; this.scheduleRender(); }
-    });
+    }, { signal });
     // editor DBML
     const ta = this.els['code'] as HTMLTextAreaElement;
     ta.addEventListener('input', () => {
@@ -3522,7 +3533,30 @@ export class Workbench {
 
   // rastreia posição do mouse para soltar relações sobre colunas
   public attachMouseTracking(): void {
-    window.addEventListener('mousemove', (e) => { this.lastMouse = { x: e.clientX, y: e.clientY }; });
+    window.addEventListener('mousemove', (e) => { this.lastMouse = { x: e.clientX, y: e.clientY }; }, { signal: this.abort.signal });
+  }
+
+  /**
+   * Desmonta o workbench: remove os listeners globais, cancela timers e
+   * animações, solta o ResizeObserver, tira o `<style>` e esvazia o `root`.
+   * O transporte não é fechado aqui (quem o criou chama `transport.close()`).
+   */
+  public destroy(): void {
+    if (this.destroyed) return;
+    this.destroyed = true;
+    this.abort.abort();
+    this.resizeObserver?.disconnect();
+    this.resizeObserver = null;
+    this.stopTween();
+    if (this.raf !== null) cancelAnimationFrame(this.raf);
+    this.raf = null;
+    for (const timer of [this.autosaveTimer, this.saveTimer, this.sessionTimer, this.toastTimer]) {
+      if (timer) window.clearTimeout(timer);
+    }
+    this.saveTimer = this.sessionTimer = null;
+    this.styleEl?.remove();
+    this.styleEl = null;
+    this.root.innerHTML = '';
   }
 }
 
