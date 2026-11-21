@@ -37,8 +37,29 @@ function getVsCodeApi(): ReturnType<typeof acquireVsCodeApi> {
   return cachedVsCodeApi;
 }
 
+/**
+ * Última versão do documento conhecida pelo transporte (#51). Patches e salvamentos a citam como
+ * `base_version`; o host recusa o que foi calculado sobre outra versão. Só avança (mensagens fora de
+ * ordem não a fazem recuar); `reset` vale para a primeira mensagem de uma conexão nova.
+ */
+class DocumentVersion {
+  private value: number | null = null;
+
+  public adopt(version: unknown, reset = false): void {
+    if (typeof version !== 'number' || !Number.isFinite(version)) return;
+    if (reset || this.value === null || version > this.value) this.value = version;
+  }
+
+  /** Versão a enviar como `base_version`; falha se ainda nenhum documento chegou do host. */
+  public base(): number {
+    if (this.value === null) throw new Error('Not synced with the host yet; wait for the document to load');
+    return this.value;
+  }
+}
+
 /** Transporte para execução dentro da Webview do VS Code */
 export class VsCodeTransport implements HostTransport {
+  private readonly version = new DocumentVersion();
   private vscode: ReturnType<typeof acquireVsCodeApi>;
   private readonly abort = new AbortController();
   private updateCallback?: (
@@ -80,12 +101,15 @@ export class VsCodeTransport implements HostTransport {
       if (!message) return;
       switch (message.type) {
         case 'result': {
+          this.version.adopt(message.version);
           const p = this.pending.get(message.id);
           this.pending.delete(message.id);
           if (message.error) p?.reject(new Error(message.error)); else p?.resolve();
           break;
         }
         case 'update':
+          // Também é a resposta do host a um patch recusado (versão velha): ressincroniza o estado.
+          this.version.adopt(message.version);
           if (this.updateCallback) {
             this.updateCallback(message.source, message.layout, {
               title: message.title,
@@ -95,6 +119,7 @@ export class VsCodeTransport implements HostTransport {
               savedSource: message.savedSource,
               autosave: message.autosave,
               documentId: message.documentId,
+              version: message.version,
             });
           }
           if (message.files && this.workspaceFilesCallback) {
@@ -176,12 +201,12 @@ export class VsCodeTransport implements HostTransport {
     });
   }
 
-  public sendPatch(patch: TextPatch): Promise<void> {
-    return this.request('apply_patch', { patch });
+  public async sendPatch(patch: TextPatch): Promise<void> {
+    await this.request('apply_patch', { patch, base_version: this.version.base() });
   }
 
-  public saveDocument(expected_source: string): Promise<void> {
-    return this.request('save_document', { expected_source });
+  public async saveDocument(expected_source: string): Promise<void> {
+    await this.request('save_document', { expected_source, base_version: this.version.base() });
   }
 
   public saveLayout(layout: SidecarLayout): Promise<void> {
@@ -278,6 +303,7 @@ export class WebSocketTransport implements HostTransport {
   private reconnectAttempts = 0;
   private closed = false;
   private readonly abort = new AbortController();
+  private readonly version = new DocumentVersion();
   /** Aba oculta: nenhuma tentativa agendada até `visibilitychange`. */
   private waitingVisible = false;
   private requestSeq = 0;
@@ -362,20 +388,27 @@ export class WebSocketTransport implements HostTransport {
         try {
           const msg = JSON.parse(event.data);
           if (msg.type === 'result') {
+            this.version.adopt(msg.version);
             const p = this.pending.get(msg.id);
             this.pending.delete(msg.id);
             if (msg.error) p?.reject(new Error(msg.error)); else p?.resolve();
-          } else if (msg.type === 'init' || msg.type === 'update') {
+          } else if (msg.type === 'init' || msg.type === 'update' || msg.type === 'patch_rejected') {
+            // `init` abre uma conexão nova (o servidor pode ter reiniciado): a versão é a dele.
+            // `patch_rejected` traz o estado atual do documento para o cliente ressincronizar; o erro
+            // do pedido chega em seguida no `result` (e é ele que avisa o usuário).
+            this.version.adopt(msg.version, msg.type === 'init');
             if (this.updateCallback) {
               this.updateCallback(msg.source, msg.layout, {
                 title: msg.title,
                 files: msg.files,
                 session: msg.session,
-              saved: msg.saved,
-              documentId: msg.documentId,
+                saved: msg.saved,
+                documentId: msg.documentId,
+                version: msg.version,
               });
             }
           } else if (msg.type === 'external_change') {
+            this.version.adopt(msg.version);
             if (this.externalChangeCallback) {
               this.externalChangeCallback(msg.source, msg.documentId);
             }
@@ -398,13 +431,15 @@ export class WebSocketTransport implements HostTransport {
     }
   }
 
-  public sendPatch(patch: TextPatch): Promise<void> {
+  public async sendPatch(patch: TextPatch): Promise<void> {
     const { byte_start, byte_end, new_text, expected_source, expected_file } = patch;
-    return this.request('apply_patch', { byte_start, byte_end, new_text, expected_source, expected_file });
+    const base_version = this.version.base();
+    await this.request('apply_patch', { base_version, byte_start, byte_end, new_text, expected_source, expected_file });
   }
 
-  public saveDocument(expected_source: string, expected_file?: string): Promise<void> {
-    return this.request('save_document', { expected_source, expected_file });
+  public async saveDocument(expected_source: string, expected_file?: string): Promise<void> {
+    const base_version = this.version.base();
+    await this.request('save_document', { base_version, expected_source, expected_file });
   }
 
   public async testConnection(req: IntrospectRequest, signal?: AbortSignal): Promise<TestConnectionResult> {
