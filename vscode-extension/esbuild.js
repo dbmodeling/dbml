@@ -28,6 +28,7 @@ async function main() {
   let jsCode = fs.readFileSync(wasmJsSrc, 'utf-8');
   jsCode = jsCode.replace(/export\s+\{([^}]+)\};?/g, '');
   jsCode = jsCode.replace(/export\s+function\s+/g, 'function ');
+  jsCode = jsCode.replace(/export\s+class\s+/g, 'class ');
   jsCode = jsCode.replace(/\/\* @ts-self-types[^*]*\*\//g, '');
   // `import.meta` é erro de sintaxe em <script> clássico; o Wasm é instanciado via initSync (bytes embutidos)
   jsCode = jsCode.replace(/new URL\('dbml_wasm_bg\.wasm', import\.meta\.url\)/g, 'undefined');
@@ -47,6 +48,7 @@ async function main() {
       format_dbml: format_dbml,
       compute_layout: compute_layout,
       compute_scene: compute_scene,
+      Session: Session,
       swap_dbml_lines: swap_dbml_lines,
       export_sql_ddl: export_sql_ddl,
       import_sql_ddl: import_sql_ddl,
