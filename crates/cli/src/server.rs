@@ -3,7 +3,7 @@ use crate::state::AppState;
 use axum::{
     Router,
     extract::{
-        Request, State,
+        DefaultBodyLimit, Request, State,
         ws::{Message, WebSocket, WebSocketUpgrade},
     },
     http::{HeaderMap, StatusCode, header},
@@ -68,7 +68,8 @@ async fn active_file(state: &AppState, expected_file: &str) -> anyhow::Result<st
     Ok(path.clone())
 }
 
-const MAX_WS_PAYLOAD_BYTES: usize = 16 * 1024 * 1024;
+/// Tamanho máximo de uma mensagem/frame WebSocket (aplicado pelo protocolo, antes da alocação).
+pub const MAX_WS_PAYLOAD_BYTES: usize = 16 * 1024 * 1024;
 
 /// Aviso exibido no terminal quando o servidor escuta fora do loopback: qualquer máquina da rede
 /// que conheça o token de sessão consegue editar os arquivos do workspace.
@@ -121,13 +122,21 @@ async fn require_token(State(state): State<AppState>, req: Request, next: Next) 
     }
 }
 
+/// Corpo máximo das rotas `/api/*` (formulários de conexão; o `DefaultBodyLimit` do Axum é
+/// aplicado antes de ler o corpo inteiro).
+pub const MAX_API_BODY_BYTES: usize = 1024 * 1024;
+
 pub fn create_router(state: AppState) -> Router {
     let protected = Router::new()
         .route("/ws", get(ws_handler))
-        .route("/api/introspect", post(crate::introspect_api::handler))
+        .route(
+            "/api/introspect",
+            post(crate::introspect_api::handler).layer(DefaultBodyLimit::max(MAX_API_BODY_BYTES)),
+        )
         .route(
             "/api/introspect/test",
-            post(crate::introspect_api::test_handler),
+            post(crate::introspect_api::test_handler)
+                .layer(DefaultBodyLimit::max(MAX_API_BODY_BYTES)),
         )
         .route_layer(middleware::from_fn_with_state(state.clone(), require_token));
     Router::new()
@@ -137,7 +146,9 @@ pub fn create_router(state: AppState) -> Router {
 }
 
 async fn ws_handler(ws: WebSocketUpgrade, State(state): State<AppState>) -> impl IntoResponse {
-    ws.on_upgrade(move |socket| handle_socket(socket, state))
+    ws.max_message_size(MAX_WS_PAYLOAD_BYTES)
+        .max_frame_size(MAX_WS_PAYLOAD_BYTES)
+        .on_upgrade(move |socket| handle_socket(socket, state))
 }
 
 async fn handle_socket(socket: WebSocket, state: AppState) {

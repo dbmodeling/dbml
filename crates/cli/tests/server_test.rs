@@ -125,3 +125,38 @@ fn warns_only_for_non_loopback_hosts() {
     let w = non_loopback_warning("0.0.0.0".parse().unwrap()).unwrap();
     assert!(w.contains("0.0.0.0") && w.contains("token"), "{w}");
 }
+
+#[tokio::test]
+async fn oversized_websocket_message_closes_the_connection() {
+    use futures_util::SinkExt;
+    let h = spawn("ws_big").await;
+    let url = format!("ws://{}/ws?token={}", h.addr, h.state.token());
+    let (mut ws, _) = tokio_tungstenite::connect_async(&url).await.unwrap();
+    ws.next().await.unwrap().unwrap(); // init
+    let big = "x".repeat(dbml_cli::server::MAX_WS_PAYLOAD_BYTES + 1024);
+    let _ = ws.send(Message::Text(big.into())).await;
+    let end = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        loop {
+            match ws.next().await {
+                None | Some(Err(_) | Ok(Message::Close(_))) => break,
+                Some(Ok(_)) => {}
+            }
+        }
+    })
+    .await;
+    assert!(end.is_ok(), "o servidor devia encerrar a conexão");
+}
+
+#[tokio::test]
+async fn oversized_api_body_is_rejected_with_413() {
+    let h = spawn("api_big").await;
+    let body = "x".repeat(dbml_cli::server::MAX_API_BODY_BYTES + 1024);
+    let request = format!(
+        "POST /api/introspect/test HTTP/1.1\r\nHost: {}\r\nConnection: close\r\nX-DBML-Token: {}\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{body}",
+        h.addr,
+        h.state.token(),
+        body.len()
+    );
+    let (status, _) = http(h.addr, &request).await;
+    assert_eq!(status, 413);
+}
