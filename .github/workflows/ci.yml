@@ -40,13 +40,18 @@ env:
 # Every third-party action is pinned by commit SHA (comment = version);
 # scripts/check-workflow-pins.sh rejects mutable tags/branches.
 jobs:
-  # ------------------------------------------------------------------ light jobs
-  branch-name:
-    name: Branch name
-    if: github.event_name == 'pull_request'
+  # ------------------------------------------------------------------ preflight
+  # One cheap job (~30–60 s) that gates the expensive matrix: branch name, changed paths,
+  # formatting and the script/workflow checks. If any of these fail, no heavy runner starts.
+  preflight:
+    name: Preflight (branch, paths, fmt, scripts)
     runs-on: ubuntu-latest
+    outputs:
+      rust: ${{ steps.diff.outputs.rust }}
+      web: ${{ steps.diff.outputs.web }}
     steps:
       - name: Validate source branch name
+        if: github.event_name == 'pull_request'
         env:
           HEAD_REF: ${{ github.head_ref }}
           BASE_REF: ${{ github.base_ref }}
@@ -68,19 +73,10 @@ jobs:
             exit 1
           fi
 
-  changes:
-    name: Changed paths
-    runs-on: ubuntu-latest
-    outputs:
-      rust: ${{ steps.diff.outputs.rust }}
-      web: ${{ steps.diff.outputs.web }}
-      scripts: ${{ steps.diff.outputs.scripts }}
-    steps:
-      - name: Checkout (full history for the diff)
-        if: github.event_name == 'pull_request'
+      - name: Checkout (full history on PRs, for the diff)
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
-          fetch-depth: 0
+          fetch-depth: ${{ github.event_name == 'pull_request' && '0' || '1' }}
 
       - name: Decide which groups run
         id: diff
@@ -110,20 +106,31 @@ jobs:
           scripts="$(has '^(scripts/|\.github/)|(^|/)package(-lock)?\.json$')"
           { echo "rust=$rust"; echo "web=$web"; echo "scripts=$scripts"; } | tee -a "$GITHUB_OUTPUT"
 
-  fmt:
-    name: Formatting (cargo fmt)
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Workflow actions pinned by SHA
+        if: steps.diff.outputs.scripts == 'true'
+        run: |
+          ./scripts/check-workflow-pins.sh --self-test
+          ./scripts/check-workflow-pins.sh
 
-      - name: Install Rust toolchain
+      - name: Frontend dependencies with exact versions
+        if: steps.diff.outputs.scripts == 'true'
+        run: |
+          ./scripts/check-npm-pins.sh --self-test
+          ./scripts/check-npm-pins.sh
+
+      - name: Build and install script tests
+        if: steps.diff.outputs.scripts == 'true'
+        run: |
+          ./scripts/check-web-assets.sh --self-test
+          ./scripts/tests/install_test.sh
+
+      - name: Install Rust toolchain (rustfmt)
         uses: dtolnay/rust-toolchain@39008827e6b4319a349e9a42dfc90579dd25f1ca # stable
         with:
           toolchain: ${{ env.RUST_TOOLCHAIN }}
           components: rustfmt
 
-      - name: Check formatting
+      - name: Check formatting (cargo fmt)
         run: cargo fmt --all -- --check
 
   # ------------------------------------------------------------------ heavy jobs
@@ -131,8 +138,8 @@ jobs:
   # path separators, case-insensitive macOS filesystem). With a warm cache Windows/macOS take ~3 min.
   quality:
     name: Rust (${{ matrix.os }})
-    needs: changes
-    if: needs.changes.outputs.rust == 'true'
+    needs: preflight
+    if: needs.preflight.outputs.rust == 'true'
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -183,8 +190,8 @@ jobs:
   # glibc, fontconfig and freetype differ (they affect raster export).
   fedora:
     name: Rust (Fedora)
-    needs: changes
-    if: needs.changes.outputs.rust == 'true'
+    needs: preflight
+    if: needs.preflight.outputs.rust == 'true'
     runs-on: ubuntu-latest
     container:
       image: fedora:latest
@@ -231,8 +238,8 @@ jobs:
   # runs here.
   web:
     name: Web (canvas-web, CLI bundle and VS Code extension)
-    needs: changes
-    if: needs.changes.outputs.web == 'true'
+    needs: preflight
+    if: needs.preflight.outputs.web == 'true'
     runs-on: ubuntu-latest
 
     steps:
@@ -318,31 +325,6 @@ jobs:
       - name: Check for unreferenced build outputs
         run: ./scripts/check-web-assets.sh
 
-  scripts:
-    name: Scripts and workflows
-    needs: changes
-    if: needs.changes.outputs.scripts == 'true'
-    runs-on: ubuntu-latest
-
-    steps:
-      - name: Checkout
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-
-      - name: Workflow actions pinned by SHA
-        run: |
-          ./scripts/check-workflow-pins.sh --self-test
-          ./scripts/check-workflow-pins.sh
-
-      - name: Frontend dependencies with exact versions
-        run: |
-          ./scripts/check-npm-pins.sh --self-test
-          ./scripts/check-npm-pins.sh
-
-      - name: Build and install script tests
-        run: |
-          ./scripts/check-web-assets.sh --self-test
-          ./scripts/tests/install_test.sh
-
   # ------------------------------------------------------------------ gate and aggregator
   # PR develop -> main: the PR head is the same SHA already tested by the push to develop.
   # Instead of re-testing (cold cache, ~19 min), confirm that run passed. Never passes by omission.
@@ -384,7 +366,7 @@ jobs:
   ci-ok:
     name: CI ok
     if: always()
-    needs: [branch-name, changes, fmt, quality, fedora, web, scripts, gate]
+    needs: [preflight, quality, fedora, web, gate]
     runs-on: ubuntu-latest
     steps:
       - name: Aggregate results
