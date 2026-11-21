@@ -74,6 +74,9 @@ export function installDomStubs(): void {
     disconnect() {}
   }
   vi.stubGlobal('ResizeObserver', NoopResizeObserver);
+  // jsdom não implementa a Web Animations API que os efeitos do workbench consultam
+  Element.prototype.getAnimations = () => [];
+  Element.prototype.animate = (() => ({ cancel() {}, onfinish: null })) as unknown as Element['animate'];
 }
 
 export function mount(transport: HostTransport = fakeTransport(), wasm: WasmApi = fakeWasm()): {

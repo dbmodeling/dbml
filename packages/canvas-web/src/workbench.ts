@@ -231,6 +231,7 @@ export class Workbench {
   private destroyed = false;
   /** Algo além da câmera mudou desde o último quadro. */
   private fullDirty = false;
+  private announcedSelection = '';
   private styleEl: HTMLStyleElement | null = null;
   private resizeObserver: ResizeObserver | null = null;
 
@@ -274,16 +275,16 @@ export class Workbench {
     this.wb = document.createElement('div');
     this.wb.className = 'wb';
     this.wb.innerHTML = `
-      <div class="titlebar ui" id="titlebar"></div>
+      <div class="titlebar ui" id="titlebar" role="toolbar" aria-label="${t('Barra de título')}"></div>
       <div class="main">
-        <div class="rail left ui" id="rail-left"></div>
-        <div class="sidebar ui" id="sidebar"></div>
-        <div class="editor ui" id="editor">
+        <div class="rail left ui" id="rail-left" role="toolbar" aria-orientation="vertical" aria-label="${t('Painéis')}"></div>
+        <div class="sidebar ui" id="sidebar" role="region" aria-label="${t('Painel lateral')}"></div>
+        <div class="editor ui" id="editor" role="region" aria-label="${t('Editor DBML')}">
           <div class="eh" id="ed-head"></div>
           <div class="ebody"><div class="ebd" id="ebd"><div class="ebd-in" id="ebd-in"></div></div><textarea class="code" id="code" aria-label="DBML" spellcheck="false" wrap="off"></textarea></div>
         </div>
         <button type="button" class="panel-resize" data-resize="left"></button>
-        <div class="surface" id="surface" tabindex="0">
+        <div class="surface" id="surface" tabindex="0" role="region" aria-label="${t('Diagrama')}">
           <div class="world" id="world"></div>
           <div class="marquee" id="marquee"></div>
           <div class="empty" id="empty">
@@ -300,19 +301,20 @@ export class Workbench {
               </div>
             </div>
           </div>
-          <div class="island tools ui" id="tools"></div>
+          <div class="island tools ui" id="tools" role="toolbar" aria-label="${t('Ferramentas')}"></div>
           <div class="island zoomi ui" id="zoomi"></div>
           <div class="legend ui" id="legend"></div>
         </div>
         <button type="button" class="panel-resize" data-resize="right"></button>
-        <div class="inspector ui" id="inspector"></div>
+        <div class="inspector ui" id="inspector" role="region" aria-label="${t('Inspetor')}"></div>
       </div>
       <div class="status ui" id="status"></div>
-      <div class="toast" id="toast" role="status"></div>`;
+      <div class="toast" id="toast" role="status"></div>
+      <div class="sr-only" id="live" role="status" aria-live="polite" aria-atomic="true"></div>`;
     this.root.appendChild(this.wb);
     for (const id of [
       'titlebar', 'rail-left', 'sidebar', 'editor', 'surface', 'world', 'marquee', 'empty', 'tools', 'zoomi',
-      'legend', 'inspector', 'status', 'toast', 'code', 'ed-head', 'ebd', 'ebd-in',
+      'legend', 'inspector', 'status', 'toast', 'live', 'code', 'ed-head', 'ebd', 'ebd-in',
     ]) {
       this.els[id] = this.wb.querySelector('#' + id) as HTMLElement;
     }
@@ -1190,11 +1192,11 @@ export class Workbench {
         svg += `<path d="M ${p.x + CARD_W} ${ay} L ${d.now.x} ${d.now.y}" stroke="${g.accent}" stroke-width="2" stroke-dasharray="6 4" fill="none"/><circle cx="${d.now.x}" cy="${d.now.y}" r="5" fill="${g.accent}"/>`;
       }
     }
-    let html = `<svg class="edges">${svg}</svg>`;
+    let html = `<svg class="edges" aria-hidden="true">${svg}</svg>`;
     // molduras de grupo
     for (const gr of canvasGroups(sc.groups, this.schema, this.positions)) {
       const c = gr.color;
-      html += `<div class="group" style="left:${gr.x}px;top:${gr.y}px;width:${gr.w}px;height:${gr.h}px;border-color:${hexWithAlpha(c, dark ? 0.18 : 0.22)};background:${hexWithAlpha(c, dark ? 0.06 : 0.07)}">
+      html += `<div class="group" role="group" aria-label="${esc(translate('Grupo {}', gr.name))}" style="left:${gr.x}px;top:${gr.y}px;width:${gr.w}px;height:${gr.h}px;border-color:${hexWithAlpha(c, dark ? 0.18 : 0.22)};background:${hexWithAlpha(c, dark ? 0.06 : 0.07)}">
         <div class="gl" data-group="${esc(gr.name)}" style="color:${c}">${ICON('Layers', 13)}${esc(gr.name)}<span class="gpill" style="background:${hexWithAlpha(c, 0.14)}">${gr.count}</span></div></div>`;
     }
     // cartões
@@ -1226,16 +1228,18 @@ export class Workbench {
             c.not_null ? '<span class="badge">NN</span>' : '',
             c.unique ? '<span class="badge">UQ</span>' : '',
           ].join('');
-          return `<div class="row" data-col="${esc(c.name)}" data-table="${esc(qname)}"><div class="rail14">${ic}</div>
+          const rowLabel = [`${c.name}: ${c.ty}`, c.pk ? translate('chave primária') : '', isFk ? translate('chave estrangeira') : '', c.not_null ? translate('obrigatória') : '', c.unique ? translate('única') : ''].filter(Boolean).join(', ');
+          return `<div class="row" role="listitem" aria-label="${esc(rowLabel)}" data-col="${esc(c.name)}" data-table="${esc(qname)}"><div class="rail14">${ic}</div>
             <div class="cn ${c.pk ? 'pk' : ''}">${esc(c.name)}</div>${badges}<div class="ty">${esc(c.ty)}</div>
             <div class="port" data-port="1" data-table="${esc(qname)}" data-col="${esc(c.name)}"></div></div>`;
         })
         .join('');
       const schemaBadge = t.schema ? `<span class="sch">${esc(t.schema)}</span>` : '';
-      html += `<div class="card ${sel.has(qname) ? 'sel' : ''}" data-table="${esc(qname)}" style="left:${p.x}px;top:${p.y}px;height:${cardH(t.columns.length)}px">
+      const cardLabel = translate(t.columns.length === 1 ? 'Tabela {}, 1 coluna' : 'Tabela {}, {} colunas', qname, t.columns.length) + (sel.has(qname) ? `, ${translate('selecionada')}` : '');
+      html += `<div class="card ${sel.has(qname) ? 'sel' : ''}" role="group" tabindex="0" aria-label="${esc(cardLabel)}" data-table="${esc(qname)}" style="left:${p.x}px;top:${p.y}px;height:${cardH(t.columns.length)}px">
         <div class="head"><span style="color:${tint || g.accent};display:flex">${ICON('Table2', 14)}</span>
         <div class="nm">${esc(t.name)}</div>${schemaBadge}<div class="cnt">${t.columns.length}</div></div>
-        <div class="rows">${rows}</div>
+        <div class="rows" role="list">${rows}</div>
         <div class="plus" data-addcol="${esc(qname)}" title="${translate("Adicionar coluna")}">${ICON('Plus', 14)}</div></div>`;
     }
     // enums
@@ -1244,14 +1248,23 @@ export class Workbench {
       const on = this.selectedEnum === ev.name;
       const referencedBySelected = !on && ev.referenced_by.some((tb) => sel.has(tb));
       const valRows = ev.values.length
-        ? ev.values.map((v) => `<div class="ev"><span class="ev-ic">${ICON('Dot', 12)}</span>${esc(v)}</div>`).join('')
-        : `<div class="ev" style="color:var(--faint)">${translate("(vazio)")}</div>`;
-      html += `<div class="card enum-card ${on ? 'sel' : ''}" data-enum="${esc(ev.name)}" style="left:${p.x}px;top:${p.y}px;${referencedBySelected ? 'border-color:var(--accent);' : ''}">
+        ? ev.values.map((v) => `<div class="ev" role="listitem"><span class="ev-ic">${ICON('Dot', 12)}</span>${esc(v)}</div>`).join('')
+        : `<div class="ev" role="listitem" style="color:var(--faint)">${translate("(vazio)")}</div>`;
+      const enumLabel = translate(ev.values.length === 1 ? 'Enum {}, 1 valor' : 'Enum {}, {} valores', ev.name, ev.values.length) + (on ? `, ${translate('selecionada')}` : '');
+      html += `<div class="card enum-card ${on ? 'sel' : ''}" role="group" tabindex="0" aria-label="${esc(enumLabel)}" data-enum="${esc(ev.name)}" style="left:${p.x}px;top:${p.y}px;${referencedBySelected ? 'border-color:var(--accent);' : ''}">
         <div class="head"><span style="color:var(--accent);display:flex">${ICON('List', 14)}</span>
         <div class="nm">${esc(ev.name)}</div><span class="tag">ENUM</span></div>
-        <div class="rows">${valRows}</div></div>`;
+        <div class="rows" role="list">${valRows}</div></div>`;
     }
+    const focused = document.activeElement instanceof HTMLElement && w.contains(document.activeElement)
+      ? document.activeElement.closest<HTMLElement>('.card')
+      : null;
+    const focusKey = focused?.dataset.table !== undefined
+      ? `[data-table="${cssQ(focused.dataset.table)}"]`
+      : focused?.dataset.enum !== undefined ? `[data-enum="${cssQ(focused.dataset.enum)}"]` : null;
     w.innerHTML = html;
+    if (focusKey) w.querySelector<HTMLElement>(`.card${focusKey}`)?.focus({ preventScroll: true });
+    this.announceSelection();
     // cartões excluídos somem aos poucos (clones fora do fluxo de eventos)
     const now = performance.now();
     this.ghosts = this.ghosts.filter((gh) => now - gh.t0 < MOTION.base);
@@ -1262,6 +1275,23 @@ export class Workbench {
     }
     this.applyFx();
     this.drawMarquee();
+  }
+
+  /** Texto para leitores de tela (região `aria-live` polida); só repete se o texto mudar. */
+  private announce(msg: string): void {
+    const live = this.els['live'];
+    if (live && live.textContent !== msg) live.textContent = msg;
+  }
+
+  private announceSelection(): void {
+    const names = [...this.selection, ...(this.selectedEnum ? [this.selectedEnum] : [])];
+    const signature = names.join('\u0000');
+    if (signature === this.announcedSelection) return;
+    this.announcedSelection = signature;
+    if (!names.length) return;
+    this.announce(names.length === 1
+      ? translate('{} selecionada', names[0])
+      : translate('{} itens selecionados', names.length));
   }
 
   /** Só o retângulo: no arrasto do marquee não refaz o mundo (custava ~70ms/evento com 150 tabelas). */
@@ -1687,7 +1717,7 @@ export class Workbench {
           <div class="ident">
             <div class="tile" style="background:${hexWithAlpha(g.accent, 0.16)}"><span style="color:var(--accent);display:flex">${ICON('List', 15)}</span></div>
             <div class="id-col">
-              <input class="fld big" id="insp-name" data-edit="enum" data-enum="${esc(ev.name)}" data-orig="${esc(ev.name)}" value="${esc(ev.name)}">
+              <input class="fld big" id="insp-name" aria-label="${translate('Nome do enum')}" data-edit="enum" data-enum="${esc(ev.name)}" data-orig="${esc(ev.name)}" value="${esc(ev.name)}">
               <span class="isub">${translate('Enum · {} valores · F2 para renomear', ev.values.length)}</span>
             </div>
           </div>
@@ -1782,7 +1812,7 @@ export class Workbench {
         const icCol = c.pk ? 'var(--accent)' : isFk ? 'var(--link)' : 'var(--faint)';
         const marks = [c.not_null && 'NN', c.unique && 'UQ'].filter(Boolean).join(' ');
         const nameCell = open
-          ? `<input class="fld bare nmf" ${dt('colname', c.name, c.name, '')}>`
+          ? `<input class="fld bare nmf" aria-label="${translate('Nome da coluna')}" ${dt('colname', c.name, c.name, '')}>`
           : `<span class="cnm">${esc(c.name)}</span>`;
         const flags = (
           [
@@ -1800,7 +1830,7 @@ export class Workbench {
         const body = open
           ? `<div class="col-body">
               <span class="clbl">${translate("Tipo")}</span>
-              <div class="tywrap"><input class="fld tyf" ${dt('coltype', c.name, c.ty, '')}><span class="chev">${ICON('ChevronDown', 11)}</span></div>
+              <div class="tywrap"><input class="fld tyf" aria-label="${translate('Tipo')}" ${dt('coltype', c.name, c.ty, '')}><span class="chev">${ICON('ChevronDown', 11)}</span></div>
               <span class="clbl">Flags</span>
               <div class="flags">${flags}</div>
               <span class="clbl">${translate("Padrão")}</span>
@@ -1813,7 +1843,7 @@ export class Workbench {
             </div>`
           : '';
         return `<div class="colcard ${open ? 'open' : ''}">
-          <div class="col-top" role="button" tabindex="0" aria-expanded="${open}" data-act="toggle-col" data-col="${esc(c.name)}">
+          <div class="col-top" ${open ? 'role="group"' : 'role="button" aria-expanded="false"'} tabindex="0" data-act="toggle-col" data-col="${esc(c.name)}">
             <span style="color:var(--faint);display:flex">${ICON('GripVertical', 12)}</span>
             <span style="width:14px;display:flex;justify-content:center;color:${icCol};flex:none">${ICON(icName, 12)}</span>
             ${nameCell}
@@ -1885,7 +1915,7 @@ export class Workbench {
       <div class="ident">
         <div class="tile" style="background:${hexWithAlpha(tileCol, 0.16)}"><span style="color:${tileCol};display:flex">${ICON('Table2', 15)}</span></div>
         <div class="id-col">
-          <input class="fld big" id="insp-name" data-edit="table" data-table="${esc(tq)}" data-orig="${esc(tq)}" value="${esc(tq)}">
+          <input class="fld big" id="insp-name" aria-label="${translate('Nome da tabela')}" data-edit="table" data-table="${esc(tq)}" data-orig="${esc(tq)}" value="${esc(tq)}">
           <span class="isub">${translate('Tabela · {} · F2 para renomear', grp ? esc(grp.name) : translate('sem grupo'))}</span>
         </div>
       </div>
@@ -3511,6 +3541,45 @@ export class Workbench {
     this.scheduleRender();
   }
 
+  /** Teclado no cartão focado: Enter seleciona; setas movem (Shift = 1px, senão 8px). */
+  private cardKey(card: HTMLElement, e: KeyboardEvent): boolean {
+    const table = card.dataset.table;
+    const enumName = card.dataset.enum;
+    if (e.key === 'Enter' && table !== undefined) {
+      this.selection = [table];
+      this.selectedEnum = null;
+      this.selectedRef = null;
+      this.top = table;
+      this.scheduleRender();
+      return true;
+    }
+    const arrows: Record<string, Pt> = {
+      ArrowLeft: { x: -1, y: 0 }, ArrowRight: { x: 1, y: 0 }, ArrowUp: { x: 0, y: -1 }, ArrowDown: { x: 0, y: 1 },
+    };
+    const dir = arrows[e.key];
+    if (!dir || (table === undefined && enumName === undefined)) return false;
+    const step = e.shiftKey ? 1 : 8;
+    const keys = table !== undefined
+      ? (this.selection.includes(table) ? this.selection : [table])
+      : [`enum:${enumName}`];
+    if (table !== undefined && !this.selection.includes(table)) {
+      this.selection = [table];
+      this.selectedEnum = null;
+      this.selectedRef = null;
+    }
+    this.pushHistory();
+    for (const k of keys) {
+      const p = this.positions[k];
+      if (p) { p.x += dir.x * step; p.y += dir.y * step; }
+    }
+    this.recomputeEdges();
+    this.queueSaveLayout();
+    this.scheduleRender();
+    const p = this.positions[keys[0]];
+    if (p) this.announce(translate('{} movida para x {}, y {}', keys.length > 1 ? translate('{} itens', keys.length) : keys[0].replace(/^enum:/, ''), Math.round(p.x), Math.round(p.y)));
+    return true;
+  }
+
   private keyOf(e: KeyboardEvent): string {
     let k = e.key.toLowerCase();
     if (e.code.startsWith('Digit')) k = e.code.slice(5);
@@ -3539,6 +3608,13 @@ export class Workbench {
       this.moveEdge(e.key === 'ArrowLeft' ? -step : e.key === 'ArrowRight' ? step : 0, e.key === 'ArrowUp' ? -step : e.key === 'ArrowDown' ? step : 0);
       this.queueSaveLayout();
       this.scheduleRender();
+      e.preventDefault();
+      return;
+    }
+    const focusedCard = !typing && !e.ctrlKey && !e.metaKey && !e.altKey && !this.shortcutsOpen
+      ? ae?.closest<HTMLElement>('.card') ?? null
+      : null;
+    if (focusedCard && this.cardKey(focusedCard, e)) {
       e.preventDefault();
       return;
     }

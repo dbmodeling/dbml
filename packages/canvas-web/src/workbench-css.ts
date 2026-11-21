@@ -17,6 +17,7 @@ export const WORKBENCH_CSS = `${FONT_FACE_CSS}
 .wb :is(button, input, textarea, [tabindex]):focus-visible:not(:disabled) { outline: 2px solid var(--accent); outline-offset: -2px; }
 .wb input, .wb textarea { font: inherit; color: var(--text); }
 .wb svg { flex-shrink: 0; }
+.wb .sr-only { position: absolute; width: 1px; height: 1px; margin: -1px; padding: 0; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0; }
 .wb .ui { zoom: var(--ui, 1); }
 .wb .mono { font-family: var(--mono); }
 .wb .grow { flex: 1; }
