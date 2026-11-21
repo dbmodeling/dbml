@@ -5,7 +5,7 @@ use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
-use tokio::sync::{RwLock, broadcast};
+use tokio::sync::{OwnedRwLockWriteGuard, RwLock, broadcast};
 
 static TMP_SEQ: AtomicU64 = AtomicU64::new(0);
 
@@ -81,6 +81,19 @@ pub fn patch_text(
     }
     current.replace_range(start..end, text);
     Ok(current)
+}
+
+/// Executa `work` em uma task própria e espera o resultado. Se quem chamou for cancelado (por
+/// exemplo, o `abort` da task do socket ao fechar a conexão), a gravação em andamento termina
+/// por inteiro em vez de parar no meio entre o arquivo temporário e o rename.
+async fn detach<T, F>(work: F) -> anyhow::Result<T>
+where
+    T: Send + 'static,
+    F: std::future::Future<Output = anyhow::Result<T>> + Send + 'static,
+{
+    tokio::spawn(work)
+        .await
+        .map_err(|e| anyhow::anyhow!("write task failed: {e}"))?
 }
 
 /// Estado do documento ativo. Todos os campos mudam juntos sob um único lock
@@ -343,11 +356,20 @@ impl AppState {
         end: usize,
         new_text: &str,
     ) -> anyhow::Result<()> {
-        let mut doc = self.doc.write().await;
-        Self::ensure_active(&doc, expected_file)?;
-        let current = tokio::fs::read_to_string(&doc.file_path).await?;
-        let updated = patch_text(current, expected_source, start, end, new_text)?;
-        Self::persist(&mut doc, updated).await
+        let doc = self.write_doc().await;
+        let (expected_file, expected_source, new_text) = (
+            expected_file.to_owned(),
+            expected_source.to_owned(),
+            new_text.to_owned(),
+        );
+        detach(async move {
+            let mut doc = doc;
+            Self::ensure_active(&doc, &expected_file)?;
+            let current = tokio::fs::read_to_string(&doc.file_path).await?;
+            let updated = patch_text(current, &expected_source, start, end, &new_text)?;
+            Self::persist(&mut doc, updated).await
+        })
+        .await
     }
 
     /// Confere que o arquivo em disco ainda é `expected_source` (o botão "salvar" do front).
@@ -374,8 +396,16 @@ impl AppState {
     ///
     /// Returns an error if the atomic write fails.
     pub async fn save_content(&self, new_content: String) -> anyhow::Result<()> {
-        let mut doc = self.doc.write().await;
-        Self::persist(&mut doc, new_content).await
+        let doc = self.write_doc().await;
+        detach(async move {
+            let mut doc = doc;
+            Self::persist(&mut doc, new_content).await
+        })
+        .await
+    }
+
+    async fn write_doc(&self) -> OwnedRwLockWriteGuard<DocState> {
+        Arc::clone(&self.doc).write_owned().await
     }
 
     async fn persist(doc: &mut DocState, new_content: String) -> anyhow::Result<()> {
@@ -391,7 +421,15 @@ impl AppState {
     ///
     /// Returns an error if the atomic write fails.
     pub async fn save_layout(&self, layout_json: String) -> anyhow::Result<()> {
-        let mut doc = self.doc.write().await;
+        let doc = self.write_doc().await;
+        detach(async move {
+            let mut doc = doc;
+            Self::persist_layout(&mut doc, layout_json).await
+        })
+        .await
+    }
+
+    async fn persist_layout(doc: &mut DocState, layout_json: String) -> anyhow::Result<()> {
         atomic_write(&doc.layout_path, &layout_json).await?;
         doc.layout = Some(layout_json);
         Ok(())
@@ -407,11 +445,14 @@ impl AppState {
         expected_file: &str,
         layout_json: String,
     ) -> anyhow::Result<()> {
-        let mut doc = self.doc.write().await;
-        Self::ensure_active(&doc, expected_file)?;
-        atomic_write(&doc.layout_path, &layout_json).await?;
-        doc.layout = Some(layout_json);
-        Ok(())
+        let doc = self.write_doc().await;
+        let expected_file = expected_file.to_owned();
+        detach(async move {
+            let mut doc = doc;
+            Self::ensure_active(&doc, &expected_file)?;
+            Self::persist_layout(&mut doc, layout_json).await
+        })
+        .await
     }
 }
 

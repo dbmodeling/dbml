@@ -125,6 +125,74 @@ async fn switch_file_and_save_content_never_mix_documents() {
 }
 
 #[tokio::test]
+async fn failed_write_leaves_memory_and_hash_untouched() {
+    let dir = std::env::temp_dir().join(format!("dbml_write_fail_{}", std::process::id()));
+    let _ = tokio::fs::remove_dir_all(&dir).await;
+    tokio::fs::create_dir_all(&dir).await.unwrap();
+    let file = dir.join("schema.dbml");
+    tokio::fs::write(&file, "Table a { id int }\n")
+        .await
+        .unwrap();
+    let state = dbml_cli::state::AppState::new(file).await.unwrap();
+    let before = state.doc.read().await.clone();
+
+    // Simula falha de gravação: a pasta do documento some.
+    tokio::fs::remove_dir_all(&dir).await.unwrap();
+    assert!(
+        state
+            .save_content("Table z { id int }\n".into())
+            .await
+            .is_err()
+    );
+    assert!(state.save_layout("{}".into()).await.is_err());
+
+    let after = state.doc.read().await.clone();
+    assert_eq!(after.content, before.content);
+    assert_eq!(after.last_saved_hash, before.last_saved_hash);
+    assert_eq!(after.layout, before.layout);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn cancelling_the_caller_does_not_abort_a_write() {
+    let dir = std::env::temp_dir().join(format!("dbml_write_cancel_{}", std::process::id()));
+    let _ = tokio::fs::remove_dir_all(&dir).await;
+    tokio::fs::create_dir_all(&dir).await.unwrap();
+    let file = dir.join("schema.dbml");
+    tokio::fs::write(&file, "Table a { id int }\n")
+        .await
+        .unwrap();
+    let state = dbml_cli::state::AppState::new(file.clone()).await.unwrap();
+
+    for i in 0..50 {
+        let task = {
+            let state = state.clone();
+            tokio::spawn(async move {
+                let _ = state
+                    .save_content(format!("Table t{i} {{ id int }}\n"))
+                    .await;
+            })
+        };
+        tokio::task::yield_now().await;
+        task.abort();
+        let _ = task.await;
+        // A escrita é concluída por inteiro mesmo com o chamador cancelado.
+        let doc = state.doc.read().await.clone();
+        let on_disk = tokio::fs::read_to_string(&file).await.unwrap();
+        assert_eq!(on_disk, doc.content);
+        assert_eq!(doc.last_saved_hash, dbml_cli::state::compute_hash(&on_disk));
+    }
+    let mut leftovers = 0;
+    let mut entries = tokio::fs::read_dir(&dir).await.unwrap();
+    while let Some(e) = entries.next_entry().await.unwrap() {
+        if e.file_name().to_string_lossy().contains(".tmp-") {
+            leftovers += 1;
+        }
+    }
+    assert_eq!(leftovers, 0, "sobrou arquivo temporário");
+    let _ = tokio::fs::remove_dir_all(&dir).await;
+}
+
+#[tokio::test]
 async fn concurrent_patches_never_lose_an_edit() {
     let dir = std::env::temp_dir().join(format!("dbml_patch_race_{}", std::process::id()));
     let _ = tokio::fs::remove_dir_all(&dir).await;
