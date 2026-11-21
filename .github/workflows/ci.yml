@@ -186,54 +186,6 @@ jobs:
       - name: Test suite (cargo test)
         run: cargo test --locked --workspace
 
-  # Same rustc and target as Ubuntu, so clippy would be identical. Tests stay because Fedora's
-  # glibc, fontconfig and freetype differ (they affect raster export).
-  fedora:
-    name: Rust (Fedora)
-    needs: preflight
-    if: needs.preflight.outputs.rust == 'true'
-    runs-on: ubuntu-latest
-    container:
-      image: fedora:latest
-
-    steps:
-      - name: Install native dependencies (Fedora / GPUI / Wayland / Vulkan / X11 / Fontconfig)
-        run: |
-          dnf install -y \
-            git \
-            curl \
-            tar \
-            gcc \
-            gcc-c++ \
-            pkg-config \
-            fontconfig-devel \
-            freetype-devel \
-            alsa-lib-devel \
-            libxkbcommon-devel \
-            libxkbcommon-x11-devel \
-            vulkan-loader-devel \
-            wayland-devel \
-            libX11-devel \
-            libxcb-devel \
-            openssl-devel
-
-      - name: Checkout
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@39008827e6b4319a349e9a42dfc90579dd25f1ca # stable
-        with:
-          toolchain: ${{ env.RUST_TOOLCHAIN }}
-
-      - name: Rust build cache
-        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
-        with:
-          shared-key: "workspace-ci-fedora"
-          save-if: ${{ github.ref == 'refs/heads/develop' }}
-
-      - name: Test suite (cargo test)
-        run: cargo test --locked --workspace
-
   # Also covers dbml-wasm: build-web-assets.sh builds the Wasm (release) and the wasm32 clippy
   # runs here.
   web:
@@ -366,7 +318,7 @@ jobs:
   ci-ok:
     name: CI ok
     if: always()
-    needs: [preflight, quality, fedora, web, gate]
+    needs: [preflight, quality, web, gate]
     runs-on: ubuntu-latest
     steps:
       - name: Aggregate results

@@ -100,10 +100,11 @@ Each commit runs the full suite once before other work builds on it, and the gat
 | :--- | :--- |
 | Push to a work branch (no PR) | Nothing. Run the checks below locally. |
 | Draft PR | Light checks only (branch name, `cargo fmt`). |
-| PR into `develop` | Full suite, only for the areas changed (Rust / Web / scripts). |
+| PR into `develop` | Preflight first (branch name, paths, `cargo fmt`, script checks), then clippy + tests on Ubuntu, Windows and macOS and the Web job, only for the areas changed. |
 | Merge (push) into `develop` | Full suite, unfiltered. **This is the only run that saves the build cache.** |
 | PR `develop → main` | No re-run: the `gate` job requires the push run of the same commit on `develop` to have passed. |
 | PR `release/*`, `hotfix/*`, `dependabot/*` → `main` | Full suite. |
+| Every Monday (and on demand) | `Fedora (weekly)`: the test suite on `develop` inside a Fedora container. It is not part of per-commit CI because it shares the Ubuntu rustc and target; only the system libraries differ. |
 
 Why PRs never save cache: GitHub scopes a PR's cache to its merge ref, so no other run can restore
 it. It only fills the 10 GB repository quota and evicts the `develop` cache. Without the cache,
