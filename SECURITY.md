@@ -2,11 +2,9 @@
 
 ## Code Signing
 
-Free code signing for official Windows releases is provided by [SignPath.io](https://about.signpath.io/), using a certificate by the [SignPath Foundation](https://signpath.org/).
+**Current status:** Official Windows, macOS, and Linux release binaries are currently **unsigned** and are not planned to be code-signed in the near term. Verify downloads using the published `SHA256SUMS.txt` checksums (see below).
 
-### What the pipeline signs
-
-`release.yml` signs official artifacts when the signing credentials are configured in the repository, and fails the job if signing is configured but fails:
+The release pipeline ([`.github/workflows/release.yml`](.github/workflows/release.yml)) already includes optional signing hooks (SignPath for Windows and `codesign`/notarization for macOS) for future use when certificates are configured, and fails the job if signing is configured or `SIGNING_REQUIRED=true` is set and signing fails:
 
 | Platform | Mechanism | Configuration (repository settings) |
 | :--- | :--- | :--- |
