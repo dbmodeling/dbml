@@ -3,6 +3,7 @@ import { base64ToBytes } from './base64.js';
 import type { CliHost } from './cliHost.js';
 import { getTrustedCliPath } from './cliPath.js';
 import { parseWebviewMessage, type WebviewMessage } from './messages.js';
+import { sanitizeSession } from './session.js';
 import { isAllowedDbmlUri } from './uriPolicy.js';
 import { byPath, displayPath, findDbmlFiles } from './workspaceFiles.js';
 
@@ -106,7 +107,7 @@ export class DbmlCustomEditorProvider implements vscode.CustomTextEditorProvider
         layout: withLayout ? layoutData : undefined,
         title: title(),
         files,
-        session: withLayout ? this.context.workspaceState.get(sessionKey) : undefined,
+        session: withLayout ? sanitizeSession(this.context.workspaceState.get(sessionKey)) : undefined,
       });
     };
 
@@ -271,7 +272,7 @@ export class DbmlCustomEditorProvider implements vscode.CustomTextEditorProvider
             break;
           }
           case 'save_session': {
-            await this.context.workspaceState.update(sessionKey, message.session);
+            await this.context.workspaceState.update(sessionKey, sanitizeSession(message.session));
             break;
           }
           case 'ready': {

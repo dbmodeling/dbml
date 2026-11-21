@@ -104,6 +104,50 @@ describe('validação das mensagens da Webview', () => {
   });
 });
 
+describe('restauração do estado do canvas', () => {
+  const session = { pane: 'schema', editorOpen: false, zoom: 1.25, pan: { x: 40, y: -12 } };
+
+  it('save_session persiste e o próximo "ready" devolve a sessão (reabrir/recarregar a janela)', async () => {
+    const first = await openEditor(DbmlCustomEditorProvider);
+    await first.send({ command: 'save_session', session });
+    // janela recarregada: provider, documento e webview novos; workspaceState sobrevive
+    const second = await openEditor(DbmlCustomEditorProvider, { reuse: first });
+    await second.send({ command: 'ready' });
+    expect(second.posted.find((m) => m.type === 'update').session).toEqual(session);
+  });
+
+  it('webview recriada (aba volta a ficar visível) recebe de novo texto, layout e sessão', async () => {
+    mockState.files.set(
+      'file:///ws/schema.dbml.layout.json',
+      new TextEncoder().encode(JSON.stringify({ positions: { a: { x: 5, y: 6 } } }))
+    );
+    const h = await openEditor(DbmlCustomEditorProvider);
+    await h.send({ command: 'save_session', session });
+    await h.send({ command: 'ready' });
+    h.posted.length = 0;
+    await h.send({ command: 'ready' }); // nova webview montada no mesmo painel
+    const update = h.posted.find((m) => m.type === 'update');
+    expect(update.session).toEqual(session);
+    expect(update.layout).toEqual({ positions: { a: { x: 5, y: 6 } } });
+    expect(update.source).toBe(h.document.getText());
+  });
+
+  it('sessão com valores inválidos é saneada antes de persistir', async () => {
+    const h = await openEditor(DbmlCustomEditorProvider);
+    await h.send({ command: 'save_session', session: { zoom: 'grande', pan: { x: 1 }, pane: 'schema' } });
+    await h.send({ command: 'ready' });
+    expect(h.posted.find((m) => m.type === 'update').session).toEqual({ pane: 'schema' });
+  });
+
+  it('sessão de um documento não vaza para outro', async () => {
+    const a = await openEditor(DbmlCustomEditorProvider, { uri: Uri.file('/ws/a.dbml') });
+    await a.send({ command: 'save_session', session });
+    const b = await openEditor(DbmlCustomEditorProvider, { uri: Uri.file('/ws/b.dbml'), reuse: a });
+    await b.send({ command: 'ready' });
+    expect(b.posted.find((m) => m.type === 'update').session).toBeUndefined();
+  });
+});
+
 describe('falhas de gravação visíveis ao usuário', () => {
   const layout = { positions: { a: { x: 1, y: 2 } } };
 

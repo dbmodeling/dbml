@@ -43,13 +43,13 @@ export function fakeDocument(uri: Uri, text: string): FakeDocument {
   };
 }
 
-export function fakeContext(): {
+export function fakeContext(shared?: { workspaceState?: Map<string, unknown>; globalState?: Map<string, unknown> }): {
   context: vscode.ExtensionContext;
   workspaceState: Map<string, unknown>;
   globalState: Map<string, unknown>;
 } {
-  const workspaceState = new Map<string, unknown>();
-  const globalState = new Map<string, unknown>();
+  const workspaceState = shared?.workspaceState ?? new Map<string, unknown>();
+  const globalState = shared?.globalState ?? new Map<string, unknown>();
   const store = (m: Map<string, unknown>) => ({
     get: (k: string, d?: unknown) => (m.has(k) ? m.get(k) : d),
     update: async (k: string, v: unknown) => void (v === undefined ? m.delete(k) : m.set(k, v)),
@@ -67,9 +67,10 @@ export function fakeContext(): {
 /** Monta provider + documento + painel falsos e já resolve o editor (equivale a abrir o `.dbml`). */
 export async function openEditor(
   Provider: typeof import('../customEditor.js').DbmlCustomEditorProvider,
-  opts: { text?: string; uri?: Uri; cli?: CliHost } = {}
+  opts: { text?: string; uri?: Uri; cli?: CliHost; reuse?: Harness } = {}
 ): Promise<Harness> {
-  const { context, workspaceState, globalState } = fakeContext();
+  // `reuse` simula recarregar a janela: o estado do workspace sobrevive, o resto é novo.
+  const { context, workspaceState, globalState } = fakeContext(opts.reuse);
   const document = fakeDocument(opts.uri ?? Uri.file('/ws/schema.dbml'), opts.text ?? 'Table a {\n  id int\n}\n');
   const posted: any[] = [];
   let receive: (m: unknown) => void = () => {};
