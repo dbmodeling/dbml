@@ -12,6 +12,22 @@ describe('manifesto da extensão', () => {
     expect(events.includes('*')).toBe(false);
   });
 
+  it('o editor customizado não assume todo .dbml (priority option)', () => {
+    expect(manifest.contributes.customEditors[0].priority).toBe('option');
+  });
+
+  it('expõe dbmodeling.defaultEditor (text|canvas) com padrão text, só no nível do usuário', () => {
+    const prop = manifest.contributes.configuration.properties['dbmodeling.defaultEditor'];
+    expect(prop.enum).toEqual(['text', 'canvas']);
+    expect(prop.default).toBe('text');
+    expect(prop.scope).toBe('application');
+  });
+
+  it('há botão na barra de título para abrir o canvas', () => {
+    const item = manifest.contributes.menus['editor/title'].find((m: { command: string }) => m.command === 'dbmodeling.openCanvas');
+    expect(item?.when).toContain('.dbml');
+  });
+
   it('a versão mínima do VS Code suporta eventos de ativação implícitos (>= 1.74)', () => {
     const [major, minor] = String(manifest.engines.vscode).replace(/^[^\d]*/, '').split('.').map(Number);
     expect(major > 1 || minor >= 74).toBe(true);

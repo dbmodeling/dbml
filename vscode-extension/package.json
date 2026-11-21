@@ -32,6 +32,17 @@
     "configuration": {
       "title": "DB Modeling",
       "properties": {
+        "dbmodeling.defaultEditor": {
+          "type": "string",
+          "enum": ["text", "canvas"],
+          "enumDescriptions": [
+            "Abre .dbml no editor de texto (diffs e conflitos do Source Control continuam em texto). Use o botão da barra de título para abrir o canvas.",
+            "Abre .dbml no canvas visual por padrão (grava workbench.editorAssociations nas configurações do usuário)."
+          ],
+          "default": "text",
+          "scope": "application",
+          "description": "Editor padrão para arquivos .dbml."
+        },
         "dbmodeling.cliPath": {
           "type": "string",
           "default": "dbml",
@@ -81,7 +92,7 @@
             "filenamePattern": "*.dbml"
           }
         ],
-        "priority": "default"
+        "priority": "option"
       }
     ],
     "commands": [

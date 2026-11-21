@@ -1,5 +1,6 @@
 import * as vscode from 'vscode';
 import { DbmlCustomEditorProvider } from './customEditor.js';
+import { syncDefaultEditor } from './editorAssociation.js';
 
 /** Árvore de arquivos `.dbml` do workspace exibida na Activity Bar. */
 class DbmlWorkspaceTreeProvider implements vscode.TreeDataProvider<vscode.Uri> {
@@ -80,6 +81,14 @@ export function activate(context: vscode.ExtensionContext): void {
   const diagnostics = vscode.languages.createDiagnosticCollection('dbml');
   context.subscriptions.push(diagnostics);
   context.subscriptions.push(DbmlCustomEditorProvider.register(context, diagnostics));
+
+  // `dbmodeling.defaultEditor` → workbench.editorAssociations (o editor customizado tem priority "option")
+  void syncDefaultEditor();
+  context.subscriptions.push(
+    vscode.workspace.onDidChangeConfiguration((e) => {
+      if (e.affectsConfiguration('dbmodeling.defaultEditor')) void syncDefaultEditor();
+    })
+  );
 
   // Árvore na Activity Bar (ícone do DB Modeling na barra lateral esquerda)
   const tree = new DbmlWorkspaceTreeProvider();
