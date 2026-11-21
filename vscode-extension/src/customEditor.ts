@@ -98,10 +98,11 @@ export class DbmlCustomEditorProvider implements vscode.CustomTextEditorProvider
             : '';
         } catch { /* The host still reports its dirty state. */ }
       }
-      lastPosted = { source: document.getText(), saved: !document.isDirty };
+      lastPosted = { source: document.getText(), saved: !document.isDirty, version: document.version };
       webview.postMessage({
         type: 'update',
         documentId,
+        version: document.version,
         saved: !document.isDirty,
         savedSource,
         autosave: !document.isUntitled,
@@ -117,14 +118,17 @@ export class DbmlCustomEditorProvider implements vscode.CustomTextEditorProvider
     // O Workbench ignora o eco quando o texto já é idêntico ao que ele aplicou. Atualizações levam só texto/estado
     // (a lista de arquivos só é recalculada em criar/excluir/renomear) e são puladas quando nada mudou ou a
     // aba está oculta (ao reaparecer, o 'ready' reenvia tudo).
-    let lastPosted: { source: string; saved: boolean } | null = null;
-    const postTextUpdate = (extra: Record<string, unknown> = {}) => {
-      if (!webviewPanel.visible) return;
+    // `version` (document.version) também conta: texto igual com versão nova (digitou e desfez) precisa
+    // chegar à Webview, senão o próximo patch dela sairia com a versão velha e seria rejeitado.
+    let lastPosted: { source: string; saved: boolean; version: number } | null = null;
+    const postTextUpdate = (extra: Record<string, unknown> = {}, force = false) => {
+      if (!force && !webviewPanel.visible) return;
       const source = document.getText();
       const saved = !document.isDirty;
-      if (lastPosted && lastPosted.source === source && lastPosted.saved === saved) return;
-      lastPosted = { source, saved };
-      void webview.postMessage({ type: 'update', source, documentId, saved, ...extra });
+      const version = document.version;
+      if (!force && lastPosted && lastPosted.source === source && lastPosted.saved === saved && lastPosted.version === version) return;
+      lastPosted = { source, saved, version };
+      void webview.postMessage({ type: 'update', source, documentId, saved, version, ...extra });
     };
     let changeTimer: ReturnType<typeof setTimeout> | null = null;
     const changeSub = vscode.workspace.onDidChangeTextDocument((e) => {
@@ -157,11 +161,18 @@ export class DbmlCustomEditorProvider implements vscode.CustomTextEditorProvider
       void vscode.window.showWarningMessage(text);
     };
 
+    /** Patch/salvamento calculado sobre uma versão que já passou: nada é aplicado; a Webview recebe o estado atual. */
+    const rejectStale = (baseVersion: number): never => {
+      postTextUpdate({ title: title() }, true);
+      throw new Error(`Document version changed (webview has ${baseVersion}, current is ${document.version}); state resynced, reapply your change`);
+    };
+
     const handleMessage = async (message: WebviewMessage) => {
       try {
         switch (message.command) {
           case 'apply_patch': {
             const patch = message.patch;
+            if (message.base_version !== document.version) rejectStale(message.base_version);
             if (patch.expected_source !== document.getText()) throw new Error('Document changed outside this editor; reload or reconcile changes');
             const range = new vscode.Range(
               new vscode.Position(patch.range.start.line, patch.range.start.character),
@@ -177,6 +188,7 @@ export class DbmlCustomEditorProvider implements vscode.CustomTextEditorProvider
             break;
           }
           case 'save_document': {
+            if (message.base_version !== document.version) rejectStale(message.base_version);
             if (message.expected_source !== document.getText()) throw new Error('Document changed outside this editor; reload or reconcile changes');
             if (!await document.save()) throw new Error('Could not save document');
             break;
@@ -292,7 +304,9 @@ export class DbmlCustomEditorProvider implements vscode.CustomTextEditorProvider
           }
         }
         if (message.id != null && ['apply_patch', 'save_document', 'save_layout', 'open_file', 'check_cli', 'export_file'].includes(message.command)) {
-          await webview.postMessage({ type: 'result', id: message.id });
+          // Patch e salvamento confirmam com a versão resultante (a Webview a usa no próximo patch).
+          const versioned = message.command === 'apply_patch' || message.command === 'save_document';
+          await webview.postMessage(versioned ? { type: 'result', id: message.id, version: document.version } : { type: 'result', id: message.id });
         }
       } catch (err) {
         if (message.id != null) await webview.postMessage({ type: 'result', id: message.id, error: err instanceof Error ? err.message : String(err) });

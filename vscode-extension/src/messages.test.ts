@@ -44,24 +44,31 @@ describe('parseWebviewMessage', () => {
   describe('apply_patch', () => {
     const patch = { range, new_text: 'x', expected_source: 'abc' };
     it('aceita patch válido', () => {
-      expect(ok({ command: 'apply_patch', id: 1, patch })).toMatchObject({ command: 'apply_patch', patch });
+      expect(ok({ command: 'apply_patch', id: 1, base_version: 4, patch })).toMatchObject({ command: 'apply_patch', base_version: 4, patch });
+    });
+    it('exige base_version inteiro não negativo', () => {
+      for (const base_version of [undefined, -1, 1.5, '3', null]) {
+        expect(bad({ command: 'apply_patch', id: 1, base_version, patch }).reason).toMatch(/base_version/);
+      }
     });
     it('rejeita patch malformado e preserva o id para resposta de erro', () => {
-      const r = bad({ command: 'apply_patch', id: 3, patch: { ...patch, new_text: 5 } });
+      const r = bad({ command: 'apply_patch', id: 3, base_version: 1, patch: { ...patch, new_text: 5 } });
       expect(r.id).toBe(3);
-      bad({ command: 'apply_patch', patch: null });
-      bad({ command: 'apply_patch', patch: { ...patch, expected_source: undefined } });
-      bad({ command: 'apply_patch', patch: { ...patch, range: { start: pos(-1, 0), end: pos(0, 0) } } });
-      bad({ command: 'apply_patch', patch: { ...patch, range: { start: pos(0, 1.5), end: pos(0, 2) } } });
-      bad({ command: 'apply_patch', patch: { ...patch, range: { start: pos(0, 0) } } });
+      bad({ command: 'apply_patch', base_version: 1, patch: null });
+      bad({ command: 'apply_patch', base_version: 1, patch: { ...patch, expected_source: undefined } });
+      bad({ command: 'apply_patch', base_version: 1, patch: { ...patch, range: { start: pos(-1, 0), end: pos(0, 0) } } });
+      bad({ command: 'apply_patch', base_version: 1, patch: { ...patch, range: { start: pos(0, 1.5), end: pos(0, 2) } } });
+      bad({ command: 'apply_patch', base_version: 1, patch: { ...patch, range: { start: pos(0, 0) } } });
     });
   });
 
   describe('save_document', () => {
-    it('exige expected_source string', () => {
-      ok({ command: 'save_document', expected_source: '' });
-      bad({ command: 'save_document' });
-      bad({ command: 'save_document', expected_source: 1 });
+    it('exige expected_source string e base_version', () => {
+      ok({ command: 'save_document', base_version: 1, expected_source: '' });
+      bad({ command: 'save_document', base_version: 1 });
+      bad({ command: 'save_document', base_version: 1, expected_source: 1 });
+      bad({ command: 'save_document', expected_source: '' });
+      bad({ command: 'save_document', base_version: -2, expected_source: '' });
     });
   });
 

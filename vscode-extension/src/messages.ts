@@ -25,8 +25,8 @@ export interface DiagnosticMessage {
 
 export type WebviewMessage =
   | { command: 'ready' | 'new_file' | 'check_cli'; id?: number }
-  | { command: 'apply_patch'; id?: number; patch: PatchMessage }
-  | { command: 'save_document'; id?: number; expected_source: string }
+  | { command: 'apply_patch'; id?: number; base_version: number; patch: PatchMessage }
+  | { command: 'save_document'; id?: number; base_version: number; expected_source: string }
   | { command: 'save_layout'; id?: number; layout: Record<string, unknown> }
   | { command: 'diagnostics'; id?: number; diagnostics: DiagnosticMessage[] }
   | { command: 'export_file'; id?: number; filename: string; content: string; isBinary: boolean }
@@ -94,10 +94,14 @@ export function parseWebviewMessage(raw: unknown): ParseResult {
     case 'check_cli':
       return { ok: true, message: { command, id } };
     case 'apply_patch':
-      return isPatch(raw.patch) ? { ok: true, message: { command, id, patch: raw.patch } } : invalid('invalid patch');
+      if (!isIndex(raw.base_version)) return invalid('invalid base_version');
+      return isPatch(raw.patch)
+        ? { ok: true, message: { command, id, base_version: raw.base_version, patch: raw.patch } }
+        : invalid('invalid patch');
     case 'save_document':
+      if (!isIndex(raw.base_version)) return invalid('invalid base_version');
       return isString(raw.expected_source)
-        ? { ok: true, message: { command, id, expected_source: raw.expected_source } }
+        ? { ok: true, message: { command, id, base_version: raw.base_version, expected_source: raw.expected_source } }
         : invalid('invalid expected_source');
     case 'save_layout':
       return isRecord(raw.layout) ? { ok: true, message: { command, id, layout: raw.layout } } : invalid('invalid layout');

@@ -30,18 +30,20 @@ describe('DbmlCustomEditorProvider', () => {
     expect(h.posted.find((m) => m.type === 'update').layout).toEqual({ positions: { users: { x: 1, y: 2 } } });
   });
 
-  it('apply_patch aplica o patch e confirma com "result"', async () => {
+  it('apply_patch aplica o patch e confirma com "result" trazendo a nova versão', async () => {
     const h = await openEditor(DbmlCustomEditorProvider, { text: 'abc' });
     await h.send({
       command: 'apply_patch',
       id: 7,
+      base_version: h.document.version,
       patch: {
         range: { start: { line: 0, character: 0 }, end: { line: 0, character: 1 } },
         new_text: 'X',
         expected_source: 'abc',
       },
     });
-    expect(h.posted).toContainEqual({ type: 'result', id: 7 });
+    expect(h.document.version).toBe(2);
+    expect(h.posted).toContainEqual({ type: 'result', id: 7, version: 2 });
   });
 
   it('apply_patch com texto desatualizado responde erro', async () => {
@@ -49,6 +51,7 @@ describe('DbmlCustomEditorProvider', () => {
     await h.send({
       command: 'apply_patch',
       id: 8,
+      base_version: h.document.version,
       patch: {
         range: { start: { line: 0, character: 0 }, end: { line: 0, character: 1 } },
         new_text: 'X',
@@ -60,10 +63,88 @@ describe('DbmlCustomEditorProvider', () => {
   });
 });
 
+describe('versão do documento (#51)', () => {
+  const patch = {
+    range: { start: { line: 0, character: 0 }, end: { line: 0, character: 1 } },
+    new_text: 'X',
+    expected_source: 'abc',
+  };
+
+  it('"update" leva document.version', async () => {
+    const h = await openEditor(DbmlCustomEditorProvider, { text: 'abc' });
+    h.document.version = 5;
+    await h.send({ command: 'ready' });
+    expect(h.posted.find((m) => m.type === 'update').version).toBe(5);
+  });
+
+  it('apply_patch com versão velha é rejeitado sem tocar no documento e reenvia o update', async () => {
+    const h = await openEditor(DbmlCustomEditorProvider, { text: 'abc' });
+    await h.send({ command: 'ready' });
+    const staleVersion = h.document.version;
+    // O texto mudou fora da Webview (digitação no editor nativo): versão e texto novos.
+    h.document.text = 'abc!';
+    h.document.version = staleVersion + 1;
+    h.posted.length = 0;
+    let applied = false;
+    mockState.afterApplyEdit = () => void (applied = true);
+
+    await h.send({ command: 'apply_patch', id: 9, base_version: staleVersion, patch: { ...patch, expected_source: 'abc!' } });
+
+    expect(applied).toBe(false);
+    expect(h.document.getText()).toBe('abc!');
+    const update = h.posted.find((m) => m.type === 'update');
+    expect(update).toMatchObject({ source: 'abc!', version: staleVersion + 1 });
+    const result = h.posted.find((m) => m.type === 'result' && m.id === 9);
+    expect(result.error).toMatch(/version/);
+    expect(mockState.messages.warnings).toHaveLength(0);
+  });
+
+  it('versão velha é rejeitada mesmo com o texto esperado igual ao atual', async () => {
+    const h = await openEditor(DbmlCustomEditorProvider, { text: 'abc' });
+    const staleVersion = h.document.version;
+    h.document.version = staleVersion + 1; // ex.: digitou e desfez, texto igual
+    await h.send({ command: 'apply_patch', id: 1, base_version: staleVersion, patch });
+    expect(h.posted.find((m) => m.type === 'result' && m.id === 1).error).toMatch(/version/);
+    expect(h.document.version).toBe(staleVersion + 1);
+  });
+
+  it('save_document exige a versão atual', async () => {
+    const h = await openEditor(DbmlCustomEditorProvider, { text: 'abc' });
+    const staleVersion = h.document.version;
+    h.document.version = staleVersion + 1;
+    h.document.isDirty = true;
+    await h.send({ command: 'save_document', id: 1, base_version: staleVersion, expected_source: 'abc' });
+    expect(h.posted.find((m) => m.type === 'result' && m.id === 1).error).toMatch(/version/);
+    expect(h.document.isDirty).toBe(true);
+    expect(h.posted.find((m) => m.type === 'update').version).toBe(staleVersion + 1);
+
+    h.posted.length = 0;
+    await h.send({ command: 'save_document', id: 2, base_version: staleVersion + 1, expected_source: 'abc' });
+    expect(h.posted.find((m) => m.type === 'result' && m.id === 2)).toMatchObject({ id: 2, version: staleVersion + 1 });
+    expect(h.posted.find((m) => m.type === 'result' && m.id === 2).error).toBeUndefined();
+    expect(h.document.isDirty).toBe(false);
+  });
+
+  it('mudança só de versão (texto igual) ainda gera update', async () => {
+    const h = await openEditor(DbmlCustomEditorProvider, { text: 'a' });
+    await h.send({ command: 'ready' });
+    h.posted.length = 0;
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    try {
+      h.document.version += 2; // digitou e desfez dentro do debounce
+      mockState.textListeners.forEach((l) => l({ document: h.document }));
+      vi.advanceTimersByTime(100);
+      expect(h.posted.find((m) => m.type === 'update').version).toBe(3);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
+
 describe('validação das mensagens da Webview', () => {
   it('apply_patch malformado responde erro e não toca no documento', async () => {
     const h = await openEditor(DbmlCustomEditorProvider, { text: 'abc' });
-    await h.send({ command: 'apply_patch', id: 1, patch: { range: null, new_text: 1 } });
+    await h.send({ command: 'apply_patch', id: 1, base_version: 1, patch: { range: null, new_text: 1 } });
     expect(h.posted.find((m) => m.type === 'result' && m.id === 1).error).toMatch(/invalid patch/);
   });
 
@@ -239,8 +320,8 @@ describe('falhas de gravação visíveis ao usuário', () => {
       new_text: 'X',
       expected_source: 'abc',
     };
-    await h.send({ command: 'apply_patch', id: 1, patch });
-    await h.send({ command: 'apply_patch', id: 2, patch });
+    await h.send({ command: 'apply_patch', id: 1, base_version: h.document.version, patch });
+    await h.send({ command: 'apply_patch', id: 2, base_version: h.document.version, patch });
     expect(mockState.messages.warnings).toHaveLength(1);
     expect(mockState.messages.warnings[0].message).toMatch(/could not apply/i);
   });
@@ -250,6 +331,7 @@ describe('falhas de gravação visíveis ao usuário', () => {
     await h.send({
       command: 'apply_patch',
       id: 1,
+      base_version: h.document.version,
       patch: { range: { start: { line: 0, character: 0 }, end: { line: 0, character: 1 } }, new_text: 'X', expected_source: 'zzz' },
     });
     expect(mockState.messages.warnings).toHaveLength(0);
