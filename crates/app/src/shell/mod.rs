@@ -46,6 +46,10 @@ pub struct Doc {
     history: crate::history::UndoHistory,
     dirty: bool,
     autosave: Option<Task<()>>,
+    /// conteúdo do disco já avisado como conflito (evita repetir o aviso a cada leitura)
+    watch_warned: Option<std::sync::Arc<str>>,
+    /// conteúdo do disco sobre o qual o primeiro Salvar avisou; repetir Salvar sobrescreve
+    save_armed: Option<std::sync::Arc<str>>,
     diags: Vec<dbml_analysis::Diagnostic>,
     /// realce do bloco da tabela selecionada no editor
     table_hl: RangeDecorationCollection,
@@ -175,6 +179,8 @@ pub struct Shell {
     last_canvas: Option<EntityId>,
     canvas_epoch: u64,
     popover_epoch: u64,
+    /// tarefa que confere periodicamente se os arquivos abertos mudaram no disco
+    disk_watcher: Option<Task<()>>,
 }
 
 impl Focusable for Shell {
@@ -638,7 +644,9 @@ impl Shell {
             last_canvas: None,
             canvas_epoch: 0,
             popover_epoch: 0,
+            disk_watcher: None,
         };
+        this.disk_watcher = Some(Self::spawn_disk_watcher(window, cx));
         // DBM_PANE: painel inicial (usado pelo harness de screenshot)
         this.pane = match std::env::var("DBM_PANE").as_deref() {
             Ok("files") => Pane::Files,
@@ -835,6 +843,8 @@ impl Shell {
             history: crate::history::UndoHistory::new(),
             dirty: false,
             autosave: None,
+            watch_warned: None,
+            save_armed: None,
             diags,
             table_hl,
             hl_key: (None, std::sync::Arc::from("")),
@@ -1121,9 +1131,110 @@ impl Shell {
         }));
     }
 
+    /// Confere em segundo plano, a cada 1,5 s, se os arquivos abertos mudaram no disco
+    /// (`git pull`, outro editor). A leitura roda fora da thread da UI.
+    fn spawn_disk_watcher(window: &mut Window, cx: &mut Context<Self>) -> Task<()> {
+        let bg = cx.background_executor().clone();
+        cx.spawn_in(window, async move |this, cx| {
+            loop {
+                bg.timer(std::time::Duration::from_millis(1500)).await;
+                let Ok(paths) = this.update_in(cx, |this, _, _| {
+                    this.docs.iter().filter_map(|d| d.path.clone()).collect::<Vec<_>>()
+                }) else {
+                    return;
+                };
+                if paths.is_empty() {
+                    continue;
+                }
+                let reads = bg
+                    .spawn(async move {
+                        paths
+                            .into_iter()
+                            .map(|p| {
+                                let text = crate::disk_sync::read_disk(&p);
+                                (p, text)
+                            })
+                            .collect::<Vec<_>>()
+                    })
+                    .await;
+                if this.update_in(cx, |this, window, cx| this.apply_disk_reads(reads, window, cx)).is_err() {
+                    return;
+                }
+            }
+        })
+    }
+
+    fn apply_disk_reads(&mut self, reads: Vec<(PathBuf, Option<String>)>, window: &mut Window, cx: &mut Context<Self>) {
+        use crate::disk_sync::{Watch, watch_decision};
+        for (path, disk) in reads {
+            let Some(i) = self.docs.iter().position(|d| d.path.as_ref() == Some(&path)) else { continue };
+            let doc = &mut self.docs[i];
+            let decision = watch_decision(&doc.saved_text, &doc.last_text, disk.as_deref(), doc.watch_warned.as_deref());
+            match decision {
+                Watch::Idle => {}
+                Watch::Reload(text) => self.reload_doc(i, &text, window, cx),
+                Watch::Conflict(text) => {
+                    doc.watch_warned = Some(std::sync::Arc::from(text.as_str()));
+                    window.push_notification(
+                        crate::i18n::t("{} mudou no disco e há edições não salvas aqui. Salvar sobrescreve a versão do disco.")
+                            .replace("{}", &doc.title),
+                        cx,
+                    );
+                }
+            }
+        }
+    }
+
+    /// Adota `text` (lido do disco) como conteúdo salvo e atual da aba `i`. A versão anterior
+    /// do buffer entra no histórico, então Desfazer a recupera.
+    fn reload_doc(&mut self, i: usize, text: &str, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(doc) = self.docs.get_mut(i) else { return };
+        let new_arc: std::sync::Arc<str> = std::sync::Arc::from(text);
+        let changed = doc.last_text != new_arc;
+        if changed {
+            let snap = Self::snapshot_of(doc, cx);
+            doc.history.push(snap);
+        }
+        doc.saved_text = new_arc.clone();
+        doc.last_text = new_arc;
+        doc.dirty = false;
+        doc.watch_warned = None;
+        doc.save_armed = None;
+        let editor = doc.editor.clone();
+        let diagram = doc.diagram.clone();
+        let edges = doc.path.as_deref().map(crate::session::load_edges).unwrap_or_default();
+        let title = doc.title.clone();
+        if editor.read(cx).value().as_ref() != text {
+            self.suppress_history = true;
+            editor.update(cx, |e, cx| e.replace_all(text.to_owned(), window, cx));
+            self.suppress_history = false;
+        }
+        let schema = dbml_analysis::analyze(text);
+        diagram.update(cx, |d, cx| {
+            d.set_schema(schema);
+            d.set_edges(edges);
+            cx.notify();
+        });
+        if changed {
+            window.push_notification(crate::i18n::t("{} foi recarregado do disco.").replace("{}", &title), cx);
+        }
+        cx.notify();
+    }
+
     fn write(&mut self, i: usize, path: PathBuf, autosave: bool, window: &mut Window, cx: &mut Context<Self>) -> bool {
         let Some(doc) = self.docs.get_mut(i) else { return false };
         let text = doc.editor.read(cx).value().to_string();
+        if !autosave && doc.path.as_deref() == Some(path.as_path()) {
+            let disk = crate::disk_sync::read_disk(&path);
+            if !crate::disk_sync::save_allowed(&doc.saved_text, disk.as_deref(), doc.save_armed.as_deref()) {
+                doc.save_armed = disk.map(|d| std::sync::Arc::from(d.as_str()));
+                window.push_notification(
+                    crate::i18n::t("O arquivo mudou no disco desde que foi aberto. Salve de novo para sobrescrever."),
+                    cx,
+                );
+                return false;
+            }
+        }
         if autosave && !std::fs::read_to_string(&path).is_ok_and(|disk| disk == doc.saved_text.as_ref()) {
             window.push_notification(crate::i18n::t("O arquivo mudou no disco. Salve manualmente para confirmar."), cx);
             return false;
@@ -1134,6 +1245,8 @@ impl Shell {
                 doc.saved_text = saved.clone();
                 doc.last_text = saved;
                 doc.dirty = false;
+                doc.watch_warned = None;
+                doc.save_armed = None;
                 if autosave {
                     cx.notify();
                     return true;
