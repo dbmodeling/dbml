@@ -20,11 +20,7 @@
     "Other"
   ],
   "main": "./dist/extension.cjs",
-  "activationEvents": [
-    "onStartupFinished",
-    "onCustomEditor:dbmodeling.editor",
-    "onLanguage:dbml"
-  ],
+  "activationEvents": [],
   "capabilities": {
     "untrustedWorkspaces": {
       "supported": "limited",
