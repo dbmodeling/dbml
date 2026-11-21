@@ -270,6 +270,41 @@ async fn patches_are_debounced_into_a_single_delayed_write() {
 }
 
 #[tokio::test]
+async fn pending_patches_edit_the_buffer_in_place() {
+    let d = Doc::new("inplace").await;
+    // O primeiro patch carrega o texto do disco; os seguintes devem editar o mesmo buffer.
+    d.prepend("// um\n").await;
+    let before = d.state.doc.read().await.content.as_ptr();
+    let source = d.content().await;
+    d.state
+        .apply_patch(&d.name, &source, 3, 5, "XX") // mesmo tamanho: não realoca
+        .await
+        .unwrap();
+    let after = d.state.doc.read().await.content.as_ptr();
+    assert_eq!(
+        before, after,
+        "o documento foi clonado em vez de editado no lugar"
+    );
+    assert!(d.content().await.starts_with("// XX\n"));
+
+    // Patch inválido não corrompe nem descarta o documento.
+    let source = d.content().await;
+    assert!(
+        d.state
+            .apply_patch(&d.name, &source, 5, 3, "x")
+            .await
+            .is_err()
+    );
+    assert!(
+        d.state
+            .apply_patch(&d.name, "outra versão", 0, 0, "x")
+            .await
+            .is_err()
+    );
+    assert_eq!(d.content().await, source);
+}
+
+#[tokio::test]
 async fn save_document_flushes_pending_edits() {
     let d = Doc::new("flush_save").await;
     d.prepend("// editado\n").await;

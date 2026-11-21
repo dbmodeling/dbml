@@ -56,19 +56,20 @@ pub fn generate_token() -> String {
     })
 }
 
-/// Aplica um patch textual a `current`, recusando versão desatualizada ou intervalo inválido.
+/// Aplica um patch textual a `current` no lugar, recusando versão desatualizada ou intervalo
+/// inválido. Em caso de erro `current` não é alterado.
 ///
 /// # Errors
 ///
 /// Retorna erro se `current` difere de `expected` ou se `start..end` não é um intervalo válido
 /// em fronteiras de caractere.
-pub fn patch_text(
-    mut current: String,
+pub fn patch_in_place(
+    current: &mut String,
     expected: &str,
     start: usize,
     end: usize,
     text: &str,
-) -> anyhow::Result<String> {
+) -> anyhow::Result<()> {
     if current != expected {
         anyhow::bail!("Document changed outside this editor; reload or reconcile changes");
     }
@@ -80,7 +81,7 @@ pub fn patch_text(
         anyhow::bail!("Invalid patch range");
     }
     current.replace_range(start..end, text);
-    Ok(current)
+    Ok(())
 }
 
 /// Executa `work` em uma task própria e espera o resultado. Se quem chamou for cancelado (por
@@ -457,12 +458,13 @@ impl AppState {
             Self::ensure_active(&doc, &expected_file)?;
             // Com edições pendentes a memória é a fonte da verdade; sem elas, o disco (detecta
             // alterações externas mesmo com o watcher desligado).
-            let current = if doc.dirty {
-                doc.content.clone()
+            if doc.dirty {
+                patch_in_place(&mut doc.content, &expected_source, start, end, &new_text)?;
             } else {
-                tokio::fs::read_to_string(&doc.file_path).await?
-            };
-            doc.content = patch_text(current, &expected_source, start, end, &new_text)?;
+                let mut buffer = tokio::fs::read_to_string(&doc.file_path).await?;
+                patch_in_place(&mut buffer, &expected_source, start, end, &new_text)?;
+                doc.content = buffer;
+            }
             doc.dirty = true;
             if !doc.flush_scheduled {
                 doc.flush_scheduled = true;
@@ -569,12 +571,17 @@ impl AppState {
 
 #[cfg(test)]
 mod tests {
-    use super::patch_text;
+    use super::patch_in_place;
 
     #[test]
     fn rejects_stale_and_invalid_patches() {
-        assert!(patch_text("new".into(), "old", 0, 3, "x").is_err());
-        assert!(patch_text("é".into(), "é", 1, 2, "x").is_err());
-        assert_eq!(patch_text("é".into(), "é", 0, 2, "x").unwrap(), "x");
+        let mut s = String::from("new");
+        assert!(patch_in_place(&mut s, "old", 0, 3, "x").is_err());
+        assert_eq!(s, "new");
+        let mut s = String::from("é");
+        assert!(patch_in_place(&mut s, "é", 1, 2, "x").is_err());
+        assert_eq!(s, "é");
+        patch_in_place(&mut s, "é", 0, 2, "x").unwrap();
+        assert_eq!(s, "x");
     }
 }
