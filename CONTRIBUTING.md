@@ -13,7 +13,7 @@ DB Modeling shares a single Rust core across three targets:
 | **Core Crates** | `crates/core/schema`, `crates/core/dbml-syntax`, `crates/core/dbml-analysis`, `crates/core/dbml-edit`, `crates/core/layout` | Parser (Rowan CST), linter, autocomplete, minimal textual edits, and Sugiyama auto-layout |
 | **Desktop App** | `crates/app` | Native GPUI desktop application |
 | **WebAssembly Bridge** | `crates/dbml-wasm` | Wasm bindings exposing the Rust core to browser and VS Code |
-| **Shared Web Workbench** | `packages/canvas-web` | TypeScript/HTML5 Canvas UI shared by the Web CLI and VS Code Extension |
+| **Shared Web Workbench** | `packages/canvas-web` | TypeScript/HTML/SVG workbench shared by the Web CLI and VS Code Extension |
 | **Interactive Web CLI** | `crates/cli` | Local HTTP + WebSocket server (`dbml` binary) |
 | **VS Code Extension** | `vscode-extension/` | Custom Editor and Sidebar integration |
 
@@ -89,6 +89,12 @@ cargo test --workspace
 If you updated Wasm or web assets, also run `./scripts/sync-build.sh`.
 
 ---
+
+## Pull Requests and Releases
+
+GitHub loads the [pull request template](.github/pull_request_template.md) when opening a PR. For UI changes, attach before and after screenshots from each affected target and name the target in the caption.
+
+Use the [release template](.github/RELEASE_TEMPLATE.md) to draft release notes and verify the assets published by the [release workflow](.github/workflows/release.yml). See the [workbench guide](docs/05-ux.md), [architecture](docs/03-arquitetura.md), and [visual identity](docs/identidade-visual.md) when updating documentation.
 
 ## Reporting Bugs & Suggesting Features
 

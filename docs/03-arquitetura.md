@@ -2,19 +2,18 @@
 
 ## Visão geral
 
+```mermaid
+flowchart LR
+    Desktop["Desktop · GPUI"] --> Core["Núcleo Rust"]
+    CLI["CLI · HTTP e WebSocket"] --> Web["Workbench TypeScript"]
+    VSCode["VS Code · editor customizado"] --> Web
+    Web --> Wasm["dbml-wasm"]
+    Wasm --> Core
 ```
-            ┌─────────────── app (GPUI) ────────────────┐
-            │  Editor DBML     Canvas     Inspector     │
-            │      │             │            │         │
-            │      └──── comandos / eventos ──┘         │
-            └──────────────────┬────────────────────────┘
-                               ▼
-                        ┌─────────────┐
-                        │  Workspace  │  documento + histórico (undo) + layout
-                        └──────┬──────┘
-          texto ──parse──▶ CST (rowan) ──análise──▶ Schema (modelo semântico)
-          texto ◀─patch─── edição de CST ◀─comando── UI
-```
+
+O [workbench](05-ux.md) reúne o editor DBML, o diagrama, a navegação do
+esquema e o inspetor. Desktop e Web têm renderizadores próprios e compartilham
+as operações de modelagem e a geometria do núcleo.
 
 ## Estrutura do monorepo
 
@@ -44,66 +43,37 @@ desktop os consome diretamente. O canvas compartilhado acessa o núcleo via
 O script `./scripts/sync-build.sh` compila a ponte Wasm e atualiza o bundle
 embutido em `crates/cli/web/` e o bundle em `vscode-extension/dist/`.
 
-Plataformas alvo: **Windows 10/11** (GPUI usa DirectX) e **Ubuntu 22.04/24.04** (Vulkan;
-Wayland e X11). Atalhos usam `Ctrl`.
+O workflow de release gera instaladores para Windows, Linux e macOS Apple Silicon.
 
-## Fonte da verdade e sincronização
+## Edição do documento
 
-A decisão central do projeto. **O texto DBML é a fonte da verdade persistida; o CST é a
-fonte da verdade em memória; o `Schema` é uma projeção derivada.**
+O arquivo `.dbml` contém o modelo. O parser `dbml-syntax` produz um CST sem
+perdas, e `dbml-analysis` deriva o `Schema` e os diagnósticos. Quando o usuário
+edita uma tabela no diagrama ou no inspetor, o workbench envia um comando
+semântico a `dbml-edit`. O comando retorna um patch localizado no texto, que
+volta ao mesmo fluxo de análise do editor de código.
 
-### Texto → modelo (usuário digita no editor)
-1. Edição altera o buffer de texto.
-2. Reparse (incremental quando possível) → novo CST.
-3. Análise → novo `Schema` + diagnósticos.
-4. Diff de `Schema` antigo × novo por **identidade estável** → canvas anima só o que mudou.
+## Renderização do workbench
 
-### UI → texto (usuário edita no canvas)
-1. UI emite um **comando semântico** (`AddColumn { table, after, name, ty }`,
-   `RenameTable`, `CreateRef`…).
-2. `dbml-edit` localiza os nós no CST e gera um **patch textual mínimo** (inserção de
-   uma linha, troca de um token), respeitando a indentação/estilo existentes.
-3. O patch é aplicado ao buffer como qualquer outra edição → cai no fluxo acima.
+| Responsabilidade | Desktop | CLI Web e VS Code |
+|---|---|---|
+| Composição e painéis | [shell](../crates/app/src/shell/) | [workbench.ts](../packages/canvas-web/src/workbench.ts) |
+| Diagrama e interação | [canvas.rs](../crates/app/src/canvas.rs) | [canvas-view.ts](../packages/canvas-web/src/canvas-view.ts) e [renderer.ts](../packages/canvas-web/src/renderer.ts) |
+| Cores e superfícies | [glass.rs](../crates/app/src/glass.rs) | [glass.ts](../packages/canvas-web/src/glass.ts) |
+| Atalhos e paleta | [actions.rs](../crates/app/src/actions.rs) | [actions.ts](../packages/canvas-web/src/actions.ts) |
 
-Vantagem: existe **um único caminho de mudança** (edição de texto), logo undo/redo,
-autosave, file watching e diagnósticos são unificados. Comentários e formatação do
-usuário nunca são perdidos.
+O desktop usa elementos GPUI. O workbench web usa HTML e CSS para os cartões
+e SVG para as relações. O crate [layout](../crates/core/layout/src/lib.rs)
+fornece a geometria dos cartões, o posicionamento e as rotas. A ponte Wasm
+entrega a cena ao workbench web com posições e caminhos das relações. Os
+tokens estão detalhados na [identidade visual](identidade-visual.md).
 
-### Identidade estável
-Tabelas/colunas recebem ids internos que sobrevivem a reparse (casamento por nome +
-posição + heurística de rename). O sidecar de layout referencia **nomes**; renames
-feitos pela UI atualizam o sidecar atomicamente. Renames feitos no texto são inferidos
-(ex.: tabela sumiu e apareceu outra no mesmo lugar com as mesmas colunas).
+## Exportação
 
-## Canvas
-
-- Elemento GPUI customizado (`Element`/`canvas`) que desenha **arestas** (paths bezier ou
-  ortogonais) e grid; **tabelas** como elementos GPUI posicionados (texto, foco, hover,
-  edição inline reaproveitam componentes).
-- **Zoom/pan**: GPUI não tem transformações afins gerais em toda a árvore; o canvas
-  calcula posições/tamanhos/fonte escalados. Abaixo de um limiar de zoom → **LOD**
-  (só cabeçalhos, depois só retângulos).
-- **Culling**: só monta elementos visíveis no viewport (+ margem).
-- Hit-testing próprio para arestas e handles de conexão.
-- Minimap, snapping a grid/guias, seleção múltipla por retângulo.
-
-## Export
-
-### PNG / JPEG
-GPUI não oferece renderização off-screen para imagem de forma simples, então o export
-não "fotografa" a janela. Em vez disso:
-
-1. `layout` fornece a geometria compartilhada com o canvas, incluindo as
-   dimensões dos cards e as rotas das arestas.
-2. `diagram-export` gera **SVG** e rasteriza com `resvg`/`tiny-skia` na escala
-   escolhida (1×/2×/4×), usando **as mesmas fontes embarcadas** no app.
-3. PNG (com ou sem fundo transparente) ou JPEG (fundo sólido obrigatório, qualidade
-   configurável) via crate `image`.
-4. Título, legenda e marca d'água opcionais são elementos da própria cena (mesmo
-   pipeline, mesmas fontes).
-
-Ganho colateral: export SVG fica praticamente pronto, caso queiramos oferecer depois.
-Risco: paridade visual canvas × export (ver R8 em `riscos.md`).
+No desktop, `diagram-export` monta SVG e rasteriza a imagem com
+`resvg`/`tiny-skia`. Na Web, [export.ts](../packages/canvas-web/src/export.ts)
+monta SVG a partir da cena e usa as APIs de imagem do navegador para
+rasterizar. O código SQL é gerado a partir do modelo pelo núcleo Rust.
 
 ### Mermaid `erDiagram`
 Tradução direta do `Schema` (layout é ignorado — Mermaid faz o próprio):
@@ -123,21 +93,23 @@ Nomes/tipos com caracteres que Mermaid não aceita são sanitizados de forma
 determinística. Validar a saída contra o parser oficial do Mermaid nos testes (CLI
 `mmdc`, opcional no CI).
 
-## Undo/redo
-Histórico de transações sobre o buffer de texto, com metadados (origem, seleção no
-canvas, posições de layout) para que desfazer uma ação de UI restaure também a seleção
-e o layout. Mudanças só de layout (mover tabela) entram no mesmo histórico.
+## Persistência e transporte
 
-## Persistência
-- `schema.dbml` + `schema.dbml.layout.json` lado a lado (um sidecar por schema; JSON com
-  ordem de chaves estável).
-- Autosave + arquivo de recuperação; detecção de mudança externa (`notify`) com merge
-  (reaplicar como edição de texto).
-- Configurações do usuário em `directories::ProjectDirs`.
+- **Sidecar.** `schema.dbml.layout.json` fica ao lado de `schema.dbml` e
+  guarda dados visuais como posições e estilos de relações, com chaves ordenadas.
+- **Desktop.** O shell gerencia o documento aberto. A persistência local da
+  sessão e das preferências passa por `session.rs` e `settings.rs`.
+- **CLI Web.** [WebSocketTransport](../packages/canvas-web/src/transport.ts)
+  envia patches e pedidos de salvamento ao servidor Axum. O
+  [servidor](../crates/cli/src/server.rs) verifica o arquivo ativo e, em
+  alterações de texto, compara a versão esperada antes de salvar.
+- **VS Code.** `VsCodeTransport` usa mensagens do webview. O
+  [editor customizado](../vscode-extension/src/customEditor.ts) aplica
+  os patches ao documento do VS Code e escreve o sidecar pela API do workspace.
 
-## Testabilidade
-- Parser/análise/edição: testes de snapshot (`insta`) + corpus de arquivos DBML reais +
-  conformidade com `dbml-rs`.
-- Propriedade-chave testada com `proptest`: *para todo comando de UI, aplicar o patch e
-  reparsear produz o `Schema` esperado* e *texto sem mudança semântica é preservado byte a byte*.
-- UI: testes headless do GPUI (`TestAppContext`) para fluxos críticos.
+## Validação
+
+`cargo test --workspace` cobre as bibliotecas e os alvos Rust.
+`npm --prefix packages/canvas-web test` cobre o workbench compartilhado.
+`./scripts/sync-build.sh` reconstrói a ponte e os bundles usados pela CLI Web
+e pelo VS Code e verifica a compilação dos binários Rust.
