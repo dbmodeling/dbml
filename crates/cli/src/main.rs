@@ -1,13 +1,14 @@
+#![forbid(unsafe_code)]
+
 use anyhow::Context as _;
 use clap::Parser;
 use colored::Colorize;
 use dbml_cli::args::{Cli, Commands, ExportFormat, ImportDialect};
+use dbml_cli::net;
 use dbml_cli::server;
 use dbml_cli::state::AppState;
 use dbml_cli::watcher;
-use std::net::SocketAddr;
 use std::path::Path;
-use tokio::net::TcpListener;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -39,13 +40,17 @@ async fn main() -> anyhow::Result<()> {
     {
         if let Some(url) = url {
             let password = if password_stdin {
-                Some(read_password_stdin()?)
+                Some(("--password-stdin", read_password_stdin()?))
             } else {
                 std::env::var("DBML_PASSWORD")
                     .ok()
                     .filter(|p| !p.is_empty())
+                    .map(|p| ("DBML_PASSWORD", p))
             };
-            let url = password.map_or(url.clone(), |p| db_introspect::with_password(&url, &p));
+            let (url, warning) = apply_password(&url, password);
+            if let Some(warning) = warning {
+                eprintln!("warning: {warning}");
+            }
             if test {
                 return run_test_url(&url).await;
             }
@@ -65,20 +70,10 @@ async fn main() -> anyhow::Result<()> {
         watcher::start_file_watcher(state.clone())?;
     }
 
-    // Tenta alocar a porta desejada ou incrementa se ocupada
-    let mut port = config.port;
-    let listener = loop {
-        let addr: SocketAddr = format!("{}:{}", config.host, port).parse()?;
-        match TcpListener::bind(addr).await {
-            Ok(l) => break l,
-            Err(_) if port < config.port + 50 => {
-                port += 1;
-            }
-            Err(e) => return Err(e.into()),
-        }
-    };
-
-    let url = format!("http://{}:{}/", config.host, port);
+    // Resolve o host (nome ou IP) e tenta a porta pedida, subindo se estiver ocupada
+    let listener = net::bind_with_retry(&config.host, config.port).await?;
+    let local_addr = listener.local_addr()?;
+    let url = net::browser_url(local_addr, state.token());
 
     println!(
         "\n{}",
@@ -98,8 +93,13 @@ async fn main() -> anyhow::Result<()> {
             .blue()
             .bold()
     );
-    let fp_display = state.file_path.read().await.display().to_string();
-    let lp_display = state.layout_path.read().await.display().to_string();
+    let (fp_display, lp_display) = {
+        let doc = state.doc.read().await;
+        (
+            doc.file_path.display().to_string(),
+            doc.layout_path.display().to_string(),
+        )
+    };
     println!("  {} {}", "File:    ".bold(), fp_display.cyan());
     println!("  {} {}", "Sidecar: ".bold(), lp_display.cyan());
     println!(
@@ -107,6 +107,9 @@ async fn main() -> anyhow::Result<()> {
         "Server:  ".bold(),
         url.green().bold().underline()
     );
+    if let Some(warning) = server::non_loopback_warning(local_addr.ip()) {
+        println!("\n  {} {}", "AVISO:".red().bold(), warning.red());
+    }
     println!(
         "\n  {} Press {} to stop the server.\n",
         "Tip:".yellow(),
@@ -122,18 +125,26 @@ async fn main() -> anyhow::Result<()> {
         });
     }
 
-    let app = server::create_router(state, server::allowed_hosts(&config.host, port));
+    let app = server::create_router(
+        state.clone(),
+        server::allowed_hosts(&config.host, local_addr.port()),
+    );
+    let shutdown_state = state.clone();
 
     // Encerramento gracioso com Ctrl+C
     axum::serve(listener, app)
-        .with_graceful_shutdown(async {
+        .with_graceful_shutdown(async move {
             let _ = tokio::signal::ctrl_c().await;
+            shutdown_state.lifecycle.begin_shutdown();
             println!(
                 "\n{}",
                 "Shutting down DB Modeling server gracefully...".yellow()
             );
         })
         .await?;
+
+    // Espera sockets e watcher e as gravações pendentes antes de sair.
+    state.shutdown(std::time::Duration::from_secs(5)).await;
 
     Ok(())
 }
@@ -168,6 +179,33 @@ async fn run_import_url(
         eprintln!("{}: warning: {w}", db_introspect::mask_url(url));
     }
     write_output(&outcome.dbml, output, force)
+}
+
+/// Whether the URL already carries `user:password@`.
+fn url_has_password(url: &str) -> bool {
+    let Some((_, rest)) = url.split_once("://") else {
+        return false;
+    };
+    let authority = rest.split_once('/').map_or(rest, |(a, _)| a);
+    authority
+        .rsplit_once('@')
+        .is_some_and(|(userinfo, _)| userinfo.contains(':'))
+}
+
+/// Injects the password given via `--password-stdin`/`DBML_PASSWORD` into `url`. When the URL
+/// already has one, the URL wins (as before) and a warning says so, so the ignored value is not a
+/// silent surprise.
+fn apply_password(url: &str, password: Option<(&str, String)>) -> (String, Option<String>) {
+    let Some((source, password)) = password else {
+        return (url.to_owned(), None);
+    };
+    if url_has_password(url) {
+        let warning = format!(
+            "the URL already contains a password; the one from {source} is ignored and the URL's password is used"
+        );
+        return (url.to_owned(), Some(warning));
+    }
+    (db_introspect::with_password(url, &password), None)
 }
 
 fn read_password_stdin() -> anyhow::Result<String> {
@@ -283,6 +321,28 @@ mod tests {
         );
         let _ = std::fs::remove_file(&db);
         let _ = std::fs::remove_file(&out);
+    }
+
+    #[test]
+    fn warns_when_the_url_already_has_a_password() {
+        assert!(url_has_password("postgres://u:p@h/db"));
+        assert!(!url_has_password("postgres://u@h/db"));
+        assert!(!url_has_password("postgres://h:5432/db"));
+        assert!(!url_has_password("app.sqlite"));
+
+        let (url, warning) =
+            apply_password("postgres://u:p@h/db", Some(("DBML_PASSWORD", "x".into())));
+        assert_eq!(url, "postgres://u:p@h/db");
+        let warning = warning.unwrap();
+        assert!(warning.contains("DBML_PASSWORD") && warning.contains("URL's password is used"));
+        assert!(!warning.contains(":p@"), "o aviso não pode ecoar a senha");
+
+        let (url, warning) =
+            apply_password("postgres://u@h/db", Some(("--password-stdin", "s3".into())));
+        assert_eq!(url, "postgres://u:s3@h/db");
+        assert!(warning.is_none());
+        let (url, warning) = apply_password("postgres://u:p@h/db", None);
+        assert_eq!((url.as_str(), warning), ("postgres://u:p@h/db", None));
     }
 
     #[test]

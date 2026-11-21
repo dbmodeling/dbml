@@ -21,6 +21,16 @@ pub fn load() -> CliSession {
     path().map(|p| load_from(&p)).unwrap_or_default()
 }
 
+/// Versão assíncrona de [`load`]: a leitura roda no pool de threads bloqueantes.
+pub async fn load_async() -> CliSession {
+    tokio::task::spawn_blocking(load).await.unwrap_or_default()
+}
+
+/// Versão assíncrona de [`save`]: a gravação roda no pool de threads bloqueantes.
+pub async fn save_async(session: CliSession) {
+    let _ = tokio::task::spawn_blocking(move || save(&session)).await;
+}
+
 #[must_use]
 pub fn load_from(p: &Path) -> CliSession {
     let Ok(text) = std::fs::read_to_string(p) else {
