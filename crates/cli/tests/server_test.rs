@@ -228,6 +228,37 @@ async fn lagging_client_gets_the_current_state_and_keeps_receiving() {
 }
 
 #[tokio::test]
+async fn websocket_connections_are_capped_with_a_clear_refusal() {
+    let h = spawn("cap").await;
+    let url = format!("ws://{}/ws?token={}", h.addr, h.state.token());
+    let mut open = Vec::new();
+    for _ in 0..dbml_cli::server::MAX_WS_CONNECTIONS {
+        let (ws, _) = tokio_tungstenite::connect_async(&url).await.unwrap();
+        open.push(ws);
+    }
+    let err = tokio_tungstenite::connect_async(&url).await.unwrap_err();
+    assert!(
+        matches!(&err, tokio_tungstenite::tungstenite::Error::Http(r) if r.status() == 503),
+        "{err:?}"
+    );
+
+    // Fechar uma conexão libera a vaga.
+    let mut first = open.remove(0);
+    first.close(None).await.ok();
+    drop(first);
+    let reconnected = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        loop {
+            if tokio_tungstenite::connect_async(&url).await.is_ok() {
+                return;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+    })
+    .await;
+    assert!(reconnected.is_ok(), "a vaga não foi liberada");
+}
+
+#[tokio::test]
 async fn shutdown_waits_for_pending_writes() {
     let h = spawn("shutdown_write").await;
     let writer = {

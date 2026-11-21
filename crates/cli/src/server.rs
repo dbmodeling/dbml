@@ -118,13 +118,27 @@ pub fn create_router(state: AppState) -> Router {
         .with_state(state)
 }
 
-async fn ws_handler(ws: WebSocketUpgrade, State(state): State<AppState>) -> impl IntoResponse {
+/// Máximo de conexões WebSocket simultâneas; além disso o upgrade é recusado com `503`.
+pub const MAX_WS_CONNECTIONS: usize = 64;
+
+async fn ws_handler(ws: WebSocketUpgrade, State(state): State<AppState>) -> Response {
+    let Some(slot) = state.lifecycle.try_acquire_connection(MAX_WS_CONNECTIONS) else {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            format!("too many open connections (limit {MAX_WS_CONNECTIONS}); close another tab"),
+        )
+            .into_response();
+    };
     ws.max_message_size(MAX_WS_PAYLOAD_BYTES)
         .max_frame_size(MAX_WS_PAYLOAD_BYTES)
         .on_upgrade(move |socket| async move {
             // A conexão roda numa task rastreada: o encerramento do servidor a espera terminar.
+            // A vaga só volta quando a task termina.
             let lifecycle = std::sync::Arc::clone(&state.lifecycle);
-            lifecycle.spawn(handle_socket(socket, state));
+            lifecycle.spawn(async move {
+                handle_socket(socket, state).await;
+                drop(slot);
+            });
         })
 }
 

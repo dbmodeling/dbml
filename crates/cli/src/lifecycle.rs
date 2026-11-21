@@ -4,6 +4,7 @@
 
 use std::future::Future;
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 use tokio::sync::watch;
 use tokio::task::JoinSet;
@@ -11,6 +12,7 @@ use tokio::task::JoinSet;
 pub struct Lifecycle {
     tasks: Mutex<JoinSet<()>>,
     shutdown: watch::Sender<bool>,
+    connections: AtomicUsize,
 }
 
 impl Default for Lifecycle {
@@ -18,6 +20,7 @@ impl Default for Lifecycle {
         Self {
             tasks: Mutex::new(JoinSet::new()),
             shutdown: watch::channel(false).0,
+            connections: AtomicUsize::new(0),
         }
     }
 }
@@ -61,6 +64,39 @@ impl Lifecycle {
         tasks.len()
     }
 
+    /// Tenta reservar uma vaga de conexão (máximo `max`); a vaga volta ao soltar o
+    /// [`ConnectionSlot`].
+    pub fn try_acquire_connection(
+        self: &std::sync::Arc<Self>,
+        max: usize,
+    ) -> Option<ConnectionSlot> {
+        let mut current = self.connections.load(Ordering::Acquire);
+        loop {
+            if current >= max {
+                return None;
+            }
+            match self.connections.compare_exchange_weak(
+                current,
+                current + 1,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            ) {
+                Ok(_) => {
+                    return Some(ConnectionSlot {
+                        lifecycle: std::sync::Arc::clone(self),
+                    });
+                }
+                Err(actual) => current = actual,
+            }
+        }
+    }
+
+    /// Conexões abertas agora.
+    #[must_use]
+    pub fn connections(&self) -> usize {
+        self.connections.load(Ordering::Acquire)
+    }
+
     /// Sinaliza o encerramento e espera as tasks rastreadas por até `grace`; as que não
     /// terminarem nesse prazo são abortadas ao soltar o conjunto.
     ///
@@ -76,11 +112,22 @@ impl Lifecycle {
     }
 }
 
+/// Vaga de conexão WebSocket; devolvida ao soltar.
+pub struct ConnectionSlot {
+    lifecycle: std::sync::Arc<Lifecycle>,
+}
+
+impl Drop for ConnectionSlot {
+    fn drop(&mut self) {
+        self.lifecycle.connections.fetch_sub(1, Ordering::AcqRel);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::sync::Arc;
-    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::atomic::AtomicBool;
 
     #[tokio::test]
     async fn shutdown_waits_for_tracked_tasks_and_signals_them() {
@@ -105,5 +152,17 @@ mod tests {
         let started = std::time::Instant::now();
         life.shutdown(Duration::from_millis(50)).await;
         assert!(started.elapsed() < Duration::from_secs(2));
+    }
+
+    #[test]
+    fn connection_slots_are_capped_and_released() {
+        let life = Arc::new(Lifecycle::default());
+        let a = life.try_acquire_connection(2).unwrap();
+        let _b = life.try_acquire_connection(2).unwrap();
+        assert!(life.try_acquire_connection(2).is_none());
+        assert_eq!(life.connections(), 2);
+        drop(a);
+        assert_eq!(life.connections(), 1);
+        assert!(life.try_acquire_connection(2).is_some());
     }
 }
