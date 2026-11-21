@@ -39,6 +39,12 @@ const NEW_TABLE_NAME: &str = "new_table";
 pub struct Doc {
     /// identifica a cópia de recuperação (`recovery`) desta aba
     id: u64,
+    /// sublinhados de diagnóstico lidos pelo highlighter do editor
+    marks: crate::ide::DiagMarks,
+    /// geração do texto analisado; resultados de análise de gerações antigas são descartados
+    parse_gen: u64,
+    /// análise (analyze + lint) com debounce, em segundo plano
+    parse_task: Option<Task<()>>,
     /// posições já gravadas (ou lidas) no sidecar de layout
     layout_saved: std::collections::HashMap<String, (f32, f32)>,
     /// gravação do sidecar com debounce
@@ -750,14 +756,17 @@ impl Shell {
             d
         });
         let layout_saved = diagram.read(cx).positions().clone();
+        let mut marks = None;
         let editor = cx.new(|cx| {
             let mut st = EditorState::new(window, cx)
                 .default_value(text)
                 .line_number(true);
-            crate::ide::install(&mut st, cx);
+            marks = Some(crate::ide::install(&mut st, cx));
             st
         });
+        let marks = marks.unwrap_or_default();
         let diags = editor.update(cx, crate::ide::refresh_diagnostics);
+        *marks.borrow_mut() = crate::ide::diag_marks(&diags);
         let table_hl = editor.update(cx, |e, cx| {
             e.create_range_decorations_collection(Vec::new(), cx)
         });
@@ -770,8 +779,6 @@ impl Shell {
                     return;
                 }
                 let val = ed.read(cx).value().to_string();
-                let schema = dbml_analysis::analyze(&val);
-                let diags = ed.update(cx, crate::ide::refresh_diagnostics);
                 let suppress = this.suppress_history;
                 if let Some(doc) = this.docs.iter_mut().find(|d| &d.editor == ed) {
                     if !suppress && val.as_str() != doc.last_text.as_ref() {
@@ -788,14 +795,9 @@ impl Shell {
                     }
                     doc.last_text = std::sync::Arc::from(val.as_str());
                     doc.dirty = doc.last_text.as_ref() != doc.saved_text.as_ref();
-                    doc.diags = diags;
-                    if !suppress {
-                        doc.diagram.update(cx, |d, cx| {
-                            d.set_schema(schema);
-                            cx.notify();
-                        });
-                    }
                 }
+                // analyze + lint fora da thread da UI, 120 ms depois da última tecla
+                this.schedule_analysis(ed, !suppress, cx);
                 if !suppress && let Some(i) = this.doc_index(ed) {
                     this.schedule_autosave(i, window, cx);
                 }
@@ -879,6 +881,9 @@ impl Shell {
         self.subs.extend([sub, obs, events]);
         self.docs.push(Doc {
             id: crate::recovery::next_id(),
+            marks,
+            parse_gen: 0,
+            parse_task: None,
             layout_saved,
             layout_task: None,
             path,
@@ -906,6 +911,43 @@ impl Shell {
 
     /// Abre `path` em uma aba. A leitura roda em segundo plano (pasta de rede lenta não congela
     /// a janela); `finish_open` conclui na thread da UI.
+    /// Agenda `analyze` + `lint` do texto atual para 120 ms depois, em segundo plano. Cada edição
+    /// invalida a anterior (geração), então digitar rápido analisa só o texto final. O resultado
+    /// atualiza diagnósticos, sublinhados e, se `apply_schema`, o canvas.
+    fn schedule_analysis(&mut self, editor: &Entity<EditorState>, apply_schema: bool, cx: &mut Context<Self>) {
+        let Some(i) = self.doc_index(editor) else { return };
+        let doc = &mut self.docs[i];
+        doc.parse_gen += 1;
+        let generation = doc.parse_gen;
+        let text = doc.last_text.clone();
+        let bg = cx.background_executor().clone();
+        let editor = editor.clone();
+        doc.parse_task = Some(cx.spawn(async move |this, cx| {
+            bg.timer(std::time::Duration::from_millis(120)).await;
+            let (schema, diags) = bg
+                .spawn(async move { (dbml_analysis::analyze(&text), dbml_analysis::lint(&text)) })
+                .await;
+            this.update(cx, |this, cx| {
+                let Some(i) = this.doc_index(&editor) else { return };
+                let doc = &mut this.docs[i];
+                if doc.parse_gen != generation {
+                    return;
+                }
+                *doc.marks.borrow_mut() = crate::ide::diag_marks(&diags);
+                doc.diags = diags;
+                if apply_schema {
+                    doc.diagram.update(cx, |d, cx| {
+                        d.set_schema(schema);
+                        cx.notify();
+                    });
+                }
+                editor.update(cx, |_, cx| cx.notify());
+                cx.notify();
+            })
+            .ok();
+        }));
+    }
+
     /// Grava as posições dos cartões no sidecar (`<arquivo>.dbml.layout.json`) quando mudam
     /// (arrastar, desfazer/refazer, reorganizar, tabela nova), com debounce e em segundo plano.
     fn save_layout(&mut self, i: usize, cx: &mut Context<Self>) {

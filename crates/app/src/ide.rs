@@ -11,16 +11,37 @@ use lsp_types::{
     CompletionContext, CompletionItem, CompletionItemKind, CompletionResponse, CompletionTextEdit,
     TextEdit,
 };
+use std::cell::RefCell;
 use std::ops::Range;
 use std::rc::Rc;
+
+/// Sublinhados de diagnóstico (trecho + cor), compartilhados entre o shell e o highlighter. O
+/// shell os atualiza quando a análise em segundo plano termina; o highlighter só os pinta, sem
+/// rodar o lint de novo a cada tecla.
+pub type DiagMarks = Rc<RefCell<Vec<(Range<usize>, Hsla)>>>;
+
+/// Converte diagnósticos em sublinhados coloridos pela severidade.
+pub fn diag_marks(diags: &[dbml_analysis::Diagnostic]) -> Vec<(Range<usize>, Hsla)> {
+    diags
+        .iter()
+        .map(|d| {
+            let c = match d.severity {
+                dbml_analysis::Severity::Error => crate::glass::DIAG_ERROR,
+                dbml_analysis::Severity::Warning => crate::glass::DIAG_WARNING,
+                dbml_analysis::Severity::Info => crate::glass::DIAG_INFO,
+            };
+            (d.range.clone(), rgba(c).into())
+        })
+        .collect()
+}
 
 /// Destaque de DBML a partir do CST (sem tree-sitter). Reanalisa o texto inteiro a cada edição.
 #[derive(Default)]
 pub struct DbmlHighlighter {
     spans: Vec<(Range<usize>, &'static str)>,
     folds: Vec<Range<usize>>,
-    /// Trechos com problema (lint) e a cor do sublinhado.
-    diags: Vec<(Range<usize>, Hsla)>,
+    /// Trechos com problema (lint) e a cor do sublinhado, preenchidos pelo shell.
+    marks: DiagMarks,
 }
 
 const KEYWORDS: [&str; 9] = [
@@ -38,19 +59,9 @@ impl DbmlHighlighter {
     fn rebuild(&mut self, text: &str) {
         self.spans.clear();
         self.folds.clear();
-        // os diagnósticos do editor não aparecem pintados nesta versão do gpui-base;
-        // o sublinhado vai junto com o destaque de sintaxe
-        self.diags = dbml_analysis::lint(text)
-            .into_iter()
-            .map(|d| {
-                let c = match d.severity {
-                    dbml_analysis::Severity::Error => crate::glass::DIAG_ERROR,
-                    dbml_analysis::Severity::Warning => crate::glass::DIAG_WARNING,
-                    dbml_analysis::Severity::Info => crate::glass::DIAG_INFO,
-                };
-                (d.range, rgba(c).into())
-            })
-            .collect();
+        // os diagnósticos do editor não aparecem pintados nesta versão do gpui-base; o sublinhado
+        // vai junto com o destaque de sintaxe, a partir de `marks` (lint roda uma vez, em
+        // segundo plano, no shell)
         let root = parse(text).syntax();
         let mut brace_stack = Vec::new();
         let mut in_brackets = false;
@@ -175,12 +186,13 @@ impl InputHighlighter for DbmlHighlighter {
         resolver: &dyn gpui_kit::component::input::HighlightStyleResolver,
     ) -> Vec<(Range<usize>, HighlightStyle)> {
         // fronteiras de todos os trechos (sintaxe e diagnósticos) dentro de `range`
+        let marks = self.marks.borrow();
         let mut cuts = vec![range.start, range.end];
         for r in self
             .spans
             .iter()
             .map(|(r, _)| r)
-            .chain(self.diags.iter().map(|(r, _)| r))
+            .chain(marks.iter().map(|(r, _)| r))
         {
             for p in [r.start, r.end] {
                 if p > range.start && p < range.end {
@@ -224,7 +236,7 @@ impl InputHighlighter for DbmlHighlighter {
                     })
                     .unwrap_or_default();
                 if let Some((_, color)) =
-                    self.diags.iter().find(|(r, _)| r.start <= at && at < r.end)
+                    marks.iter().find(|(r, _)| r.start <= at && at < r.end)
                 {
                     style.underline = Some(UnderlineStyle {
                         color: Some(*color),
@@ -331,17 +343,23 @@ impl CompletionProvider for DbmlCompletion {
     }
 }
 
-/// Instala destaque e autocomplete DBML num editor.
-pub fn install(editor: &mut EditorState, cx: &mut Context<EditorState>) {
+/// Instala destaque e autocomplete DBML num editor. Devolve os sublinhados de diagnóstico, que o
+/// chamador atualiza (e depois repinta o editor).
+pub fn install(editor: &mut EditorState, cx: &mut Context<EditorState>) -> DiagMarks {
+    let marks = DiagMarks::default();
+    let shared = marks.clone();
     editor.set_highlighter_factory(
-        Rc::new(|lang: &str| {
-            (lang == "dbml")
-                .then(|| Box::new(DbmlHighlighter::default()) as Box<dyn InputHighlighter>)
+        Rc::new(move |lang: &str| {
+            (lang == "dbml").then(|| {
+                Box::new(DbmlHighlighter { marks: shared.clone(), ..Default::default() })
+                    as Box<dyn InputHighlighter>
+            })
         }),
         cx,
     );
     editor.set_highlighter("dbml", cx);
     editor.lsp_mut().completion_provider = Some(Rc::new(DbmlCompletion));
+    marks
 }
 
 /// Roda o lint do texto do editor (para o painel Problemas e a barra de status).
@@ -379,6 +397,14 @@ mod tests {
         // cor hexadecimal: `#` e o valor viram número
         assert_eq!(kind("#"), Some("number"));
         assert_eq!(kind("e56731"), Some("number"));
+    }
+
+    #[::core::prelude::v1::test]
+    fn diag_marks_follow_diagnostic_ranges_and_severity() {
+        let diags = dbml_analysis::lint("Table t {\n  a nope_type\n}\nTable t {}\n");
+        let marks = diag_marks(&diags);
+        assert_eq!(marks.len(), diags.len());
+        assert_eq!(marks[0].0, diags[0].range);
     }
 
     #[::core::prelude::v1::test]
