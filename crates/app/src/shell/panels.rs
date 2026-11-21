@@ -2512,7 +2512,8 @@ impl Shell {
                     EditTarget::ColName(tb, col)
                     | EditTarget::ColType(tb, col)
                     | EditTarget::ColDefault(tb, col)
-                    | EditTarget::ColCheck(tb, col),
+                    | EditTarget::ColCheck(tb, col)
+                    | EditTarget::ColNote(tb, col),
                     _,
                 )) if tb == &t_qname => Some(col.clone()),
                 _ => {
@@ -2978,6 +2979,7 @@ impl Shell {
                 let target_type = EditTarget::ColType(qname.clone(), c.name.clone());
                 let target_def = EditTarget::ColDefault(qname.clone(), c.name.clone());
                 let target_chk = EditTarget::ColCheck(qname.clone(), c.name.clone());
+                let target_note = EditTarget::ColNote(qname.clone(), c.name.clone());
                 let (ed_name, ed_type, ed_def, ed_chk) = (
                     is_editing(&target_name),
                     is_editing(&target_type),
@@ -3325,6 +3327,45 @@ impl Shell {
                         }
                     };
 
+                    let col_note_box: AnyElement = match &editing {
+                        Some((tg, st)) if *tg == target_note => div()
+                            .flex_1()
+                            .min_w_0()
+                            .child(edit_box(st))
+                            .into_any_element(),
+                        _ => {
+                            let val = c.note.clone().unwrap_or_default();
+                            let has = !val.is_empty();
+                            let display = if has {
+                                val.clone()
+                            } else {
+                                crate::i18n::t("adicionar nota…").to_string()
+                            };
+                            let t_note = target_note.clone();
+                            div()
+                                .id(SharedString::from(format!("col-note-edit-{}", c.name)))
+                                .role(Role::Button)
+                                .aria_label(crate::i18n::t("Editar nota da coluna"))
+                                .flex_1()
+                                .min_w_0()
+                                .h(px(26.))
+                                .px(px(8.))
+                                .rounded(px(6.))
+                                .border_1()
+                                .border_color(g.edge_soft)
+                                .flex()
+                                .items_center()
+                                .text_size(px(12.))
+                                .text_color(if has { g.text } else { g.text_faint })
+                                .cursor_text()
+                                .on_click(cx.listener(move |this, _, window, cx| {
+                                    this.start_edit(t_note.clone(), val.clone(), window, cx);
+                                }))
+                                .child(div().truncate().child(display))
+                                .into_any_element()
+                        }
+                    };
+
                     let (table_mv, col_mv) = (qname.clone(), c.name.clone());
                     let mut up = step(
                         SharedString::from(format!("up-{}", c.name)),
@@ -3518,6 +3559,14 @@ impl Shell {
                                         .child(down)
                                         .child(del_col_btn),
                                 ),
+                        )
+                        .child(
+                            div()
+                                .flex()
+                                .items_center()
+                                .gap(px(8.))
+                                .child(row_lbl(crate::i18n::t("Nota")))
+                                .child(col_note_box),
                         );
                     card = card.child(motion::reveal_at(reveal_id, open_progress, open_body, cx));
                 }

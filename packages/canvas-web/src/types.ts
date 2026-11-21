@@ -233,6 +233,8 @@ export type Command =
   | { action: 'ungroup_table'; payload: { table: string } }
   | { action: 'ungroup_tables'; payload: { tables: string[] } }
   | { action: 'set_table_color'; payload: { table: string; color?: string | null } }
+  | { action: 'set_table_note'; payload: { table: string; note?: string | null } }
+  | { action: 'set_column_note'; payload: { table: string; column: string; note?: string | null } }
   | { action: 'add_enum'; payload: { name?: string } }
   | { action: 'delete_enum'; payload: { name: string } }
   | { action: 'rename_enum'; payload: { old_name: string; new_name: string } }
@@ -356,6 +358,78 @@ export interface WasmSession {
   free(): void;
 }
 
+/** Valor de enum (`schema::EnumValue`). */
+export interface EnumValueDef {
+  name: string;
+  note?: string | null;
+}
+
+/** Definição de enum (`schema::EnumDef`). */
+export interface EnumDef {
+  schema?: string | null;
+  name: string;
+  values: EnumValueDef[];
+}
+
+/** Mudança por chave (`schema::diff::Change`): adicionada, removida ou modificada. */
+export type DiffChange<T> =
+  | { kind: 'added'; value: T }
+  | { kind: 'removed'; value: T }
+  | { kind: 'modified'; value: { before: T; after: T } };
+
+/** Propriedades de nível de tabela comparadas pelo diff. */
+export interface DiffTableProps {
+  color?: string | null;
+  alias?: string | null;
+  note?: string | null;
+}
+
+/** Tabela presente em base e head com diferenças internas. */
+export interface DiffTableModified {
+  schema?: string | null;
+  name: string;
+  props?: { before: DiffTableProps; after: DiffTableProps } | null;
+  columns: DiffChange<Column>[];
+  indexes: DiffChange<IndexDef>[];
+}
+
+export type DiffTableChange =
+  | { kind: 'added'; value: Table }
+  | { kind: 'removed'; value: Table }
+  | { kind: 'modified'; value: DiffTableModified };
+
+/** Enum presente em base e head com valores diferentes. */
+export interface DiffEnumModified {
+  schema?: string | null;
+  name: string;
+  values: DiffChange<EnumValueDef>[];
+}
+
+export type DiffEnumChange =
+  | { kind: 'added'; value: EnumDef }
+  | { kind: 'removed'; value: EnumDef }
+  | { kind: 'modified'; value: DiffEnumModified };
+
+/** Diff estrutural entre dois schemas (`schema::SchemaDiff`). */
+export interface SchemaDiff {
+  tables: DiffTableChange[];
+  enums: DiffEnumChange[];
+  refs: DiffChange<Ref>[];
+}
+
+/** Contagens agregadas de mudanças atômicas (`schema::DiffSummary`). */
+export interface DiffSummary {
+  added: number;
+  removed: number;
+  modified: number;
+}
+
+/** Retorno de `diff_dbml`. */
+export interface DiffResult {
+  diff: SchemaDiff;
+  summary: DiffSummary;
+}
+
 /** Superfície do módulo Wasm (`crates/dbml-wasm`) usada pelo workbench. */
 export interface WasmApi {
   /** Ausente em hosts antigos (ex.: bundle do VS Code): o workbench cai nas funções soltas. */
@@ -369,6 +443,11 @@ export interface WasmApi {
   swap_dbml_lines(source: string, line: number, up: boolean): TextPatch;
   format_dbml(source: string): string;
   export_sql_ddl?(source: string, dialect: string): string;
+  export_docs_markdown?(source: string, title: string): string;
+  export_docs_html?(source: string, title: string, svg: string): string;
+  search_schema?(source: string, query: string): unknown;
   import_sql_ddl?(sql: string, dialect: string): unknown;
   import_conflicts?(source: string, dbml: string): string[];
+  /** Diff estrutural base vs. head; lança string `base|head has DBML errors: ...` se um lado for inválido. */
+  diff_dbml?(base_source: string, head_source: string): DiffResult;
 }

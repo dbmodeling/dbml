@@ -83,6 +83,10 @@ enum Drag {
         last: (f32, f32),
         start: EdgeStyles,
     },
+    /// arrasta o retângulo da câmera dentro do minimapa (`grab` = deslocamento em px no minimapa)
+    Minimap {
+        grab: (f32, f32),
+    },
 }
 
 /// Alvo do último clique direito (escolhe os itens do menu de contexto).
@@ -140,6 +144,9 @@ pub struct Diagram {
     /// barra de espaço pressionada: arrastar move a vista (temporariamente)
     space: bool,
     pub legend_open: bool,
+    pub minimap_open: bool,
+    minimap_origin: std::cell::Cell<Option<Point<Pixels>>>,
+    minimap_xform: std::cell::Cell<Option<crate::canvas_geom::MinimapTransform>>,
     focus: FocusHandle,
     /// tema atual (o shell atualiza ao trocar); o canvas é uma view própria
     pub glass: Option<Glass>,
@@ -154,6 +161,12 @@ pub struct Diagram {
     /// incrementa a cada troca de `schema`; entra na impressão digital do cache de rotas
     schema_rev: u64,
     route_cache: RefCell<RouteCache>,
+    /// Modo Foco (#12): destaca a tabela selecionada e sua vizinhança FK; esmaece o restante.
+    focus_mode: bool,
+    /// Profundidade do Modo Foco (1-hop ou 2-hop).
+    focus_depth: usize,
+    /// Coluna destacada via Busca Rápida (`(qualified_table, column)`).
+    highlighted_column: Option<(String, String)>,
 }
 
 impl Diagram {
@@ -178,6 +191,9 @@ impl Diagram {
             tool: Tool::Select,
             space: false,
             legend_open: false,
+            minimap_open: true,
+            minimap_origin: std::cell::Cell::new(None),
+            minimap_xform: std::cell::Cell::new(None),
             focus: cx.focus_handle(),
             glass: None,
             needs_fit: true,
@@ -189,6 +205,9 @@ impl Diagram {
             edges: EdgeStyles::new(),
             schema_rev: 0,
             route_cache: RefCell::default(),
+            focus_mode: false,
+            focus_depth: 1,
+            highlighted_column: None,
         };
         d.set_schema(schema);
         d
@@ -376,43 +395,142 @@ impl Diagram {
         self.size = size;
     }
 
-    /// Seleciona a tabela e centraliza a vista nela.
+    /// Seleciona a tabela e centraliza a vista nela em um zoom legível.
     pub fn focus_table(&mut self, name: &str) {
         let Some(t) = self.schema.table(name) else {
             return;
         };
-        let (x, y) = self.positions()[name];
+        let qname = t.qualified_name();
+        let (x, y) = self
+            .positions()
+            .get(&qname)
+            .copied()
+            .unwrap_or(crate::constants::DEFAULT_CARD_POS);
         let (w, h) = (f32::from(self.size.width), f32::from(self.size.height));
+        let target_zoom = if self.zoom < 0.85 { 1.0 } else { self.zoom };
         let (cx_, cy_) = (x + CARD_W / 2., y + card_h(t.columns.len()) / 2.);
         self.animate_viewport([
-            w / 2. - cx_ * self.zoom,
-            h / 2. - cy_ * self.zoom,
-            self.zoom,
+            w / 2. - cx_ * target_zoom,
+            h / 2. - cy_ * target_zoom,
+            target_zoom,
         ]);
-        self.selected = Some(name.to_string());
+        self.selected = Some(qname.clone());
+        self.multi.clear();
         self.selected_enum = None;
         self.selected_ref = None;
-        self.top = Some(name.to_string());
+        self.highlighted_column = None;
+        self.top = Some(qname);
     }
 
-    /// Seleciona o enum e centraliza a vista nele.
+    /// Seleciona a tabela, destaca a coluna alvo e centraliza a vista nela.
+    pub fn focus_column(&mut self, table: &str, column: &str) {
+        self.focus_table(table);
+        if let Some(t) = self.schema.table(table) {
+            self.highlighted_column = Some((t.qualified_name(), column.to_string()));
+        }
+    }
+
+    /// Seleciona o enum e centraliza a vista nele em um zoom legível.
     pub fn focus_enum(&mut self, name: &str) {
-        let Some(en) = self.schema.enums.iter().find(|e| e.name == name) else {
+        let Some(en) = self
+            .schema
+            .enums
+            .iter()
+            .find(|e| e.name == name || e.qualified_name() == name)
+        else {
             return;
         };
         let key = enum_key(en);
+        let en_name = en.name.clone();
         let (x, y) = self.positions().get(&key).copied().unwrap_or((0., 0.));
         let (w, h) = (f32::from(self.size.width), f32::from(self.size.height));
+        let target_zoom = if self.zoom < 0.85 { 1.0 } else { self.zoom };
         let (cx_, cy_) = (x + ENUM_W / 2., y + enum_h(en) / 2.);
         self.animate_viewport([
-            w / 2. - cx_ * self.zoom,
-            h / 2. - cy_ * self.zoom,
-            self.zoom,
+            w / 2. - cx_ * target_zoom,
+            h / 2. - cy_ * target_zoom,
+            target_zoom,
         ]);
         self.selected = None;
         self.multi.clear();
         self.selected_ref = None;
-        self.selected_enum = Some(name.to_string());
+        self.highlighted_column = None;
+        self.selected_enum = Some(en_name);
+    }
+
+    pub fn focus_mode(&self) -> bool {
+        self.focus_mode && !self.selection().is_empty()
+    }
+
+    pub fn toggle_focus_mode(&mut self) {
+        if self.focus_mode {
+            self.focus_mode = false;
+        } else if !self.selection().is_empty() {
+            self.focus_mode = true;
+        }
+    }
+
+    pub fn cycle_focus_depth(&mut self) {
+        self.focus_depth = if self.focus_depth == 1 { 2 } else { 1 };
+        if !self.selection().is_empty() {
+            self.focus_mode = true;
+        }
+    }
+
+    fn minimap_transform(
+        &self,
+    ) -> Option<(crate::canvas_geom::MinimapTransform, (f32, f32, f32, f32))> {
+        if self.schema.tables.is_empty() {
+            return None;
+        }
+        let (vw, vh) = (
+            f32::from(self.size.width).max(1.0),
+            f32::from(self.size.height).max(1.0),
+        );
+        let vp_x = -self.pan.0 / self.zoom;
+        let vp_y = -self.pan.1 / self.zoom;
+        let vp_w = vw / self.zoom;
+        let vp_h = vh / self.zoom;
+        let (mut min_x, mut min_y, mut max_x, mut max_y) = (vp_x, vp_y, vp_x + vp_w, vp_y + vp_h);
+        for t in &self.schema.tables {
+            let q = t.qualified_name();
+            if let Some(&(x, y)) = self.pos.get(&q) {
+                min_x = min_x.min(x);
+                min_y = min_y.min(y);
+                max_x = max_x.max(x + CARD_W);
+                max_y = max_y.max(y + card_h(t.columns.len()));
+            }
+        }
+        for en in &self.schema.enums {
+            let key = enum_key(en);
+            if let Some(&(x, y)) = self.pos.get(&key) {
+                min_x = min_x.min(x);
+                min_y = min_y.min(y);
+                max_x = max_x.max(x + ENUM_W);
+                max_y = max_y.max(y + enum_h(en));
+            }
+        }
+        let margin = 40.0;
+        let xf = crate::canvas_geom::MinimapTransform::compute(
+            min_x - margin,
+            min_y - margin,
+            max_x + margin,
+            max_y + margin,
+            crate::canvas_geom::MINIMAP_W,
+            crate::canvas_geom::MINIMAP_H,
+            crate::canvas_geom::MINIMAP_PAD,
+        );
+        Some((xf, (vp_x, vp_y, vp_w, vp_h)))
+    }
+
+    fn pan_from_minimap(&mut self, screen_pos: Point<Pixels>, grab: (f32, f32)) {
+        let (Some(origin), Some(xf)) = (self.minimap_origin.get(), self.minimap_xform.get()) else {
+            return;
+        };
+        let mx = f32::from(screen_pos.x - origin.x) - grab.0;
+        let my = f32::from(screen_pos.y - origin.y) - grab.1;
+        let (vw, vh) = (f32::from(self.size.width), f32::from(self.size.height));
+        self.pan = xf.pan_for_map_point(mx, my, self.zoom, vw, vh);
     }
 
     /// Frase curta para a barra de status: o que o usuário pode fazer agora.
@@ -430,6 +548,7 @@ impl Diagram {
             (Some(Drag::Group { name, .. }), _) => crate::i18n::t("Movendo grupo {}").replace("{}", name),
             (Some(Drag::Enum { name, .. }), _) => crate::i18n::t("Movendo enum {}").replace("{}", name),
             (Some(Drag::Edge { .. }), _) => crate::i18n::t("Curvando a relação: solte para gravar").into(),
+            (Some(Drag::Minimap { .. }), _) => crate::i18n::t("Navegando pelo minimapa").into(),
             (None, Tool::Hand) => crate::i18n::t("Mão: arraste para mover a vista · V volta a Selecionar").into(),
             (None, Tool::Select) if !self.multi.is_empty() => {
                 crate::i18n::t("{} tabelas selecionadas · Ctrl+G agrupa").replace("{}", &(self.multi.len() + 1).to_string())
@@ -488,6 +607,8 @@ impl Diagram {
         self.selected = None;
         self.selected_enum = None;
         self.selected_ref = None;
+        self.focus_mode = false;
+        self.highlighted_column = None;
     }
 
     pub fn zoom_by(&mut self, factor: f32) {
@@ -1122,8 +1243,10 @@ impl Diagram {
             sb: f32,
             pts: Vec<[Point<Pixels>; 4]>,
             lit: f32,
+            dim: f32,
             ends: (&'static str, &'static str),
         }
+        const FOCUS_DIM: f32 = 0.18;
         let now = Instant::now();
         if self.advance_motion(now, motion::disabled() || cx.reduce_motion()) {
             window.request_animation_frame();
@@ -1140,7 +1263,8 @@ impl Diagram {
                 | Drag::Cards { .. }
                 | Drag::Group { .. }
                 | Drag::Enum { .. }
-                | Drag::Edge { .. },
+                | Drag::Edge { .. }
+                | Drag::Minimap { .. },
             ) => Some(CursorStyle::ClosedHand),
             Some(Drag::Marquee { .. } | Drag::Link { .. }) => Some(CursorStyle::Crosshair),
             None if self.space => Some(CursorStyle::OpenHand),
@@ -1148,6 +1272,12 @@ impl Diagram {
         };
         let s = move |v: f32| px(v * z);
         let schema = &self.schema;
+        let focus_sub: Option<schema::FocusSubgraph> = if self.focus_mode {
+            let seeds: std::collections::HashSet<String> = self.selection().into_iter().collect();
+            (!seeds.is_empty()).then(|| schema.neighborhood(&seeds, self.focus_depth))
+        } else {
+            None
+        };
 
         // arestas coluna→coluna: âncoras locais ao canvas + cardinalidade + destaque
         self.validate_routes();
@@ -1182,6 +1312,10 @@ impl Diagram {
                     window,
                     cx,
                 );
+                let dim = match &focus_sub {
+                    Some(sub) if !sub.ref_indices.contains(&i) => FOCUS_DIM,
+                    _ => 1.0,
+                };
                 Some(Edge {
                     a: pts.first()?[0],
                     b: pts.last()?[3],
@@ -1189,6 +1323,7 @@ impl Diagram {
                     sb,
                     pts,
                     lit,
+                    dim,
                     ends,
                 })
             })
@@ -1198,7 +1333,7 @@ impl Diagram {
             .selected_edge()
             .map(|(_, _, _, m)| point(px(m.x * z + pan_x), px(m.y * z + pan_y)));
         // rótulos N/1: 9px para dentro da aresta, acima da linha (centrados numa caixa de 12px)
-        let labels: Vec<(Point<Pixels>, &'static str, f32)> = edges
+        let labels: Vec<(Point<Pixels>, &'static str, f32, f32)> = edges
             .iter()
             .flat_map(|e| {
                 [(e.a, e.sa, e.ends.0), (e.b, e.sb, e.ends.1)].map(|(p, side, text)| {
@@ -1206,6 +1341,7 @@ impl Diagram {
                         point(p.x + px((side * 11. - 6.) * z), p.y - px(17. * z)),
                         text,
                         e.lit,
+                        e.dim,
                     )
                 })
             })
@@ -1336,6 +1472,8 @@ impl Diagram {
                             this.selected = None;
                             this.selected_ref = None;
                             this.multi.clear();
+                            this.focus_mode = false;
+                            this.highlighted_column = None;
                         }
                         this.drag = Some(Drag::Marquee { start: at, now: at });
                     }
@@ -1397,6 +1535,10 @@ impl Diagram {
                         this.pan.0 += f32::from(e.position.x - last.x);
                         this.pan.1 += f32::from(e.position.y - last.y);
                         *last = e.position;
+                    }
+                    Some(Drag::Minimap { grab }) => {
+                        let grab = *grab;
+                        this.pan_from_minimap(e.position, grab);
                     }
                     None => return,
                 }
@@ -1492,12 +1634,12 @@ impl Diagram {
                         let (a, b) = (bounds.origin + e.a, bounds.origin + e.b);
                         let pts: Vec<_> =
                             e.pts.iter().map(|c| c.map(|p| bounds.origin + p)).collect();
-                        let color = motion::color(line, stroke, e.lit);
+                        let color = motion::color(line, stroke, e.lit).opacity(e.dim);
                         // Halo sob o traço da relação ativa.
                         if e.lit > 0.
                             && let Some(path) = bezier(&pts, 8. * z)
                         {
-                            window.paint_path(path, stroke.opacity(0.16 * e.lit));
+                            window.paint_path(path, stroke.opacity(0.16 * e.lit * e.dim));
                         }
                         let w = (1.4 + 0.4 * e.lit) * z.max(0.5);
                         if let Some(path) = bezier(&pts, w) {
@@ -1564,7 +1706,7 @@ impl Diagram {
             .size_full(),
         );
 
-        for (at, text, lit) in labels {
+        for (at, text, lit, dim) in labels {
             root = root.child(
                 div()
                     .absolute()
@@ -1576,6 +1718,7 @@ impl Diagram {
                     .font_family(FONT_MONO)
                     .font_weight(FontWeight::MEDIUM)
                     .text_color(motion::color(g.text_faint, g.accent, lit))
+                    .opacity(dim)
                     .child(text),
             );
         }
@@ -1604,6 +1747,16 @@ impl Diagram {
                 .as_deref()
                 .and_then(hex)
                 .unwrap_or_else(|| group_color(schema, &gr.name));
+            let group_dim = match &focus_sub {
+                Some(sub)
+                    if !members
+                        .iter()
+                        .any(|(_, t)| sub.tables.contains(&t.qualified_name())) =>
+                {
+                    FOCUS_DIM
+                }
+                _ => 1.0,
+            };
             let name = gr.name.clone();
             root = root.child(
                 div()
@@ -1619,6 +1772,7 @@ impl Diagram {
                     .border_1()
                     .border_color(c.opacity(if dark { 0.18 } else { 0.22 }))
                     .bg(c.opacity(if dark { 0.06 } else { 0.07 }))
+                    .opacity(group_dim)
                     // etiqueta em pílula: ponto, nome, contagem
                     .child(
                         div()
@@ -1743,6 +1897,16 @@ impl Diagram {
                     .any(|ix| ix.references_column(c.name.as_str()));
                 let has_def = c.default_value.is_some();
                 let has_chk = c.check.is_some();
+                let col_note = c
+                    .note
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty())
+                    .map(str::to_owned);
+                let is_hi_col = self
+                    .highlighted_column
+                    .as_ref()
+                    .is_some_and(|(tb, cl)| tb == &qname && cl == &c.name);
                 let icon = if c.pk {
                     Some(Icon::new(IconName::KeyRound).text_color(g.accent))
                 } else if fk {
@@ -1753,6 +1917,7 @@ impl Diagram {
                 let k = z;
                 let neutral = |label| badge(label, gpui_kit::transparent_black(), g.text_faint, k);
                 let from = (qname.clone(), c.name.clone());
+                let note_col_id = SharedString::from(format!("col-note-{qname}-{}", c.name));
                 rows.push(
                     div()
                         .id(("col", i))
@@ -1764,6 +1929,7 @@ impl Diagram {
                         .items_center()
                         .gap(s(8.))
                         .text_size(s(13.))
+                        .when(is_hi_col, |d| d.bg(g.accent.opacity(0.14)))
                         .hover({
                             let h = g.hover;
                             move |st| st.bg(h)
@@ -1785,6 +1951,23 @@ impl Diagram {
                                 .when(c.pk, |d| d.font_weight(FontWeight::MEDIUM))
                                 .child(c.name.clone()),
                         )
+                        .when_some(col_note, |d, note_text| {
+                            d.child(
+                                div()
+                                    .id(note_col_id)
+                                    .flex_none()
+                                    .flex()
+                                    .items_center()
+                                    .tooltip(move |window, cx| {
+                                        Tooltip::new(note_text.clone()).build(window, cx)
+                                    })
+                                    .child(
+                                        Icon::new(IconName::Info)
+                                            .size(s(11.))
+                                            .text_color(g.text_muted),
+                                    ),
+                            )
+                        })
                         .when(has_idx, |d| {
                             d.child(badge("IDX", gpui_kit::transparent_black(), idx_color, k))
                         })
@@ -1832,6 +2015,17 @@ impl Diagram {
                         .into_any_element(),
                 );
             }
+            let table_dim = match &focus_sub {
+                Some(sub) if !sub.tables.contains(&qname) => FOCUS_DIM,
+                _ => 1.0,
+            };
+            let table_note = t
+                .note
+                .as_deref()
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(str::to_owned);
+            let table_note_id = SharedString::from(format!("tbl-note-{qname}"));
             root = root.child(
                 div()
                     .id(SharedString::from(format!("table-{qname}")))
@@ -1848,7 +2042,7 @@ impl Diagram {
                     .group("card")
                     .border_1()
                     .border_color(motion::color(g.edge_soft, g.accent, on))
-                    .opacity(appear)
+                    .opacity(appear * table_dim)
                     // sombra suave sempre; selecionado ganha o anel do destaque
                     .shadow({
                         let mut shadow = card_shadow(g.mode);
@@ -1956,6 +2150,23 @@ impl Diagram {
                                         .child(sch.clone()),
                                 )
                             })
+                            .when_some(table_note, |d, note_text| {
+                                d.child(
+                                    div()
+                                        .id(table_note_id)
+                                        .flex_none()
+                                        .flex()
+                                        .items_center()
+                                        .tooltip(move |window, cx| {
+                                            Tooltip::new(note_text.clone()).build(window, cx)
+                                        })
+                                        .child(
+                                            Icon::new(IconName::Info)
+                                                .size(s(12.))
+                                                .text_color(g.text_muted),
+                                        ),
+                                )
+                            })
                             .child(
                                 div()
                                     .min_w(s(18.))
@@ -2047,6 +2258,18 @@ impl Diagram {
             let en_name = en.name.clone();
             let shown = en.values.iter().take(6);
             let overflow = en.values.len().saturating_sub(6);
+            let enum_dim = match &focus_sub {
+                Some(sub) => {
+                    let used_in_sub = schema.tables.iter().any(|t| {
+                        sub.tables.contains(&t.qualified_name())
+                            && t.columns
+                                .iter()
+                                .any(|c| c.ty.rsplit('.').next().is_some_and(|ty| ty == en.name))
+                    });
+                    if used_in_sub { 1.0 } else { FOCUS_DIM }
+                }
+                None => 1.0,
+            };
             let card = div()
                 .id(SharedString::from(format!("enum-card-{}", en.name)))
                 .absolute()
@@ -2058,7 +2281,7 @@ impl Diagram {
                 .rounded(s(CARD_R))
                 .border_1()
                 .border_color(motion::color(g.edge, g.accent, on))
-                .opacity(appear)
+                .opacity(appear * enum_dim)
                 .shadow({
                     let mut shadow = card_shadow(g.mode);
                     shadow.offset.y += px(4. * lift);
@@ -2390,10 +2613,15 @@ impl Diagram {
             let on = match id {
                 "tool-select" => self.tool == Tool::Select,
                 "tool-hand" => self.tool == Tool::Hand,
+                "tool-focus" => self.focus_mode(),
                 "tool-editor" => g.editor_open,
                 _ => false,
             };
-            let enabled = id != "tool-group" || n_sel >= 2;
+            let enabled = match id {
+                "tool-group" => n_sel >= 2,
+                "tool-focus" => n_sel >= 1 || self.focus_mode,
+                _ => true,
+            };
             tools = tools
                 .when(sep, |d| d.child(hsep()))
                 .child(tool_btn(id, icon, tip, action, on, enabled, 32.));
@@ -2407,6 +2635,61 @@ impl Diagram {
                 .child(tools)
                 .into_any_element(),
         );
+        if self.focus_mode() {
+            let depth = self.focus_depth;
+            let focus_bar = island("canvas-focus-bar", crate::i18n::t("Modo Foco"))
+                .px(px(10.))
+                .gap(px(8.))
+                .child(
+                    div()
+                        .text_size(TEXT_XS)
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .text_color(g.accent)
+                        .child(crate::i18n::t("Modo Foco")),
+                )
+                .child(
+                    div()
+                        .id("focus-depth-pill")
+                        .role(Role::Button)
+                        .px(px(7.))
+                        .py(px(2.))
+                        .rounded(px(6.))
+                        .bg(g.accent.opacity(0.16))
+                        .text_size(TEXT_XS)
+                        .font_family(FONT_MONO)
+                        .text_color(g.accent)
+                        .cursor_pointer()
+                        .on_click(|_, window, cx| {
+                            window.dispatch_action(Box::new(CycleFocusDepth), cx);
+                        })
+                        .child(if depth == 1 { "1-hop" } else { "2-hop" }),
+                )
+                .child(
+                    div()
+                        .id("focus-exit-btn")
+                        .role(Role::Button)
+                        .px(px(6.))
+                        .py(px(2.))
+                        .rounded(px(6.))
+                        .text_size(TEXT_XS)
+                        .text_color(g.text_muted)
+                        .cursor_pointer()
+                        .hover(|s| s.bg(g.hover))
+                        .on_click(|_, window, cx| {
+                            window.dispatch_action(Box::new(ToggleFocusMode), cx);
+                        })
+                        .child("Esc"),
+                );
+            out.push(
+                div()
+                    .absolute()
+                    .top(px(12.))
+                    .left(relative(0.5))
+                    .ml(px(-95.))
+                    .child(focus_bar)
+                    .into_any_element(),
+            );
+        }
 
         // Zoom, ajuste e legenda no canto inferior direito.
         let pct = format!("{}%", (self.zoom * 100.).round() as i32);
@@ -2469,6 +2752,15 @@ impl Diagram {
                         ))
                         .child(vsep())
                         .child(tool_btn(
+                            "toggle-minimap",
+                            IconName::Frame,
+                            crate::i18n::t("Minimapa"),
+                            Box::new(ToggleMinimap),
+                            self.minimap_open && !self.schema.tables.is_empty(),
+                            !self.schema.tables.is_empty(),
+                            30.,
+                        ))
+                        .child(tool_btn(
                             "help-legend",
                             IconName::Info,
                             crate::i18n::t("Legenda"),
@@ -2481,7 +2773,196 @@ impl Diagram {
                 .into_any_element(),
         );
 
-        // Legenda acima da ilha de zoom.
+        let minimap_visible = self.minimap_open && !self.schema.tables.is_empty();
+        if minimap_visible && let Some((xf, vp_world)) = self.minimap_transform() {
+            self.minimap_xform.set(Some(xf));
+            let map_w = crate::canvas_geom::MINIMAP_W;
+            let map_h = crate::canvas_geom::MINIMAP_H;
+            let schema = &self.schema;
+            let dark = g.mode == Mode::Dark;
+            let mut mm_groups: Vec<(f32, f32, f32, f32, Hsla)> = Vec::new();
+            for gr in &schema.groups {
+                let members: Vec<_> = gr
+                    .tables
+                    .iter()
+                    .filter_map(|t| Some((self.pos.get(t)?, schema.table(t)?)))
+                    .collect();
+                if members.is_empty() {
+                    continue;
+                }
+                let (mut x0, mut y0, mut x1, mut y1) = (f32::MAX, f32::MAX, f32::MIN, f32::MIN);
+                for ((x, y), t) in &members {
+                    x0 = x0.min(*x);
+                    y0 = y0.min(*y);
+                    x1 = x1.max(x + CARD_W);
+                    y1 = y1.max(y + card_h(t.columns.len()));
+                }
+                let pad = GROUP_PAD - 8.;
+                let c = gr
+                    .color
+                    .as_deref()
+                    .and_then(hex)
+                    .unwrap_or_else(|| group_color(schema, &gr.name));
+                let (mx0, my0) = xf.world_to_map(x0 - pad, y0 - pad - 8.);
+                let (mx1, my1) = xf.world_to_map(x1 + pad, y1 + pad);
+                mm_groups.push((mx0, my0, (mx1 - mx0).max(2.), (my1 - my0).max(2.), c));
+            }
+            let mut mm_tables: Vec<(f32, f32, f32, f32, Hsla, bool)> =
+                Vec::with_capacity(schema.tables.len());
+            for t in &schema.tables {
+                let q = t.qualified_name();
+                let (x, y) = self
+                    .pos
+                    .get(&q)
+                    .copied()
+                    .unwrap_or(crate::constants::DEFAULT_CARD_POS);
+                let grp = schema.group_of(&q);
+                let tint = t
+                    .color
+                    .as_deref()
+                    .or_else(|| grp.and_then(|gr| gr.color.as_deref()))
+                    .and_then(hex)
+                    .or_else(|| grp.map(|gr| group_color(schema, &gr.name)))
+                    .unwrap_or(g.text_muted);
+                let (mx0, my0) = xf.world_to_map(x, y);
+                let (mx1, my1) = xf.world_to_map(x + CARD_W, y + card_h(t.columns.len()));
+                mm_tables.push((
+                    mx0,
+                    my0,
+                    (mx1 - mx0).max(3.),
+                    (my1 - my0).max(3.),
+                    tint,
+                    self.is_selected(&q),
+                ));
+            }
+            let mut mm_enums: Vec<(f32, f32, f32, f32)> = Vec::with_capacity(schema.enums.len());
+            for en in &schema.enums {
+                let key = enum_key(en);
+                if let Some(&(x, y)) = self.pos.get(&key) {
+                    let (mx0, my0) = xf.world_to_map(x, y);
+                    let (mx1, my1) = xf.world_to_map(x + ENUM_W, y + enum_h(en));
+                    mm_enums.push((mx0, my0, (mx1 - mx0).max(3.), (my1 - my0).max(3.)));
+                }
+            }
+            let (vp_left, vp_top) = xf.world_to_map(vp_world.0, vp_world.1);
+            let (vp_right, vp_bottom) =
+                xf.world_to_map(vp_world.0 + vp_world.2, vp_world.1 + vp_world.3);
+            let vp_rect = (
+                vp_left,
+                vp_top,
+                (vp_right - vp_left).max(8.),
+                (vp_bottom - vp_top).max(6.),
+            );
+            let accent = g.accent;
+            let muted = g.text_faint;
+            let entity = cx.entity();
+            out.push(
+                float(div().id("canvas-minimap"))
+                    .role(Role::Region)
+                    .aria_label(crate::i18n::t("Minimapa"))
+                    .absolute()
+                    .bottom(px(56.))
+                    .right(px(12.))
+                    .w(px(map_w))
+                    .h(px(map_h))
+                    .overflow_hidden()
+                    .cursor_pointer()
+                    .on_scroll_wheel(|_, _, cx| cx.stop_propagation())
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(move |this, e: &MouseDownEvent, window, cx| {
+                            cx.stop_propagation();
+                            this.interrupt_motion();
+                            window.focus(&this.focus, cx);
+                            let Some(origin) = this.minimap_origin.get() else {
+                                return;
+                            };
+                            let mx = f32::from(e.position.x - origin.x);
+                            let my = f32::from(e.position.y - origin.y);
+                            let inside_vp = mx >= vp_rect.0
+                                && mx <= vp_rect.0 + vp_rect.2
+                                && my >= vp_rect.1
+                                && my <= vp_rect.1 + vp_rect.3;
+                            let grab = if inside_vp {
+                                (
+                                    mx - (vp_rect.0 + vp_rect.2 * 0.5),
+                                    my - (vp_rect.1 + vp_rect.3 * 0.5),
+                                )
+                            } else {
+                                (0.0, 0.0)
+                            };
+                            if !inside_vp {
+                                this.pan_from_minimap(e.position, grab);
+                            }
+                            this.drag = Some(Drag::Minimap { grab });
+                            cx.notify();
+                        }),
+                    )
+                    .child(
+                        canvas(
+                            |_, _, _| (),
+                            move |bounds, (), window, cx| {
+                                entity.read(cx).minimap_origin.set(Some(bounds.origin));
+                                for &(x, y, w, h, c) in &mm_groups {
+                                    window.paint_quad(
+                                        fill(
+                                            Bounds::new(
+                                                bounds.origin + point(px(x), px(y)),
+                                                size(px(w), px(h)),
+                                            ),
+                                            c.opacity(if dark { 0.14 } else { 0.16 }),
+                                        )
+                                        .corner_radii(px(3.))
+                                        .border_widths(px(1.))
+                                        .border_color(c.opacity(0.35)),
+                                    );
+                                }
+                                for &(x, y, w, h) in &mm_enums {
+                                    window.paint_quad(
+                                        fill(
+                                            Bounds::new(
+                                                bounds.origin + point(px(x), px(y)),
+                                                size(px(w), px(h)),
+                                            ),
+                                            muted.opacity(0.45),
+                                        )
+                                        .corner_radii(px(2.)),
+                                    );
+                                }
+                                for &(x, y, w, h, c, sel) in &mm_tables {
+                                    window.paint_quad(
+                                        fill(
+                                            Bounds::new(
+                                                bounds.origin + point(px(x), px(y)),
+                                                size(px(w), px(h)),
+                                            ),
+                                            if sel { accent } else { c.opacity(0.75) },
+                                        )
+                                        .corner_radii(px(2.)),
+                                    );
+                                }
+                                window.paint_quad(
+                                    fill(
+                                        Bounds::new(
+                                            bounds.origin + point(px(vp_rect.0), px(vp_rect.1)),
+                                            size(px(vp_rect.2), px(vp_rect.3)),
+                                        ),
+                                        accent.opacity(0.14),
+                                    )
+                                    .corner_radii(px(3.))
+                                    .border_widths(px(1.5))
+                                    .border_color(accent),
+                                );
+                            },
+                        )
+                        .size_full(),
+                    )
+                    .into_any_element(),
+            );
+        }
+
+        // Legenda acima da ilha de zoom (ou acima do minimapa quando visível).
+        let legend_bottom = if minimap_visible { 202. } else { 56. };
         if legend_progress > 0. {
             let row = |swatch: AnyElement, text: &'static str| {
                 div()
@@ -2512,7 +2993,7 @@ impl Diagram {
             out.push(
                 float(div().id("canvas-legend"))
                     .absolute()
-                    .bottom(px(56. - 6. * (1. - legend_progress)))
+                    .bottom(px(legend_bottom - 6. * (1. - legend_progress)))
                     .opacity(legend_progress)
                     .right(px(12.))
                     .w(px(256.))
@@ -2773,6 +3254,13 @@ fn tool_items() -> Vec<ToolItem> {
             "Auto-layout",
             Box::new(Relayout),
             true,
+        ),
+        (
+            "tool-focus",
+            IconName::Scan,
+            crate::i18n::t("Modo Foco (vizinhança FK)"),
+            Box::new(ToggleFocusMode),
+            false,
         ),
         (
             "tool-editor",
@@ -3063,13 +3551,14 @@ mod tests {
     /// Ações e divisores da ilha de ferramentas.
     #[::core::prelude::v1::test]
     fn tool_island_order_and_separators() {
-        let want: [(&str, &dyn Action, bool); 7] = [
+        let want: [(&str, &dyn Action, bool); 8] = [
             ("tool-select", &ToolSelect, false),
             ("tool-hand", &ToolHand, false),
             ("tool-table", &NewTable, true),
             ("tool-enum", &NewEnum, false),
             ("tool-group", &GroupSelection, false),
             ("tool-layout", &Relayout, true),
+            ("tool-focus", &ToggleFocusMode, false),
             ("tool-editor", &ToggleEditor, false),
         ];
         let got = tool_items();

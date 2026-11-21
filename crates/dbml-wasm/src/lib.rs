@@ -20,7 +20,7 @@ use serde::Serialize;
 use std::collections::{HashMap, HashSet};
 use std::fmt::Write as _;
 use types::{
-    AnalysisResult, Command, DiagnosticSeverity, EnumVisual, GroupBox, ImportResult,
+    AnalysisResult, Command, DiagnosticSeverity, DiffResult, EnumVisual, GroupBox, ImportResult,
     ImportWarningDto, LayoutResult, NodeCoordinate, RoutedEdge, SceneGeometry, TableVisual,
     TextPatch, WasmDiagnostic,
 };
@@ -65,6 +65,16 @@ pub enum WasmError {
     /// Falha ao exportar o diagrama.
     #[error("export failed: {0}")]
     Export(String),
+    /// Um dos lados do diff tem erros de sintaxe/semântica.
+    #[error("{side} has DBML errors: line {line}: {message}")]
+    InvalidDiffSource {
+        /// Lado com problema (`base` ou `head`).
+        side: &'static str,
+        /// Linha (1-based) do primeiro erro.
+        line: usize,
+        /// Mensagem do primeiro erro.
+        message: String,
+    },
 }
 
 impl From<WasmError> for JsValue {
@@ -839,6 +849,17 @@ fn apply_command_internal(source: &str, command: Command) -> Result<TextPatch, S
             dbml_edit::set_table_color(source, &table, color.as_deref())
                 .ok_or_else(|| format!("Table '{table}' not found when setting color"))?
         }
+        Command::SetTableNote { table, note } => {
+            let patch = dbml_edit::set_table_note(source, &table, note.as_deref())
+                .map_err(|e| e.to_string())?;
+            patch.apply(source)
+        }
+        Command::SetColumnNote {
+            table,
+            column,
+            note,
+        } => dbml_edit::set_column_note(source, &table, &column, note.as_deref())
+            .ok_or_else(|| format!("Column '{column}' not found in table '{table}'"))?,
         Command::AddEnum { name } => {
             let enum_name = name.unwrap_or_else(|| dbml_edit::unique_enum_name(source, "new_enum"));
             created_enum = Some(enum_name.clone());
@@ -994,6 +1015,98 @@ pub fn export_sql_ddl(source: &str, dialect: &str) -> Result<String, JsValue> {
     export_sql_ddl_str(source, dialect).map_err(|e| JsValue::from_str(&e.to_string()))
 }
 
+/// Exports DBML `source` to structured Markdown documentation (table index, Mermaid ER diagram,
+/// columns, indexes, relationships, enums, and notes).
+#[wasm_bindgen]
+#[must_use]
+pub fn export_docs_markdown(source: &str, title: &str) -> String {
+    let schema = dbml_analysis::analyze(source);
+    diagram_export::to_markdown(&schema, title)
+}
+
+/// Exports DBML `source` to a self-contained static HTML documentation page.
+///
+/// When `svg` is empty, an SVG diagram is rendered automatically from the auto-layout scene.
+#[wasm_bindgen]
+#[must_use]
+pub fn export_docs_html(source: &str, title: &str, svg: &str) -> String {
+    let schema = dbml_analysis::analyze(source);
+    if svg.trim().is_empty() {
+        let positions: HashMap<String, (f32, f32)> = auto_layout_schema(&schema)
+            .into_iter()
+            .map(|(k, p)| (k, (p.x, p.y)))
+            .collect();
+        let auto_svg = diagram_export::to_svg(
+            &schema,
+            &positions,
+            &diagram_export::EdgeStyles::new(),
+            &diagram_export::Theme::dark(),
+        );
+        diagram_export::to_html(&schema, &auto_svg, title)
+    } else {
+        diagram_export::to_html(&schema, svg, title)
+    }
+}
+
+/// Searches tables, columns (names and types), and enums in `source`.
+///
+/// # Errors
+///
+/// Returns a [`JsValue`] error if JSON serialization fails.
+#[wasm_bindgen]
+pub fn search_schema(source: &str, query: &str) -> Result<JsValue, JsValue> {
+    let schema = dbml_analysis::analyze(source);
+    let hits = dbml_analysis::search_schema(&schema, query);
+    to_js_json(&hits)
+}
+
+/// Compara dois textos DBML estruturalmente (base vs. head).
+///
+/// Retorna `{ diff, summary }`: `diff` é o `SchemaDiff` (`tables`, `enums`, `refs`; cada
+/// mudança é `{ kind: "added" | "removed" | "modified", value }`) e `summary` é `{ added, removed, modified }` (`SchemaDiff::summary`). Itens casados por nome, sem
+/// heurística de rename.
+///
+/// # Errors
+///
+/// Retorna erro com prefixo `base` ou `head` se o respectivo texto tiver diagnósticos de
+/// severidade erro, ou se a serialização falhar.
+#[wasm_bindgen]
+pub fn diff_dbml(base_source: &str, head_source: &str) -> Result<JsValue, JsValue> {
+    let result = diff_dbml_impl(base_source, head_source)?;
+    to_js_json(&result)
+}
+
+/// Núcleo nativo (testável sem Wasm) de [`diff_dbml`].
+///
+/// # Errors
+///
+/// [`WasmError::InvalidDiffSource`] indicando o lado (`base`/`head`) com erros.
+pub fn diff_dbml_impl(base_source: &str, head_source: &str) -> Result<DiffResult, WasmError> {
+    let base = analyze_strict("base", base_source)?;
+    let head = analyze_strict("head", head_source)?;
+    let diff = schema::diff_schemas(&base, &head);
+    let summary = diff.summary();
+    Ok(DiffResult { diff, summary })
+}
+
+/// Analisa `source` falhando no primeiro diagnóstico de severidade erro.
+fn analyze_strict(side: &'static str, source: &str) -> Result<Schema, WasmError> {
+    let first_error = dbml_analysis::lint(source)
+        .into_iter()
+        .find(|d| d.severity == dbml_analysis::Severity::Error);
+    if let Some(d) = first_error {
+        let line = LineIndex::new(source)
+            .offset_to_position(source, d.range.start)
+            .line;
+        return Err(WasmError::InvalidDiffSource {
+            side,
+            line: line as usize + 1,
+            message: d.message,
+        });
+    }
+    Ok(dbml_analysis::analyze(source))
+}
+
 fn export_sql_ddl_str(
     source: &str,
     dialect: &str,
@@ -1047,6 +1160,36 @@ fn import_sql_ddl_inner(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    const DIFF_BASE: &str = "Table users {\n  id int [pk]\n}\n";
+
+    #[test]
+    fn diff_dbml_impl_reports_added_column_and_summary() {
+        let head = "Table users {\n  id int [pk]\n  name varchar\n}\n";
+        let result = diff_dbml_impl(DIFF_BASE, head).expect("ok");
+        assert_eq!(result.summary.added, 1);
+        assert_eq!(result.summary.removed, 0);
+        assert_eq!(result.summary.modified, 0);
+        let json = serde_json::to_value(&result).expect("json");
+        assert_eq!(json["diff"]["tables"][0]["kind"], "modified");
+        assert_eq!(json["summary"]["added"], 1);
+    }
+
+    #[test]
+    fn diff_dbml_impl_identical_sources_is_empty() {
+        let result = diff_dbml_impl(DIFF_BASE, DIFF_BASE).expect("ok");
+        assert!(result.diff.is_empty());
+        assert_eq!(result.summary.total(), 0);
+    }
+
+    #[test]
+    fn diff_dbml_impl_names_failing_side() {
+        let bad = "Table users {\n  id int [pk\n";
+        let err = diff_dbml_impl(bad, DIFF_BASE).expect_err("base invalid");
+        assert!(err.to_string().starts_with("base has DBML errors"), "{err}");
+        let err = diff_dbml_impl(DIFF_BASE, bad).expect_err("head invalid");
+        assert!(err.to_string().starts_with("head has DBML errors"), "{err}");
+    }
 
     #[test]
     fn test_compute_minimal_patch_add_column() {
@@ -1510,5 +1653,43 @@ TableGroup ident {
         let schema = dbml_analysis::analyze(&src);
         let scene = compute_scene_internal(&schema, None);
         assert_no_overlap(&scene_rects(&schema, &scene));
+    }
+
+    #[test]
+    fn apply_command_sets_table_and_column_notes() {
+        let src = "Table users {\n  id int [pk]\n  email varchar\n}\n";
+        let p1 = apply_command_internal(
+            src,
+            Command::SetTableNote {
+                table: "users".into(),
+                note: Some("Customer accounts".into()),
+            },
+        )
+        .unwrap();
+        let s1 = p1.updated_source.unwrap();
+        assert!(s1.contains("Note: 'Customer accounts'"), "{s1}");
+
+        let p2 = apply_command_internal(
+            &s1,
+            Command::SetColumnNote {
+                table: "users".into(),
+                column: "email".into(),
+                note: Some("Verified login email".into()),
+            },
+        )
+        .unwrap();
+        let s2 = p2.updated_source.unwrap();
+        assert!(
+            s2.contains("email varchar [note: 'Verified login email']"),
+            "{s2}"
+        );
+
+        let md = export_docs_markdown(&s2, "Users");
+        assert!(md.contains("Customer accounts"));
+        assert!(md.contains("Verified login email"));
+
+        let html = export_docs_html(&s2, "Users", "");
+        assert!(html.contains("Customer accounts"));
+        assert!(html.contains("<svg"));
     }
 }

@@ -203,6 +203,9 @@ export const WORKBENCH_CSS = `${FONT_FACE_CSS}
 .wb .zoomi .pct:hover { background: var(--hover); }
 .wb .legend { position: absolute; z-index: 21; right: 12px; bottom: 56px; width: 256px; padding: 6px; border-radius: 12px; display: none;
   background: var(--pop); border: 1px solid var(--edge-soft); box-shadow: var(--pop-shadow); backdrop-filter: blur(24px); -webkit-backdrop-filter: blur(24px); font-size: 12.5px; }
+.wb .minimap { position: absolute; z-index: 20; right: 12px; bottom: 56px; width: 210px; height: 136px; border-radius: 12px; overflow: hidden; display: none; cursor: pointer;
+  background: var(--pop); border: 1px solid var(--edge-soft); box-shadow: var(--pop-shadow); backdrop-filter: blur(24px); -webkit-backdrop-filter: blur(24px); user-select: none; }
+.wb .minimap svg { display: block; width: 100%; height: 100%; pointer-events: none; }
 .wb .legend .lh { height: 30px; display: flex; align-items: center; gap: 6px; padding: 0 4px 0 8px; font-size: 11px; font-weight: 600; letter-spacing: .05em; color: var(--muted); }
 .wb .legend .lr { height: 28px; display: flex; align-items: center; gap: 10px; padding: 0 8px; color: var(--muted); }
 .wb .legend .lv { width: 30px; display: flex; align-items: center; justify-content: center; }

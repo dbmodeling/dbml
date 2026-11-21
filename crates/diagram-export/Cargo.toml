@@ -6,12 +6,16 @@ rust-version.workspace = true
 license.workspace = true
 publish.workspace = true
 
+[features]
+default = ["raster"]
+raster = ["dep:resvg", "dep:jpeg-encoder"]
+
 [dependencies]
 schema.workspace = true
 layout.workspace = true
 serde.workspace = true
-resvg = { version = "0.46.0", default-features = false, features = ["text"] }
-jpeg-encoder = "0.7"
+resvg = { version = "0.46.0", default-features = false, features = ["text"], optional = true }
+jpeg-encoder = { version = "0.7", optional = true }
 
 [lints]
 workspace = true

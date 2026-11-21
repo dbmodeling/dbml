@@ -152,6 +152,85 @@ export function compute_scene(source, positions_js) {
 }
 
 /**
+ * Compara dois textos DBML estruturalmente (base vs. head).
+ *
+ * Retorna `{ diff, summary }`: `diff` é o `SchemaDiff` (`tables`, `enums`, `refs`; cada
+ * mudança é `{ kind: "added" | "removed" | "modified", value }`) e `summary` é `{ added, removed, modified }` (`SchemaDiff::summary`). Itens casados por nome, sem
+ * heurística de rename.
+ *
+ * # Errors
+ *
+ * Retorna erro com prefixo `base` ou `head` se o respectivo texto tiver diagnósticos de
+ * severidade erro, ou se a serialização falhar.
+ * @param {string} base_source
+ * @param {string} head_source
+ * @returns {any}
+ */
+export function diff_dbml(base_source, head_source) {
+    const ptr0 = passStringToWasm0(base_source, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+    const len0 = WASM_VECTOR_LEN;
+    const ptr1 = passStringToWasm0(head_source, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+    const len1 = WASM_VECTOR_LEN;
+    const ret = wasm.diff_dbml(ptr0, len0, ptr1, len1);
+    if (ret[2]) {
+        throw takeFromExternrefTable0(ret[1]);
+    }
+    return takeFromExternrefTable0(ret[0]);
+}
+
+/**
+ * Exports DBML `source` to a self-contained static HTML documentation page.
+ *
+ * When `svg` is empty, an SVG diagram is rendered automatically from the auto-layout scene.
+ * @param {string} source
+ * @param {string} title
+ * @param {string} svg
+ * @returns {string}
+ */
+export function export_docs_html(source, title, svg) {
+    let deferred4_0;
+    let deferred4_1;
+    try {
+        const ptr0 = passStringToWasm0(source, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ptr1 = passStringToWasm0(title, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len1 = WASM_VECTOR_LEN;
+        const ptr2 = passStringToWasm0(svg, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len2 = WASM_VECTOR_LEN;
+        const ret = wasm.export_docs_html(ptr0, len0, ptr1, len1, ptr2, len2);
+        deferred4_0 = ret[0];
+        deferred4_1 = ret[1];
+        return getStringFromWasm0(ret[0], ret[1]);
+    } finally {
+        wasm.__wbindgen_free(deferred4_0, deferred4_1, 1);
+    }
+}
+
+/**
+ * Exports DBML `source` to structured Markdown documentation (table index, Mermaid ER diagram,
+ * columns, indexes, relationships, enums, and notes).
+ * @param {string} source
+ * @param {string} title
+ * @returns {string}
+ */
+export function export_docs_markdown(source, title) {
+    let deferred3_0;
+    let deferred3_1;
+    try {
+        const ptr0 = passStringToWasm0(source, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ptr1 = passStringToWasm0(title, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len1 = WASM_VECTOR_LEN;
+        const ret = wasm.export_docs_markdown(ptr0, len0, ptr1, len1);
+        deferred3_0 = ret[0];
+        deferred3_1 = ret[1];
+        return getStringFromWasm0(ret[0], ret[1]);
+    } finally {
+        wasm.__wbindgen_free(deferred3_0, deferred3_1, 1);
+    }
+}
+
+/**
  * Exports DBML `source` to SQL DDL for the requested `dialect`
  * (`postgres`, `mysql`, `sqlite`, `sqlserver`/`mssql`, `oracle`).
  *
@@ -268,6 +347,28 @@ export function parse_and_analyze(source) {
     const ptr0 = passStringToWasm0(source, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
     const len0 = WASM_VECTOR_LEN;
     const ret = wasm.parse_and_analyze(ptr0, len0);
+    if (ret[2]) {
+        throw takeFromExternrefTable0(ret[1]);
+    }
+    return takeFromExternrefTable0(ret[0]);
+}
+
+/**
+ * Searches tables, columns (names and types), and enums in `source`.
+ *
+ * # Errors
+ *
+ * Returns a [`JsValue`] error if JSON serialization fails.
+ * @param {string} source
+ * @param {string} query
+ * @returns {any}
+ */
+export function search_schema(source, query) {
+    const ptr0 = passStringToWasm0(source, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+    const len0 = WASM_VECTOR_LEN;
+    const ptr1 = passStringToWasm0(query, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+    const len1 = WASM_VECTOR_LEN;
+    const ret = wasm.search_schema(ptr0, len0, ptr1, len1);
     if (ret[2]) {
         throw takeFromExternrefTable0(ret[1]);
     }
@@ -396,7 +497,7 @@ function __wbg_get_imports() {
             const ret = Object.entries(arg0);
             return ret;
         },
-        __wbg_error_ccb1519d9913634f: function(arg0, arg1) {
+        __wbg_error_380ebc5514f29455: function(arg0, arg1) {
             console.error(getStringFromWasm0(arg0, arg1));
         },
         __wbg_get_658f6698067d9515: function() { return handleError(function (arg0, arg1) {

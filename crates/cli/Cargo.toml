@@ -32,6 +32,8 @@ dbml-edit.workspace = true
 atomic-write.workspace = true
 sql-import.workspace = true
 db-introspect.workspace = true
+layout.workspace = true
+diagram-export = { path = "../diagram-export", default-features = false }
 
 [lints]
 workspace = true

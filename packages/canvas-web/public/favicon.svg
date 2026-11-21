@@ -1,0 +1,18 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+  <!-- dbmodeling — ícone do app: duas tabelas ligadas por uma relação, sobre "brasa" -->
+  <defs>
+    <linearGradient id="sheen" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#ffffff" stop-opacity="0.22"/>
+      <stop offset="0.4" stop-color="#ffffff" stop-opacity="0"/>
+    </linearGradient>
+  </defs>
+  <rect x="16" y="16" width="480" height="480" rx="130" fill="#e56731"/>
+  <rect x="16" y="16" width="480" height="480" rx="130" fill="url(#sheen)"/>
+  <g transform="translate(16 16) scale(4.8)" fill="#ffffff">
+    <path d="M19 18 H51 A3 3 0 0 1 54 21 V28 H16 V21 A3 3 0 0 1 19 18 Z"/>
+    <path d="M16 28 H54 V45 A3 3 0 0 1 51 48 H19 A3 3 0 0 1 16 45 Z" fill-opacity="0.5"/>
+    <path d="M49 52 H81 A3 3 0 0 1 84 55 V62 H46 V55 A3 3 0 0 1 49 52 Z"/>
+    <path d="M46 62 H84 V79 A3 3 0 0 1 81 82 H49 A3 3 0 0 1 46 79 Z" fill-opacity="0.5"/>
+    <path d="M31 48 H37 V63 H46 V69 H31 Z"/>
+  </g>
+</svg>

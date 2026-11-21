@@ -139,6 +139,11 @@ fn main() {
                 ))
             });
         cx.bind_keys(actions::catalog().into_iter().filter_map(|e| e.binding));
+        cx.bind_keys([KeyBinding::new(
+            "ctrl-p",
+            actions::QuickSearch,
+            Some(actions::CTX),
+        )]);
         let prefs = settings::load();
         i18n::set(
             std::env::var("DBM_LANG")

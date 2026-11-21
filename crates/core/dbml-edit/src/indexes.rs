@@ -127,6 +127,21 @@ pub(crate) fn set_column_check(
     set_column_kv(text, table, col, "check", formatted)
 }
 
+/// Sets or clears the `note: '...'` attribute on `table.col`, preserving other column settings.
+#[must_use]
+pub(crate) fn set_column_note(
+    text: &str,
+    table: &str,
+    col: &str,
+    note: Option<&str>,
+) -> Option<String> {
+    let formatted = note
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(crate::table::note_literal);
+    set_column_kv(text, table, col, "note", formatted)
+}
+
 fn find_indexes_block(t_node: &SyntaxNode) -> Option<SyntaxNode> {
     t_node.children().find(|n| n.kind() == SyntaxKind::Indexes)
 }
@@ -357,5 +372,29 @@ Table products {
         // Delete last index removes the entire `indexes { ... }` block
         let s6 = delete_index(&s5, "products", 0).unwrap();
         assert!(!s6.contains("indexes"), "{s6}");
+    }
+
+    #[test]
+    fn set_column_note_sets_updates_and_clears_preserving_other_settings() {
+        let s1 = set_column_note(BASE, "products", "sku", Some("Stock keeping unit")).unwrap();
+        assert!(
+            s1.contains("sku varchar(32) [not null, note: 'Stock keeping unit']"),
+            "{s1}"
+        );
+
+        let s2 = set_column_note(&s1, "products", "sku", Some("Seller's SKU")).unwrap();
+        assert!(
+            s2.contains("sku varchar(32) [not null, note: '''Seller's SKU''']"),
+            "{s2}"
+        );
+
+        let s3 = set_column_note(&s2, "products", "sku", None).unwrap();
+        assert!(s3.contains("sku varchar(32) [not null]\n"), "{s3}");
+
+        let s4 = set_column_note(BASE, "products", "price", Some("In cents")).unwrap();
+        assert!(s4.contains("price decimal [note: 'In cents']\n"), "{s4}");
+
+        let s5 = set_column_note(&s4, "products", "price", Some("")).unwrap();
+        assert!(s5.contains("  price decimal\n"), "{s5}");
     }
 }

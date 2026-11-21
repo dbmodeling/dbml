@@ -28,7 +28,7 @@ fn windows_build() -> u32 {
         csd: [0; 128],
     };
     // SAFETY: estrutura com o tamanho declarado em `size`, como a API exige.
-    if unsafe { RtlGetVersion(&mut info) } == 0 {
+    if unsafe { RtlGetVersion(&raw mut info) } == 0 {
         info.build
     } else {
         0

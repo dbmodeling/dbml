@@ -73,6 +73,33 @@ export function compute_layout(source: string, _params_js: any): any;
 export function compute_scene(source: string, positions_js: any): any;
 
 /**
+ * Compara dois textos DBML estruturalmente (base vs. head).
+ *
+ * Retorna `{ diff, summary }`: `diff` é o `SchemaDiff` (`tables`, `enums`, `refs`; cada
+ * mudança é `{ kind: "added" | "removed" | "modified", value }`) e `summary` é `{ added, removed, modified }` (`SchemaDiff::summary`). Itens casados por nome, sem
+ * heurística de rename.
+ *
+ * # Errors
+ *
+ * Retorna erro com prefixo `base` ou `head` se o respectivo texto tiver diagnósticos de
+ * severidade erro, ou se a serialização falhar.
+ */
+export function diff_dbml(base_source: string, head_source: string): any;
+
+/**
+ * Exports DBML `source` to a self-contained static HTML documentation page.
+ *
+ * When `svg` is empty, an SVG diagram is rendered automatically from the auto-layout scene.
+ */
+export function export_docs_html(source: string, title: string, svg: string): string;
+
+/**
+ * Exports DBML `source` to structured Markdown documentation (table index, Mermaid ER diagram,
+ * columns, indexes, relationships, enums, and notes).
+ */
+export function export_docs_markdown(source: string, title: string): string;
+
+/**
  * Exports DBML `source` to SQL DDL for the requested `dialect`
  * (`postgres`, `mysql`, `sqlite`, `sqlserver`/`mssql`, `oracle`).
  *
@@ -120,6 +147,15 @@ export function install_panic_hook(): void;
 export function parse_and_analyze(source: string): any;
 
 /**
+ * Searches tables, columns (names and types), and enums in `source`.
+ *
+ * # Errors
+ *
+ * Returns a [`JsValue`] error if JSON serialization fails.
+ */
+export function search_schema(source: string, query: string): any;
+
+/**
  * Move uma linha para cima ou para baixo (`Alt+Up` / `Alt+Down`) preservando terminadores CRLF/LF.
  *
  * # Errors
@@ -136,12 +172,16 @@ export interface InitOutput {
     readonly apply_command: (a: number, b: number, c: any) => [number, number, number];
     readonly compute_layout: (a: number, b: number, c: any) => [number, number, number];
     readonly compute_scene: (a: number, b: number, c: any) => [number, number, number];
+    readonly diff_dbml: (a: number, b: number, c: number, d: number) => [number, number, number];
+    readonly export_docs_html: (a: number, b: number, c: number, d: number, e: number, f: number) => [number, number];
+    readonly export_docs_markdown: (a: number, b: number, c: number, d: number) => [number, number];
     readonly export_sql_ddl: (a: number, b: number, c: number, d: number) => [number, number, number, number];
     readonly format_dbml: (a: number, b: number) => [number, number];
     readonly import_conflicts: (a: number, b: number, c: number, d: number) => [number, number];
     readonly import_sql_ddl: (a: number, b: number, c: number, d: number) => [number, number, number];
     readonly install_panic_hook: () => void;
     readonly parse_and_analyze: (a: number, b: number) => [number, number, number];
+    readonly search_schema: (a: number, b: number, c: number, d: number) => [number, number, number];
     readonly session_analysis_count: (a: number) => number;
     readonly session_analyze: (a: number, b: number, c: number) => [number, number, number];
     readonly session_compute_scene: (a: number, b: number, c: number, d: any) => [number, number, number];

@@ -10,6 +10,7 @@ publish.workspace = true
 schema.workspace = true
 dbml-syntax.workspace = true
 rowan.workspace = true
+serde.workspace = true
 
 [dev-dependencies]
 insta.workspace = true

@@ -16,7 +16,7 @@ pub use api::{
     add_table, delete_column, delete_enum, delete_enum_value, delete_index, delete_ref,
     delete_table, format, group_tables, link_tables, rename_column, rename_enum, rename_enum_value,
     rename_table, reorder_enum_value, set_column_check, set_column_default, set_column_flag,
-    set_column_type, set_table_color, ungroup_table, update_index, update_ref,
+    set_column_note, set_column_type, set_table_color, ungroup_table, update_index, update_ref,
 };
 pub use enums::unique_enum_name;
 pub use eol::LineEnding;

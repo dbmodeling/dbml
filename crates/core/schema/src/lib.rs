@@ -3,7 +3,24 @@
 //! Pure semantic database schema model (tables, columns, relationships, and groups),
 //! derived as a projection from the lossless DBML CST.
 
+pub mod diff;
+
+pub use diff::{
+    Change, DiffSummary, EnumChange, EnumModified, SchemaDiff, TableChange, TableModified,
+    TableProps, TablePropsChange, diff_schemas,
+};
+
 use serde::{Deserialize, Serialize};
+use std::collections::HashSet;
+
+/// Subgraph returned by [`Schema::neighborhood`]: tables and connecting refs within `depth` hops.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct FocusSubgraph {
+    /// Qualified names of the seed tables and all tables reachable within `depth` FK hops.
+    pub tables: HashSet<String>,
+    /// Indices into [`Schema::refs`] of relationships traversed within `depth` hops.
+    pub ref_indices: HashSet<usize>,
+}
 
 /// Semantic representation of a DBML schema.
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
@@ -511,6 +528,48 @@ impl Schema {
                 self.groups.iter().find(|g| g.tables.iter().any(|t| t == n))
             })
     }
+
+    /// Computes the `depth`-hop FK neighborhood subgraph starting from `seeds` (qualified or bare
+    /// table names), traversing both incoming and outgoing relationships (including self-refs).
+    #[must_use]
+    pub fn neighborhood(&self, seeds: &HashSet<String>, depth: usize) -> FocusSubgraph {
+        let resolve = |name: &str| -> String {
+            self.table(name)
+                .map_or_else(|| name.to_owned(), Table::qualified_name)
+        };
+        let mut visited: HashSet<String> = seeds.iter().map(|s| resolve(s)).collect();
+        let mut frontier = visited.clone();
+        let mut ref_indices = HashSet::new();
+
+        for _ in 0..depth {
+            if frontier.is_empty() {
+                break;
+            }
+            let mut next_frontier = HashSet::new();
+            for (idx, r) in self.refs.iter().enumerate() {
+                let from_q = resolve(&r.from.qualified_table());
+                let to_q = resolve(&r.to.qualified_table());
+                let touches_from = frontier.contains(&from_q);
+                let touches_to = frontier.contains(&to_q);
+                if touches_from || touches_to {
+                    ref_indices.insert(idx);
+                    if !visited.contains(&from_q) {
+                        next_frontier.insert(from_q);
+                    }
+                    if !visited.contains(&to_q) {
+                        next_frontier.insert(to_q);
+                    }
+                }
+            }
+            visited.extend(next_frontier.iter().cloned());
+            frontier = next_frontier;
+        }
+
+        FocusSubgraph {
+            tables: visited,
+            ref_indices,
+        }
+    }
 }
 
 #[cfg(test)]
@@ -674,5 +733,57 @@ mod tests {
             Some("billing.users".into())
         );
         assert_eq!(schema.table_by(Some("audit"), "users"), None);
+    }
+
+    #[test]
+    fn neighborhood_computes_1_hop_2_hop_and_self_refs() {
+        let ep = |t: &str, c: &str| Endpoint {
+            table: t.into(),
+            column: c.into(),
+            ..Default::default()
+        };
+        let r = |ft: &str, fc: &str, tt: &str, tc: &str| Ref {
+            from: ep(ft, fc),
+            to: ep(tt, tc),
+            kind: RefKind::ManyToOne,
+            on_delete: None,
+            on_update: None,
+        };
+        let schema = Schema {
+            tables: ["users", "orders", "order_items", "products", "audit_logs"]
+                .into_iter()
+                .map(|n| Table {
+                    name: n.into(),
+                    ..Default::default()
+                })
+                .collect(),
+            refs: vec![
+                r("orders", "user_id", "users", "id"), // 0: orders -> users
+                r("order_items", "order_id", "orders", "id"), // 1: order_items -> orders
+                r("order_items", "product_id", "products", "id"), // 2: order_items -> products
+                r("users", "manager_id", "users", "id"), // 3: self-ref on users
+            ],
+            ..Default::default()
+        };
+
+        let seeds = HashSet::from(["users".to_string()]);
+        let hop1 = schema.neighborhood(&seeds, 1);
+        assert_eq!(
+            hop1.tables,
+            HashSet::from(["users".to_string(), "orders".to_string()])
+        );
+        assert_eq!(hop1.ref_indices, HashSet::from([0, 3]));
+
+        let hop2 = schema.neighborhood(&seeds, 2);
+        assert_eq!(
+            hop2.tables,
+            HashSet::from([
+                "users".to_string(),
+                "orders".to_string(),
+                "order_items".to_string()
+            ])
+        );
+        assert_eq!(hop2.ref_indices, HashSet::from([0, 1, 3]));
+        assert!(!hop2.tables.contains("audit_logs"));
     }
 }

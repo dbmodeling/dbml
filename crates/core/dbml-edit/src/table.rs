@@ -81,7 +81,7 @@ fn has_kv(toks: &[SyntaxToken], key: &str) -> bool {
 
 // shortcut: a note that starts/ends with `'` or contains `'''` cannot round-trip (no escapes in
 // the lexer); add `\'` support to `dbml-syntax` if users hit it.
-fn note_literal(s: &str) -> String {
+pub(crate) fn note_literal(s: &str) -> String {
     if s.contains(['\'', '\n']) {
         format!("'''{s}'''")
     } else {

@@ -129,7 +129,17 @@ pub fn to_mermaid_checked(schema: &Schema) -> MermaidExport {
                     assigned: name.clone(),
                 });
             }
-            let _ = write!(out, "\n        {} {name}{keys}", ident(ty));
+            let comment = c
+                .note
+                .as_deref()
+                .map(str::trim)
+                .filter(|n| !n.is_empty())
+                .map(|n| {
+                    let clean = n.replace(['\r', '\n'], " ").replace('"', "'");
+                    format!(" \"{clean}\"")
+                })
+                .unwrap_or_default();
+            let _ = write!(out, "\n        {} {name}{keys}{comment}", ident(ty));
         }
         out.push_str("\n    }");
     }
@@ -312,5 +322,27 @@ mod tests {
         let out = to_mermaid_checked(&s);
         assert_eq!(out.collisions, []);
         assert!(!out.text.contains("%%"));
+    }
+
+    #[test]
+    fn mermaid_includes_column_notes_as_comments() {
+        let s = Schema {
+            tables: vec![schema::Table {
+                name: "users".into(),
+                columns: vec![schema::Column {
+                    name: "status".into(),
+                    ty: "varchar".into(),
+                    note: Some("Updated via \"webhook\"\nonly".into()),
+                    ..Default::default()
+                }],
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let m = to_mermaid(&s);
+        assert!(
+            m.contains("varchar status \"Updated via 'webhook' only\""),
+            "{m}"
+        );
     }
 }

@@ -3,7 +3,8 @@
 use anyhow::Context as _;
 use clap::Parser;
 use colored::Colorize;
-use dbml_cli::args::{Cli, Commands, ExportFormat, ImportDialect};
+use dbml_cli::args::{Cli, Commands, DiffFormat, DocsFormat, ExportFormat, ImportDialect};
+use dbml_cli::diff;
 use dbml_cli::net;
 use dbml_cli::server;
 use dbml_cli::state::AppState;
@@ -26,6 +27,19 @@ async fn main() -> anyhow::Result<()> {
             ExportFormat::Sql => dbml_analysis::try_export_sql_ddl(&src, dialect.to_sql_dialect())?,
         };
         return write_output(&out, output.as_deref(), force);
+    }
+    if let Some(Commands::Docs {
+        file,
+        format,
+        output,
+        title,
+        force,
+    }) = cli.command
+    {
+        return run_docs(&file, format, output.as_deref(), title.as_deref(), force);
+    }
+    if let Some(Commands::Diff { old, new, format }) = cli.command {
+        return run_diff_command(&old, &new, format);
     }
     if let Some(Commands::Import {
         file,
@@ -149,6 +163,24 @@ async fn main() -> anyhow::Result<()> {
     state.shutdown(std::time::Duration::from_secs(5)).await;
 
     Ok(())
+}
+
+/// Runs `dbml diff` and exits the process: 0 same, 1 different, 2 error.
+fn run_diff_command(old: &Path, new: &Path, format: DiffFormat) -> anyhow::Result<()> {
+    use std::io::Write as _;
+    let code = match diff::run_diff(old, new, format) {
+        Ok(report) => {
+            let mut stdout = std::io::stdout().lock();
+            let _ = stdout.write_all(report.output.as_bytes());
+            let _ = stdout.flush();
+            report.exit_code()
+        }
+        Err(err) => {
+            eprintln!("error: {err:#}");
+            diff::EXIT_ERROR
+        }
+    };
+    std::process::exit(code);
 }
 
 /// Connects, runs a trivial query and prints the server version and schemas as JSON.
@@ -290,6 +322,133 @@ fn write_atomic(path: &Path, bytes: &[u8], force: bool) -> std::io::Result<()> {
     result
 }
 
+/// Generates static HTML or Markdown documentation from a `.dbml` file.
+fn run_docs(
+    file: &Path,
+    format: DocsFormat,
+    output: Option<&Path>,
+    title: Option<&str>,
+    force: bool,
+) -> anyhow::Result<()> {
+    let src = std::fs::read_to_string(file)
+        .with_context(|| format!("failed to read {}", file.display()))?;
+    let schema = dbml_analysis::analyze(&src);
+    let doc_title = title
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_owned)
+        .or_else(|| file.file_stem().and_then(|s| s.to_str()).map(str::to_owned))
+        .unwrap_or_else(|| "Database Documentation".to_owned());
+
+    let content = match format {
+        DocsFormat::Md => diagram_export::to_markdown(&schema, &doc_title),
+        DocsFormat::Html => {
+            let positions = compute_docs_positions(&schema, file);
+            let svg = diagram_export::to_svg(
+                &schema,
+                &positions,
+                &diagram_export::EdgeStyles::new(),
+                &diagram_export::Theme::dark(),
+            );
+            diagram_export::to_html(&schema, &svg, &doc_title)
+        }
+    };
+
+    let resolved_output = output.map(|out| resolve_docs_output_path(out, format));
+    if let Some(ref target) = resolved_output
+        && let Some(parent) = target.parent()
+        && !parent.as_os_str().is_empty()
+    {
+        std::fs::create_dir_all(parent)
+            .with_context(|| format!("failed to create directory {}", parent.display()))?;
+    }
+    write_output(&content, resolved_output.as_deref(), force)
+}
+
+fn resolve_docs_output_path(out: &Path, format: DocsFormat) -> std::path::PathBuf {
+    let raw = out.to_string_lossy();
+    let is_dir_target =
+        out.is_dir() || raw.ends_with('/') || raw.ends_with('\\') || out.extension().is_none();
+    if is_dir_target {
+        let filename = match format {
+            DocsFormat::Html => "index.html",
+            DocsFormat::Md => "README.md",
+        };
+        out.join(filename)
+    } else {
+        out.to_path_buf()
+    }
+}
+
+fn compute_docs_positions(
+    schema: &schema::Schema,
+    dbml_path: &Path,
+) -> std::collections::HashMap<String, (f32, f32)> {
+    let col_counts: Vec<usize> = schema.tables.iter().map(|t| t.columns.len()).collect();
+    let idx = |n: &str| {
+        schema
+            .tables
+            .iter()
+            .position(|t| t.qualified_name() == n)
+            .or_else(|| {
+                (!n.contains('.'))
+                    .then(|| schema.tables.iter().position(|t| t.name == n))
+                    .flatten()
+            })
+    };
+    let edges: Vec<_> = schema
+        .refs
+        .iter()
+        .filter_map(|r| {
+            Some((
+                idx(&r.from.qualified_table())?,
+                idx(&r.to.qualified_table())?,
+            ))
+        })
+        .collect();
+    let clusters = (!schema.groups.is_empty()).then(|| {
+        let mut c: Vec<Vec<usize>> = schema
+            .groups
+            .iter()
+            .map(|g| g.tables.iter().filter_map(|t| idx(t)).collect())
+            .collect();
+        c.push(
+            (0..schema.tables.len())
+                .filter(|&i| {
+                    schema
+                        .group_of(&schema.tables[i].qualified_name())
+                        .is_none()
+                })
+                .collect(),
+        );
+        c
+    });
+    let mut positions: std::collections::HashMap<String, (f32, f32)> =
+        layout::compute_diagram_positions(&col_counts, &edges, clusters.as_deref())
+            .into_iter()
+            .zip(&schema.tables)
+            .map(|(p, t)| (t.qualified_name(), (p.x, p.y)))
+            .collect();
+
+    // Overlay saved sidecar coordinates when present.
+    let sidecar_path = std::path::PathBuf::from(format!("{}.layout.json", dbml_path.display()));
+    if let Ok(raw) = std::fs::read_to_string(&sidecar_path)
+        && let Ok(val) = serde_json::from_str::<serde_json::Value>(&raw)
+        && let Some(tables) = val.get("tables").and_then(|v| v.as_object())
+    {
+        for (name, coord) in tables {
+            if let (Some(x), Some(y)) = (
+                coord.get("x").and_then(serde_json::Value::as_f64),
+                coord.get("y").and_then(serde_json::Value::as_f64),
+            ) {
+                #[allow(clippy::cast_possible_truncation)]
+                positions.insert(name.clone(), (x as f32, y as f32));
+            }
+        }
+    }
+    positions
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -377,6 +536,34 @@ mod tests {
         write_output("second", Some(&out), true).unwrap();
         assert_eq!(std::fs::read_to_string(&out).unwrap(), "second");
         assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 1);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn run_docs_generates_html_and_markdown_in_directory() {
+        let dir = std::env::temp_dir().join(format!("dbml_cli_docs_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let dbml_path = dir.join("shop.dbml");
+        std::fs::write(
+            &dbml_path,
+            "Table users {\n  id int [pk]\n  Note: 'User accounts'\n}\n",
+        )
+        .unwrap();
+
+        let out_dir = dir.join("docs");
+        run_docs(&dbml_path, DocsFormat::Html, Some(&out_dir), None, false).unwrap();
+        let html = std::fs::read_to_string(out_dir.join("index.html")).unwrap();
+        assert!(html.contains("<title>shop</title>"));
+        assert!(html.contains("User accounts"));
+        assert!(html.contains("<svg"));
+
+        run_docs(&dbml_path, DocsFormat::Md, Some(&out_dir), None, false).unwrap();
+        let md = std::fs::read_to_string(out_dir.join("README.md")).unwrap();
+        assert!(md.contains("# shop"));
+        assert!(md.contains("```mermaid"));
+        assert!(md.contains("User accounts"));
+
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
