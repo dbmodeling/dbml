@@ -1,6 +1,10 @@
 //! Structured rotating file logger for the Desktop app built on `tracing` (#98).
 
-use crate::constants::{LOG_FILE_NAME, LOG_ROTATED_FILE_NAME, LOGS_DIR_NAME, MAX_LOG_FILE_BYTES};
+use crate::constants::{
+    LOG_FILE_NAME, LOG_ROTATED_FILE_NAME, LOG_TRUNCATED_SUFFIX, LOGS_DIR_NAME, MAX_LOG_FILE_BYTES,
+    MAX_LOG_LINE_BYTES,
+};
+use std::borrow::Cow;
 use std::fmt::Write as _;
 use std::fs::{self, OpenOptions};
 use std::io::Write as _;
@@ -83,15 +87,43 @@ impl RotatingFileSubscriber {
     }
 }
 
+fn truncate_line(line: &str, max_bytes: usize) -> Cow<'_, str> {
+    if line.len() <= max_bytes {
+        return Cow::Borrowed(line);
+    }
+    let keep = max_bytes.saturating_sub(LOG_TRUNCATED_SUFFIX.len());
+    let cut = line.floor_char_boundary(keep);
+    let mut out = String::with_capacity(cut + LOG_TRUNCATED_SUFFIX.len());
+    out.push_str(&line[..cut]);
+    out.push_str(LOG_TRUNCATED_SUFFIX);
+    Cow::Owned(out)
+}
+
 fn write_rotating(dir: &Path, line: &str, max_bytes: u64) {
     let _ = fs::create_dir_all(dir);
     let current = dir.join(LOG_FILE_NAME);
-    if fs::metadata(&current).is_ok_and(|m| m.len() >= max_bytes) {
+    let bounded = truncate_line(line, MAX_LOG_LINE_BYTES);
+    let mut truncated_fallback = false;
+    if fs::metadata(&current)
+        .is_ok_and(|m| m.len().saturating_add(bounded.len() as u64) >= max_bytes)
+    {
         let rotated = dir.join(LOG_ROTATED_FILE_NAME);
-        let _ = fs::rename(&current, &rotated);
+        // No Windows, `rename` pode falhar se o destino já existir; remove antes.
+        let _ = fs::remove_file(&rotated);
+        if fs::rename(&current, &rotated).is_err() {
+            // Se o arquivo estiver travado (ex.: outro leitor), trunca no lugar para nunca estourar o limite.
+            truncated_fallback = true;
+        }
     }
-    if let Ok(mut file) = OpenOptions::new().create(true).append(true).open(&current) {
-        let _ = writeln!(file, "{line}");
+    let mut opts = OpenOptions::new();
+    opts.create(true).write(true);
+    if truncated_fallback {
+        opts.truncate(true);
+    } else {
+        opts.append(true);
+    }
+    if let Ok(mut file) = opts.open(&current) {
+        let _ = writeln!(file, "{bounded}");
     }
 }
 
@@ -145,11 +177,26 @@ mod tests {
         let _ = fs::remove_dir_all(&dir);
         write_rotating(&dir, "first-line-exceeding-limit", 10);
         write_rotating(&dir, "second-line", 10);
+        write_rotating(&dir, "third-line", 10);
         assert!(dir.join(LOG_ROTATED_FILE_NAME).exists());
         assert_eq!(
-            fs::read_to_string(dir.join(LOG_FILE_NAME)).unwrap().trim(),
+            fs::read_to_string(dir.join(LOG_ROTATED_FILE_NAME))
+                .unwrap()
+                .trim(),
             "second-line"
         );
+        assert_eq!(
+            fs::read_to_string(dir.join(LOG_FILE_NAME)).unwrap().trim(),
+            "third-line"
+        );
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn truncate_line_caps_size_on_utf8_boundary() {
+        let huge = "é".repeat(MAX_LOG_LINE_BYTES);
+        let out = truncate_line(&huge, MAX_LOG_LINE_BYTES);
+        assert!(out.len() <= MAX_LOG_LINE_BYTES);
+        assert!(out.ends_with(LOG_TRUNCATED_SUFFIX));
     }
 }

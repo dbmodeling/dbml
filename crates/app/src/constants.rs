@@ -29,3 +29,5 @@ pub const LOGS_DIR_NAME: &str = "logs";
 pub const LOG_FILE_NAME: &str = "db-modeling.log";
 pub const LOG_ROTATED_FILE_NAME: &str = "db-modeling.log.1";
 pub const MAX_LOG_FILE_BYTES: u64 = 1024 * 1024;
+pub const MAX_LOG_LINE_BYTES: usize = 8 * 1024;
+pub const LOG_TRUNCATED_SUFFIX: &str = "...[truncated]";
