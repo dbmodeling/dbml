@@ -167,6 +167,10 @@ pub enum Commands {
         /// Optional output file path (writes to stdout if omitted)
         #[arg(short, long, value_name = "OUTPUT")]
         output: Option<PathBuf>,
+
+        /// Overwrite an existing output file.
+        #[arg(long, requires = "output")]
+        force: bool,
     },
     /// Import a SQL DDL file, or the live catalog of a database (`--url`), into DBML
     Import {
@@ -306,11 +310,13 @@ mod tests {
                     format,
                     dialect,
                     output,
+                    force,
                 }) => {
                     assert_eq!(file, PathBuf::from("schema.dbml"));
                     assert_eq!(format, ExportFormat::Sql);
                     assert_eq!(dialect.to_sql_dialect(), expected);
                     assert_eq!(output, Some(PathBuf::from("out.sql")));
+                    assert!(!force);
                 }
                 other => panic!("expected Export command, got {other:?}"),
             }

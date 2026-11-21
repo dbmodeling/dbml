@@ -17,18 +17,14 @@ async fn main() -> anyhow::Result<()> {
         format,
         dialect,
         output,
+        force,
     }) = cli.command
     {
         let src = std::fs::read_to_string(&file)?;
         let out = match format {
-            ExportFormat::Sql => dbml_analysis::export_sql_ddl(&src, dialect.to_sql_dialect()),
+            ExportFormat::Sql => dbml_analysis::try_export_sql_ddl(&src, dialect.to_sql_dialect())?,
         };
-        if let Some(out_path) = output {
-            std::fs::write(&out_path, out)?;
-        } else {
-            print!("{out}");
-        }
-        return Ok(());
+        return write_output(&out, output.as_deref(), force);
     }
     if let Some(Commands::Import {
         file,
@@ -171,7 +167,7 @@ async fn run_import_url(
     for w in &outcome.warnings {
         eprintln!("{}: warning: {w}", db_introspect::mask_url(url));
     }
-    write_dbml(&outcome.dbml, output, force)
+    write_output(&outcome.dbml, output, force)
 }
 
 fn read_password_stdin() -> anyhow::Result<String> {
@@ -182,17 +178,20 @@ fn read_password_stdin() -> anyhow::Result<String> {
     Ok(line.trim_end_matches(['\r', '\n']).to_owned())
 }
 
-fn write_dbml(dbml: &str, output: Option<&Path>, force: bool) -> anyhow::Result<()> {
+fn write_output(content: &str, output: Option<&Path>, force: bool) -> anyhow::Result<()> {
     if let Some(out_path) = output {
-        if out_path.exists() && !force {
-            anyhow::bail!(
-                "output file `{}` already exists (pass --force to overwrite)",
-                out_path.display()
-            );
+        if let Err(err) = write_atomic(out_path, content.as_bytes(), force) {
+            if err.kind() == std::io::ErrorKind::AlreadyExists {
+                anyhow::bail!(
+                    "output file `{}` already exists (pass --force to overwrite)",
+                    out_path.display()
+                );
+            }
+            return Err(err)
+                .with_context(|| format!("failed to write output file `{}`", out_path.display()));
         }
-        write_atomic(out_path, dbml.as_bytes())?;
     } else {
-        print!("{dbml}");
+        print!("{content}");
     }
     Ok(())
 }
@@ -215,21 +214,11 @@ fn run_import(
             w.message
         );
     }
-    if let Some(out_path) = output {
-        if out_path.exists() && !force {
-            anyhow::bail!(
-                "output file `{}` already exists (pass --force to overwrite)",
-                out_path.display()
-            );
-        }
-        write_atomic(out_path, outcome.dbml.as_bytes())?;
-    } else {
-        print!("{}", outcome.dbml);
-    }
-    Ok(())
+    write_output(&outcome.dbml, output, force)
 }
 
-fn write_atomic(path: &Path, bytes: &[u8]) -> anyhow::Result<()> {
+fn write_atomic(path: &Path, bytes: &[u8], force: bool) -> std::io::Result<()> {
+    use std::io::Write as _;
     let parent = path
         .parent()
         .filter(|p| !p.as_os_str().is_empty())
@@ -238,15 +227,30 @@ fn write_atomic(path: &Path, bytes: &[u8]) -> anyhow::Result<()> {
         .file_name()
         .and_then(|n| n.to_str())
         .unwrap_or("output.dbml");
-    let tmp = parent.join(format!(".{file_name}.{}.tmp", std::process::id()));
-    std::fs::write(&tmp, bytes)
-        .with_context(|| format!("failed to write temporary file `{}`", tmp.display()))?;
-    if let Err(err) = std::fs::rename(&tmp, path) {
-        let _ = std::fs::remove_file(&tmp);
-        return Err(err)
-            .with_context(|| format!("failed to write output file `{}`", path.display()));
-    }
-    Ok(())
+    let mut n = 0;
+    let (tmp, mut file) = loop {
+        let tmp = parent.join(format!(".{file_name}.{}.{n}.tmp", std::process::id()));
+        match std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&tmp)
+        {
+            Ok(file) => break (tmp, file),
+            Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => n += 1,
+            Err(err) => return Err(err),
+        }
+    };
+    let written = file.write_all(bytes);
+    drop(file);
+    let result = written.and_then(|()| {
+        if force {
+            std::fs::rename(&tmp, path)
+        } else {
+            std::fs::hard_link(&tmp, path)
+        }
+    });
+    let _ = std::fs::remove_file(&tmp);
+    result
 }
 
 #[cfg(test)]
@@ -298,6 +302,22 @@ mod tests {
         assert!(err.to_string().contains("--force"));
 
         run_import(&sql_path, ImportDialect::Postgres, Some(&out_path), true).unwrap();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn export_output_preserves_existing_file_and_writes_new_file() {
+        let dir = std::env::temp_dir().join(format!("dbml_cli_export_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let out = dir.join("schema.sql");
+        let _ = std::fs::remove_file(&out);
+        write_output("first", Some(&out), false).unwrap();
+        let err = write_output("second", Some(&out), false).unwrap_err();
+        assert!(err.to_string().contains("pass --force to overwrite"));
+        assert_eq!(std::fs::read_to_string(&out).unwrap(), "first");
+        write_output("second", Some(&out), true).unwrap();
+        assert_eq!(std::fs::read_to_string(&out).unwrap(), "second");
+        assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 1);
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
