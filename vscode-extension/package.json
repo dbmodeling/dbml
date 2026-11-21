@@ -145,12 +145,15 @@
     "build": "node esbuild.js --production",
     "watch": "node esbuild.js --watch",
     "compile": "tsc -p ./ --noEmit",
-    "package": "npx -y @vscode/vsce package --no-dependencies --allow-missing-repository"
+    "package": "npx -y @vscode/vsce package --no-dependencies --allow-missing-repository",
+    "test": "vitest run"
   },
   "devDependencies": {
-    "@types/node": "^20.0.0",
+    "@types/node": "^22.20.5",
     "@types/vscode": "^1.85.0",
     "esbuild": "^0.25.0",
-    "typescript": "^5.7.0"
+    "typescript": "^5.7.0",
+    "vite": "^6.4.6",
+    "vitest": "^5.1.1"
   }
 }
