@@ -11,20 +11,109 @@ on:
         required: false
         default: 'v0.1.0'
 
+# Somente leitura por padrão; só o job `publish` recebe `contents: write`.
 permissions:
-  contents: write
+  contents: read
 
+env:
+  CARGO_TERM_COLOR: always
+  # Manter igual a `channel` em rust-toolchain.toml.
+  RUST_TOOLCHAIN: "1.99.1"
+
+# Assinatura (veja SECURITY.md):
+#   Repository variable  SIGNING_REQUIRED=true  => o build FALHA se os segredos de assinatura
+#                                                  faltarem (use nas releases oficiais).
+#   Sem a variável, artefatos sem assinatura saem com um aviso explícito no log.
+# Todas as ações de terceiros são fixadas por SHA de commit (comentário = versão);
+# scripts/check-workflow-pins.sh rejeita tags/branches mutáveis.
 jobs:
+  # ============================================================
+  # 0. ATIVOS WEB (Wasm + canvas-web) RECONSTRUÍDOS A PARTIR DA TAG
+  #    A CLI embute crates/cli/web; não confiamos no bundle commitado.
+  # ============================================================
+  web-bundle:
+    name: Ativos web (Wasm + canvas-web)
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout do repositório
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Instalar Toolchain Rust (alvo wasm32)
+        uses: dtolnay/rust-toolchain@39008827e6b4319a349e9a42dfc90579dd25f1ca # stable
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+          targets: wasm32-unknown-unknown
+
+      - name: Cache de compilação
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
+        with:
+          shared-key: "release-web"
+
+      - name: Descobrir a versão do wasm-bindgen travada no Cargo.lock
+        id: bindgen
+        run: |
+          version="$(awk '/^name = "wasm-bindgen"$/ {getline; gsub(/[version = "]/, ""); print; exit}' Cargo.lock)"
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+
+      - name: Instalar wasm-bindgen-cli
+        uses: taiki-e/install-action@25f51f6b1bf4e18876107cece836f4f77ac17c8c # v2
+        with:
+          tool: wasm-bindgen@${{ steps.bindgen.outputs.version }}
+
+      - name: Instalar binaryen (wasm-opt)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y binaryen
+
+      - name: Configurar Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: packages/canvas-web/package-lock.json
+
+      - name: Testes do canvas-web
+        run: |
+          npm ci
+          npm test
+        working-directory: packages/canvas-web
+
+      - name: Reconstruir os ativos web (com wasm-opt)
+        run: ./scripts/build-web-assets.sh --opt
+
+      - name: Verificar saídas de build sem referência
+        run: ./scripts/check-web-assets.sh
+
+      - name: Upload do bundle web
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: web-bundle
+          path: crates/cli/web
+          retention-days: 1
+          if-no-files-found: error
+
   # ============================================================
   # 1. BUILD LINUX (Ubuntu / Debian .deb & Fedora .rpm)
   # ============================================================
   build-linux:
     name: Build Linux (.deb e .rpm)
+    needs: web-bundle
     runs-on: ubuntu-latest
 
     steps:
       - name: Checkout do repositório
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Usar o bundle web reconstruído a partir da tag
+        shell: bash
+        run: find crates/cli/web -mindepth 1 -delete
+
+      - name: Baixar o bundle web
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: web-bundle
+          path: crates/cli/web
 
       - name: Instalar dependências nativas e de empacotamento
         run: |
@@ -45,10 +134,12 @@ jobs:
             rpm
 
       - name: Instalar Toolchain Rust
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@39008827e6b4319a349e9a42dfc90579dd25f1ca # stable
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
 
       - name: Cache de compilação
-        uses: Swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
         with:
           shared-key: "release-linux"
 
@@ -68,35 +159,53 @@ jobs:
           cp ../scripts/install.sh db-modeling-install.sh
 
       - name: Upload dos artefatos Linux
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: artifacts-linux
           path: dist/*
           retention-days: 1
 
   # ============================================================
-  # 2. BUILD WINDOWS (.exe)
+  # 2. BUILD WINDOWS (.exe) + assinatura SignPath
   # ============================================================
   build-windows:
     name: Build Windows (.exe)
+    needs: web-bundle
     runs-on: windows-latest
+    env:
+      SIGNPATH_API_TOKEN: ${{ secrets.SIGNPATH_API_TOKEN }}
+      SIGNPATH_ORGANIZATION_ID: ${{ vars.SIGNPATH_ORGANIZATION_ID }}
+      SIGNPATH_PROJECT_SLUG: ${{ vars.SIGNPATH_PROJECT_SLUG }}
+      SIGNPATH_SIGNING_POLICY_SLUG: ${{ vars.SIGNPATH_SIGNING_POLICY_SLUG }}
+      SIGNING_REQUIRED: ${{ vars.SIGNING_REQUIRED }}
 
     steps:
       - name: Checkout do repositório
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Usar o bundle web reconstruído a partir da tag
+        shell: bash
+        run: find crates/cli/web -mindepth 1 -delete
+
+      - name: Baixar o bundle web
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: web-bundle
+          path: crates/cli/web
 
       - name: Instalar Toolchain Rust
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@39008827e6b4319a349e9a42dfc90579dd25f1ca # stable
         with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
           targets: x86_64-pc-windows-msvc
 
       - name: Cache de compilação
-        uses: Swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
         with:
           shared-key: "release-windows"
 
       - name: Compilar executáveis release (App Desktop + CLI Web Server)
-        run: cargo build --release -p app -p dbml-cli
+        run: cargo build --locked --release -p app -p dbml-cli
 
       - name: Compilar Instalador Oficial com Wizard (Inno Setup)
         shell: bash
@@ -104,39 +213,138 @@ jobs:
           choco install innosetup --no-progress -y
           mkdir -p dist
           VERSION="$(cargo pkgid -p app | cut -d# -f2 | cut -d: -f2 2>/dev/null || sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)"
+          echo "VERSION=${VERSION}" >> "$GITHUB_ENV"
           # Compila o assistente de instalação profissional com o ISCC
           "/c/Program Files (x86)/Inno Setup 6/ISCC.exe" //DAppVersion="${VERSION}" scripts/windows/installer.iss
-          # Cria alias versionado e alias canônico do assistente (usado pelo site)
+
+      - name: Verificar configuração de assinatura
+        shell: bash
+        run: |
+          if [ -n "${SIGNPATH_API_TOKEN}" ] && [ -n "${SIGNPATH_ORGANIZATION_ID}" ] \
+             && [ -n "${SIGNPATH_PROJECT_SLUG}" ] && [ -n "${SIGNPATH_SIGNING_POLICY_SLUG}" ]; then
+            echo "SIGN_WINDOWS=true" >> "$GITHUB_ENV"
+          elif [ "${SIGNING_REQUIRED}" = "true" ]; then
+            echo "::error::SIGNING_REQUIRED=true, mas os segredos/variáveis do SignPath não estão configurados."
+            exit 1
+          else
+            echo "::warning::Assinatura SignPath não configurada: o instalador do Windows sairá NÃO assinado."
+          fi
+
+      - name: Enviar o instalador para assinatura (SignPath)
+        if: env.SIGN_WINDOWS == 'true'
+        id: upload-unsigned
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: windows-installer-unsigned
+          path: dist/db-modeling-windows-setup.exe
+          retention-days: 1
+
+      # Falha do SignPath (rejeição, timeout, política) derruba o job: nada sem assinatura é publicado
+      # quando a assinatura está configurada.
+      - name: Assinar o instalador (SignPath)
+        if: env.SIGN_WINDOWS == 'true'
+        uses: signpath/github-action-submit-signing-request@c92b958760219087e01f8d67a1669ed57afe2627 # v2
+        with:
+          api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
+          organization-id: ${{ vars.SIGNPATH_ORGANIZATION_ID }}
+          project-slug: ${{ vars.SIGNPATH_PROJECT_SLUG }}
+          signing-policy-slug: ${{ vars.SIGNPATH_SIGNING_POLICY_SLUG }}
+          github-artifact-id: ${{ steps.upload-unsigned.outputs.artifact-id }}
+          wait-for-completion: true
+          output-artifact-directory: signed
+
+      - name: Substituir pelo instalador assinado e criar aliases
+        shell: bash
+        run: |
+          if [ "${SIGN_WINDOWS:-}" = "true" ]; then
+            test -f signed/db-modeling-windows-setup.exe
+            cp -f signed/db-modeling-windows-setup.exe dist/db-modeling-windows-setup.exe
+          fi
+          # Aliases versionado e canônico (usado pelo site) a partir do instalador final
           cp dist/db-modeling-windows-setup.exe "dist/db-modeling-v${VERSION}-windows-setup.exe"
           cp dist/db-modeling-windows-setup.exe "dist/db-modeling-windows-x86_64.exe"
 
       - name: Upload dos artefatos Windows
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: artifacts-windows
           path: dist/*
           retention-days: 1
 
   # ============================================================
-  # 3. BUILD MACOS (.dmg e .pkg Apple Silicon)
+  # 3. BUILD MACOS (.dmg e .pkg Apple Silicon) + codesign/notarização
   # ============================================================
   build-macos:
     name: Build macOS (.dmg e .pkg)
+    needs: web-bundle
     runs-on: macos-latest
+    env:
+      MACOS_APP_CERT_P12: ${{ secrets.MACOS_APP_CERT_P12 }}
+      MACOS_INSTALLER_CERT_P12: ${{ secrets.MACOS_INSTALLER_CERT_P12 }}
+      MACOS_CERT_PASSWORD: ${{ secrets.MACOS_CERT_PASSWORD }}
+      MACOS_CODESIGN_IDENTITY: ${{ vars.MACOS_CODESIGN_IDENTITY }}
+      MACOS_INSTALLER_IDENTITY: ${{ vars.MACOS_INSTALLER_IDENTITY }}
+      APPLE_ID: ${{ secrets.APPLE_ID }}
+      APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+      APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
+      SIGNING_REQUIRED: ${{ vars.SIGNING_REQUIRED }}
 
     steps:
       - name: Checkout do repositório
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Usar o bundle web reconstruído a partir da tag
+        shell: bash
+        run: find crates/cli/web -mindepth 1 -delete
+
+      - name: Baixar o bundle web
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: web-bundle
+          path: crates/cli/web
 
       - name: Instalar Toolchain Rust
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@39008827e6b4319a349e9a42dfc90579dd25f1ca # stable
         with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
           targets: aarch64-apple-darwin
 
       - name: Cache de compilação
-        uses: Swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
         with:
           shared-key: "release-macos"
+
+      # Importa os certificados Developer ID num keychain temporário (nunca no log).
+      # Sem segredos: segue sem assinar, a menos que SIGNING_REQUIRED=true.
+      - name: Preparar assinatura (keychain temporário)
+        shell: bash
+        run: |
+          if [ -n "${MACOS_APP_CERT_P12}" ] && [ -n "${MACOS_INSTALLER_CERT_P12}" ] \
+             && [ -n "${MACOS_CERT_PASSWORD}" ] && [ -n "${MACOS_CODESIGN_IDENTITY}" ] \
+             && [ -n "${MACOS_INSTALLER_IDENTITY}" ] && [ -n "${APPLE_ID}" ] \
+             && [ -n "${APPLE_TEAM_ID}" ] && [ -n "${APPLE_APP_PASSWORD}" ]; then
+            keychain="${RUNNER_TEMP}/release.keychain-db"
+            keychain_password="$(uuidgen)"
+            security create-keychain -p "${keychain_password}" "${keychain}"
+            security set-keychain-settings -lut 3600 "${keychain}"
+            security unlock-keychain -p "${keychain_password}" "${keychain}"
+            echo "${MACOS_APP_CERT_P12}" | base64 --decode > "${RUNNER_TEMP}/app.p12"
+            echo "${MACOS_INSTALLER_CERT_P12}" | base64 --decode > "${RUNNER_TEMP}/installer.p12"
+            security import "${RUNNER_TEMP}/app.p12" -k "${keychain}" -P "${MACOS_CERT_PASSWORD}" -T /usr/bin/codesign
+            security import "${RUNNER_TEMP}/installer.p12" -k "${keychain}" -P "${MACOS_CERT_PASSWORD}" -T /usr/bin/productsign -T /usr/bin/pkgbuild
+            security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "${keychain_password}" "${keychain}"
+            security list-keychains -d user -s "${keychain}" login.keychain-db
+            rm -f "${RUNNER_TEMP}/app.p12" "${RUNNER_TEMP}/installer.p12"
+            echo "MACOS_SIGNING_REQUIRED=1" >> "$GITHUB_ENV"
+          elif [ "${SIGNING_REQUIRED}" = "true" ]; then
+            echo "::error::SIGNING_REQUIRED=true, mas os certificados/credenciais de notarização da Apple não estão configurados."
+            exit 1
+          else
+            echo "::warning::Assinatura/notarização macOS não configurada: os artefatos sairão NÃO assinados."
+            # Sem identidades, o script de build apenas avisa.
+            echo "MACOS_CODESIGN_IDENTITY=" >> "$GITHUB_ENV"
+            echo "MACOS_INSTALLER_IDENTITY=" >> "$GITHUB_ENV"
+          fi
 
       - name: Gerar instaladores .pkg e .dmg
         run: ./scripts/build-macos.sh arm64
@@ -148,7 +356,7 @@ jobs:
           cp $(ls db-modeling-*-arm64.pkg | head -n 1) db-modeling-macos-setup.pkg
 
       - name: Upload dos artefatos macOS
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: artifacts-macos
           path: |
@@ -163,32 +371,36 @@ jobs:
     name: Publicar Release Oficial
     needs: [build-linux, build-windows, build-macos]
     runs-on: ubuntu-latest
+    # Único job com permissão de escrita.
+    permissions:
+      contents: write
 
     steps:
       - name: Checkout do repositório
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       - name: Criar pasta consolidada de distribuição
         run: mkdir -p release-dist
 
       - name: Baixar artefatos Linux
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           name: artifacts-linux
           path: release-dist
 
       - name: Baixar artefatos Windows
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           name: artifacts-windows
           path: release-dist
 
       - name: Baixar artefatos macOS
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           name: artifacts-macos
           path: release-dist
 
+      # O install.sh baixa este arquivo da mesma tag e confere o SHA-256 antes de instalar.
       - name: Gerar somas de verificação SHA-256
         run: |
           cd release-dist
@@ -196,17 +408,22 @@ jobs:
           echo "=== Checksums gerados ==="
           cat SHA256SUMS.txt
 
+      # Valores externos entram por `env:` (nunca interpolados no script) e a tag é validada.
       - name: Determinar Tag
         id: tag_info
+        env:
+          INPUT_TAG: ${{ github.event.inputs.tag_name }}
+          REF_NAME: ${{ github.ref_name }}
         run: |
-          if [ -n "${{ github.event.inputs.tag_name }}" ]; then
-            echo "tag=${{ github.event.inputs.tag_name }}" >> $GITHUB_OUTPUT
-          else
-            echo "tag=${{ github.ref_name }}" >> $GITHUB_OUTPUT
+          tag="${INPUT_TAG:-$REF_NAME}"
+          if ! printf '%s' "$tag" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+([-+.][0-9A-Za-z.-]+)?$'; then
+            echo "::error::Tag inválida: '$tag' (esperado vMAJOR.MINOR.PATCH)."
+            exit 1
           fi
+          echo "tag=${tag}" >> "$GITHUB_OUTPUT"
 
       - name: Criar Release no GitHub
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2
         with:
           tag_name: ${{ steps.tag_info.outputs.tag }}
           files: release-dist/*

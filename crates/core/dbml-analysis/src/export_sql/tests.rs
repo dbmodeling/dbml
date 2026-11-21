@@ -235,3 +235,61 @@ fn checked_export_rejects_invalid_dbml_and_unrepresentable_sqlite_schema() {
         Err(SqlExportError::SqliteSchema(schema)) if schema == "sales"
     ));
 }
+
+#[test]
+fn mysql_escapes_backslash_in_string_literals() {
+    let src = "Table t {\n  a int [note: 'ends with \\']\n  b int\n}\n";
+    let sql = export_sql_ddl(src, SqlDialect::Mysql);
+    assert!(sql.contains(r"COMMENT 'ends with \\'"), "{sql}");
+}
+
+#[test]
+fn other_dialects_keep_backslash_literal() {
+    let src = "Table t {\n  id int\n  Note: 'a\\b'\n}\n";
+    let sql = export_sql_ddl(src, SqlDialect::Postgres);
+    assert!(sql.contains(r"IS 'a\b'"), "{sql}");
+}
+
+/// Lê de volta um literal SQL conforme as regras do dialeto; `None` se o literal não fecha limpo.
+fn read_sql_literal(lit: &str, dialect: SqlDialect) -> Option<String> {
+    let mut chars = lit.strip_prefix('\'')?.chars().peekable();
+    let mut out = String::new();
+    loop {
+        match chars.next()? {
+            '\'' if chars.peek() == Some(&'\'') => {
+                chars.next();
+                out.push('\'');
+            }
+            '\'' => return chars.next().is_none().then_some(out),
+            '\\' if dialect == SqlDialect::Mysql => out.push(chars.next()?),
+            c => out.push(c),
+        }
+    }
+}
+
+proptest::proptest! {
+    #[test]
+    fn sql_string_literals_round_trip_in_every_dialect(val in "[a-zA-Z0-9 '\\\\;_-]{0,24}") {
+        for dialect in [
+            SqlDialect::Postgres,
+            SqlDialect::Mysql,
+            SqlDialect::Sqlite,
+            SqlDialect::SqlServer,
+            SqlDialect::Oracle,
+        ] {
+            let mut out = String::new();
+            write_sql_string(&mut out, &val, dialect);
+            proptest::prop_assert_eq!(read_sql_literal(&out, dialect), Some(val.clone()));
+        }
+    }
+}
+
+#[test]
+fn sqlserver_doubles_quotes_inside_exec_schema() {
+    let src = "Table \"o'x\".t {\n  id int\n}\n";
+    let sql = export_sql_ddl(src, SqlDialect::SqlServer);
+    assert!(
+        sql.contains("IF SCHEMA_ID(N'o''x') IS NULL EXEC(N'CREATE SCHEMA [o''x]');"),
+        "{sql}"
+    );
+}

@@ -2,6 +2,7 @@
 resolver = "2"
 members = [
     "crates/core/*",
+    "crates/atomic-write",
     "crates/app",
     "crates/cli",
     "crates/dbml-wasm",
@@ -12,6 +13,7 @@ members = [
 
 [workspace.package]
 edition = "2024"
+rust-version = "1.99"
 version = "0.1.4"
 license = "MIT"
 publish = false
@@ -23,6 +25,7 @@ dbml-syntax = { path = "crates/core/dbml-syntax" }
 dbml-analysis = { path = "crates/core/dbml-analysis" }
 dbml-edit = { path = "crates/core/dbml-edit" }
 layout = { path = "crates/core/layout" }
+atomic-write = { path = "crates/atomic-write" }
 diagram-export = { path = "crates/diagram-export" }
 sql-import = { path = "crates/sql-import" }
 db-introspect = { path = "crates/db-introspect" }

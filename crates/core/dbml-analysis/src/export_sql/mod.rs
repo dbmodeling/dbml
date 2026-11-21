@@ -78,7 +78,7 @@ fn export_schema_sql_ddl(source: &str, dialect: SqlDialect, schema: &schema::Sch
                 if idx > 0 {
                     out.push_str(", ");
                 }
-                write_sql_string(&mut out, &v.name);
+                write_sql_string(&mut out, &v.name, dialect);
             }
             out.push_str(");\n");
         }

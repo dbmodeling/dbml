@@ -7,8 +7,10 @@ mod mermaid;
 mod raster;
 mod svg;
 
-pub use mermaid::to_mermaid;
-pub use raster::{RasterError, svg_to_jpeg, svg_to_png};
+pub use mermaid::{CollisionScope, IdentCollision, MermaidExport, to_mermaid, to_mermaid_checked};
+pub use raster::{
+    MAX_PIXELS, Raster, RasterError, svg_to_jpeg, svg_to_jpeg_fit, svg_to_png, svg_to_png_fit,
+};
 pub use svg::{Selection, Theme, to_svg, to_svg_with_selection};
 
 /// Estilos de relação por [`edge_key`], como em `edges` do sidecar.

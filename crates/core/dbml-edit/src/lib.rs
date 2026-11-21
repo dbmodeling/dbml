@@ -2,24 +2,27 @@
 #![deny(missing_docs)]
 //! Semantic editing operations producing minimal CST-preserving text patches.
 
+mod api;
 mod enums;
-pub use enums::{
-    add_enum, add_enum_value, delete_enum, delete_enum_value, rename_enum, rename_enum_value,
-    reorder_enum_value, unique_enum_name,
-};
+mod eol;
 mod format;
-pub use format::{format, swap_lines};
-pub use groups::{group_tables, next_group_name, set_table_color, ungroup_table};
 mod groups;
 mod indexes;
-pub use indexes::{add_index, delete_index, set_column_check, set_column_default, update_index};
 mod model;
 mod table;
-pub use model::{
-    RefUpdate, add_column as add_column_text, add_column_preset as add_column_preset_text, add_ref,
-    add_table, delete_column, delete_ref, delete_table, link_tables, rename_column, rename_table,
-    set_column_flag, set_column_type, unique_column_name, unique_table_name, update_ref,
+
+pub use api::{
+    add_column_preset_text, add_column_text, add_enum, add_enum_value, add_index, add_ref,
+    add_table, delete_column, delete_enum, delete_enum_value, delete_index, delete_ref,
+    delete_table, format, group_tables, link_tables, rename_column, rename_enum, rename_enum_value,
+    rename_table, reorder_enum_value, set_column_check, set_column_default, set_column_flag,
+    set_column_type, set_table_color, ungroup_table, update_index, update_ref,
 };
+pub use enums::unique_enum_name;
+pub use eol::LineEnding;
+pub use format::swap_lines;
+pub use groups::next_group_name;
+pub use model::{RefUpdate, unique_column_name, unique_table_name};
 pub use table::{duplicate_table, move_column, set_table_note, table_range};
 
 use dbml_syntax::{SyntaxKind, parse};
@@ -198,6 +201,7 @@ fn insert_columns(text: &str, table: &str, lines: &[String]) -> Result<Patch, Ed
     let root = parse(text).syntax();
     let t =
         model::find_table(&root, table).ok_or_else(|| EditError::TableNotFound(table.into()))?;
+    let nl = LineEnding::detect(text).as_str();
 
     // Imita a indentação da última coluna; senão 2 espaços.
     let last_col = t
@@ -225,8 +229,12 @@ fn insert_columns(text: &str, table: &str, lines: &[String]) -> Result<Patch, Ed
                 _ => break,
             }
         }
+        // O `\r` do CRLF é trivia colada ao fim da linha: a inserção vem antes dele.
+        if text[..usize::from(end)].ends_with('\r') && text[usize::from(end)..].starts_with('\n') {
+            end -= rowan::TextSize::from(1);
+        }
         let new_text = lines.iter().fold(String::new(), |mut acc, l| {
-            let _ = write!(acc, "\n{indent}{l}");
+            let _ = write!(acc, "{nl}{indent}{l}");
             acc
         });
         return Ok(Patch {
@@ -243,10 +251,14 @@ fn insert_columns(text: &str, table: &str, lines: &[String]) -> Result<Patch, Ed
     let at = close.map_or(t.text_range().end(), |k| k.text_range().start());
     let before_ws = text[..usize::from(at)].ends_with('\n');
     let body = lines.iter().fold(String::new(), |mut acc, l| {
-        let _ = writeln!(acc, "{indent}{l}");
+        let _ = write!(acc, "{indent}{l}{nl}");
         acc
     });
-    let new_text = if before_ws { body } else { format!("\n{body}") };
+    let new_text = if before_ws {
+        body
+    } else {
+        format!("{nl}{body}")
+    };
     Ok(Patch {
         range: TextRange::empty(at),
         new_text,

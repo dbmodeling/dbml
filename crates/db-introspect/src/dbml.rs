@@ -1,12 +1,24 @@
 //! Deterministic DBML emitter for an [`Introspected`] catalog.
 
 use crate::model::{Column, ForeignKey, Index, Introspected, Table};
+use std::collections::{HashMap, HashSet};
 use std::fmt::Write as _;
 
 /// Renders the catalog as DBML: enums, tables, then references.
 #[must_use]
 pub fn to_dbml(db: &Introspected) -> String {
+    let (db, notes) = disambiguate(db);
+    let db = &db;
     let mut blocks: Vec<String> = Vec::new();
+    if !notes.is_empty() {
+        blocks.push(
+            notes
+                .iter()
+                .map(|n| format!("// {n}"))
+                .collect::<Vec<_>>()
+                .join("\n"),
+        );
+    }
     for e in &db.enums {
         let mut b = String::from("Enum ");
         qualified(&mut b, e.schema.as_deref(), &e.name);
@@ -26,6 +38,128 @@ pub fn to_dbml(db: &Introspected) -> String {
     let mut out = blocks.join("\n\n");
     out.push('\n');
     out
+}
+
+/// Names that `ident` cannot quote verbatim (`"` and line breaks become `_`).
+fn needs_cleaning(s: &str) -> bool {
+    s.chars().any(|c| matches!(c, '"' | '\n' | '\r'))
+}
+
+fn cleaned(s: &str) -> String {
+    s.chars()
+        .map(|c| {
+            if matches!(c, '"' | '\n' | '\r') {
+                '_'
+            } else {
+                c
+            }
+        })
+        .collect()
+}
+
+/// Maps each name that needs cleaning to a unique replacement within `names`.
+///
+/// Names that are already valid keep their spelling; a cleaned name that would collide with
+/// another gets a numeric suffix. Returns the map and a note per collision resolved.
+fn unique_names<'a>(
+    names: impl Iterator<Item = &'a str> + Clone,
+    what: &str,
+    owner: &str,
+) -> (HashMap<String, String>, Vec<String>) {
+    let mut taken: HashSet<String> = names
+        .clone()
+        .filter(|n| !needs_cleaning(n))
+        .map(str::to_owned)
+        .collect();
+    let mut map = HashMap::new();
+    let mut notes = Vec::new();
+    for name in names.filter(|n| needs_cleaning(n)) {
+        if map.contains_key(name) {
+            continue;
+        }
+        let base = cleaned(name);
+        let mut candidate = base.clone();
+        let mut n = 2;
+        while taken.contains(&candidate) {
+            candidate = format!("{base}_{n}");
+            n += 1;
+        }
+        if candidate != base {
+            notes.push(format!(
+                "name collision: {what} {owner}{} exported as {candidate}",
+                cleaned(name)
+            ));
+        }
+        taken.insert(candidate.clone());
+        map.insert(name.to_owned(), candidate);
+    }
+    (map, notes)
+}
+
+/// Returns a catalog whose table and column names are unique after `ident` cleaning, so two
+/// distinct database names never collapse into the same DBML identifier.
+fn disambiguate(db: &Introspected) -> (Introspected, Vec<String>) {
+    let mut out = db.clone();
+    let mut notes = Vec::new();
+    let mut schemas: Vec<Option<&str>> = db.tables.iter().map(|t| t.schema.as_deref()).collect();
+    schemas.sort_unstable();
+    schemas.dedup();
+    let mut table_maps: HashMap<Option<String>, HashMap<String, String>> = HashMap::new();
+    for schema in schemas {
+        let names = db
+            .tables
+            .iter()
+            .filter(|t| t.schema.as_deref() == schema)
+            .map(|t| t.name.as_str());
+        let (map, n) = unique_names(names, "table", "");
+        notes.extend(n);
+        table_maps.insert(schema.map(str::to_owned), map);
+    }
+    let mut column_maps: HashMap<(Option<String>, String), HashMap<String, String>> =
+        HashMap::new();
+    for t in &db.tables {
+        let owner = format!("{}.", t.name);
+        let (map, n) = unique_names(t.columns.iter().map(|c| c.name.as_str()), "column", &owner);
+        notes.extend(n);
+        column_maps.insert((t.schema.clone(), t.name.clone()), map);
+    }
+    let col = |schema: &Option<String>, table: &str, name: &str| -> String {
+        column_maps
+            .get(&(schema.clone(), table.to_owned()))
+            .and_then(|m| m.get(name))
+            .cloned()
+            .unwrap_or_else(|| name.to_owned())
+    };
+    let tbl = |schema: &Option<String>, name: &str| -> String {
+        table_maps
+            .get(schema)
+            .and_then(|m| m.get(name))
+            .cloned()
+            .unwrap_or_else(|| name.to_owned())
+    };
+    for t in &mut out.tables {
+        let (schema, orig) = (t.schema.clone(), t.name.clone());
+        for c in &mut t.columns {
+            c.name = col(&schema, &orig, &c.name);
+        }
+        for i in &mut t.indexes {
+            for c in &mut i.columns {
+                *c = col(&schema, &orig, c);
+            }
+        }
+        t.name = tbl(&schema, &orig);
+    }
+    for r in &mut out.refs {
+        for c in &mut r.from_cols {
+            *c = col(&r.from_schema, &r.from_table, c);
+        }
+        for c in &mut r.to_cols {
+            *c = col(&r.to_schema, &r.to_table, c);
+        }
+        r.from_table = tbl(&r.from_schema, &r.from_table);
+        r.to_table = tbl(&r.to_schema, &r.to_table);
+    }
+    (out, notes)
 }
 
 fn is_bare(s: &str) -> bool {
@@ -265,4 +399,77 @@ fn reference(r: &ForeignKey) -> String {
         let _ = write!(out, " [{}]", settings.join(", "));
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn col(name: &str) -> Column {
+        Column {
+            name: name.into(),
+            ty: "int".into(),
+            not_null: false,
+            primary_key: false,
+            unique: false,
+            auto_increment: false,
+            default: None,
+            comment: None,
+            check: None,
+        }
+    }
+
+    fn tbl(name: &str, cols: &[&str]) -> Table {
+        Table {
+            schema: None,
+            name: name.into(),
+            columns: cols.iter().map(|c| col(c)).collect(),
+            indexes: Vec::new(),
+            comment: None,
+        }
+    }
+
+    #[test]
+    fn distinct_table_names_never_collapse_into_one_identifier() {
+        let db = Introspected {
+            tables: vec![tbl("a\"b", &["id"]), tbl("a_b", &["id"])],
+            refs: vec![ForeignKey {
+                from_schema: None,
+                from_table: "a\"b".into(),
+                from_cols: vec!["id".into()],
+                to_schema: None,
+                to_table: "a_b".into(),
+                to_cols: vec!["id".into()],
+                on_delete: None,
+                on_update: None,
+            }],
+            ..Default::default()
+        };
+        let dbml = to_dbml(&db);
+        assert!(dbml.contains("Table a_b_2 {"), "{dbml}");
+        assert!(dbml.contains("Table a_b {"), "{dbml}");
+        assert!(dbml.contains("Ref: a_b_2.id > a_b.id"), "{dbml}");
+        assert!(dbml.contains("// name collision"), "{dbml}");
+    }
+
+    #[test]
+    fn distinct_column_names_never_collapse_into_one_identifier() {
+        let db = Introspected {
+            tables: vec![tbl("t", &["x\"y", "x_y"])],
+            ..Default::default()
+        };
+        let dbml = to_dbml(&db);
+        assert!(dbml.contains("  x_y_2 int\n  x_y int\n"), "{dbml}");
+    }
+
+    #[test]
+    fn names_without_collision_are_unchanged_and_silent() {
+        let db = Introspected {
+            tables: vec![tbl("a\"b", &["id"]), tbl("c", &["id"])],
+            ..Default::default()
+        };
+        let dbml = to_dbml(&db);
+        assert!(dbml.contains("Table a_b {"), "{dbml}");
+        assert!(!dbml.contains("// name collision"), "{dbml}");
+    }
 }

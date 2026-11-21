@@ -83,7 +83,7 @@ fn remove_members(text: &str, tables: &[&str]) -> String {
 
 /// Cria `TableGroup name { ... }` no fim do texto com `tables`, tirando-as de grupos antigos.
 #[must_use]
-pub fn group_tables(text: &str, tables: &[&str], name: &str) -> String {
+pub(crate) fn group_tables(text: &str, tables: &[&str], name: &str) -> String {
     let mut out = remove_members(text, tables);
     // grupo já existe: acrescenta as tabelas nele em vez de declarar outro com o mesmo nome
     let existing = parse(&out)
@@ -105,8 +105,15 @@ pub fn group_tables(text: &str, tables: &[&str], name: &str) -> String {
         }
         let at = out[..close].rfind('\n').map_or(close, |i| i + 1);
         // `}` na mesma linha do último membro: quebra a linha antes de inserir
-        let lead = if out[at..close].trim().is_empty() { "" } else { "\n" };
-        out.replace_range(at..close, &format!("{}{lead}{lines}", out[at..close].trim_end()));
+        let lead = if out[at..close].trim().is_empty() {
+            ""
+        } else {
+            "\n"
+        };
+        out.replace_range(
+            at..close,
+            &format!("{}{lead}{lines}", out[at..close].trim_end()),
+        );
         return out;
     }
     while out.ends_with("\n\n") {
@@ -128,7 +135,7 @@ pub fn group_tables(text: &str, tables: &[&str], name: &str) -> String {
 
 /// Tira a tabela do grupo em que estiver.
 #[must_use]
-pub fn ungroup_table(text: &str, table: &str) -> String {
+pub(crate) fn ungroup_table(text: &str, table: &str) -> String {
     remove_members(text, &[table])
 }
 
@@ -149,7 +156,7 @@ pub fn next_group_name(text: &str) -> String {
 
 /// Define (ou remove, com `None`) `headercolor` no cabeçalho da tabela.
 #[must_use]
-pub fn set_table_color(text: &str, table: &str, color: Option<&str>) -> Option<String> {
+pub(crate) fn set_table_color(text: &str, table: &str, color: Option<&str>) -> Option<String> {
     let root = parse(text).syntax();
     let t = find_table(&root, table)?;
     let head: Vec<_> = sig(&t)

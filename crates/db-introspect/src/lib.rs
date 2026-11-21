@@ -12,11 +12,13 @@ mod params;
 mod postgres;
 mod sqlite;
 mod sqlserver;
+mod tls;
 mod url;
 
 pub use dbml::to_dbml;
 pub use model::{Column, EnumType, ForeignKey, Index, Introspected, Table};
 pub use params::ConnectionParams;
+pub use tls::{TlsMode, apply_default as with_default_tls, is_loopback_host, weak_tls_warning};
 pub use url::{Dialect, detect_dialect, mask_url, with_password};
 
 /// Error raised while connecting to or reading a database. Messages never contain the password.
@@ -83,6 +85,10 @@ pub struct Outcome {
 
 /// Connects to `target` (URL or SQLite file path), reads the catalog and renders DBML.
 ///
+/// Network targets follow the TLS policy of [`TlsMode`]: a non-loopback host without an explicit
+/// TLS parameter is connected with verified TLS, and a weaker explicit choice is reported in
+/// [`Outcome::warnings`].
+///
 /// # Errors
 ///
 /// Returns [`Error`] when the target is invalid, the engine is not supported yet, the connection
@@ -119,13 +125,19 @@ pub async fn read_catalog(target: &str) -> Result<Introspected, Error> {
 ///
 /// Same as [`introspect`].
 pub async fn read_catalog_with(target: &str, options: &Options) -> Result<Introspected, Error> {
-    match detect_dialect(target)? {
+    let target = with_default_tls(target);
+    let target = &*target;
+    let mut db = match detect_dialect(target)? {
         Dialect::Sqlite => sqlite::read(target).await,
         Dialect::Postgres => postgres::read(target, options).await,
         Dialect::Mysql => mysql::read(target, options).await,
         Dialect::SqlServer => Box::pin(sqlserver::read(target, options)).await,
         Dialect::Oracle => Err(Error::Unsupported(Dialect::Oracle)),
+    }?;
+    if let Some(warning) = weak_tls_warning(target) {
+        db.warnings.push(warning);
     }
+    Ok(db)
 }
 
 /// Connects to `target`, runs a trivial query and lists the schemas, without reading any tables.
@@ -136,6 +148,8 @@ pub async fn read_catalog_with(target: &str, options: &Options) -> Result<Intros
 /// Returns [`Error::Connect`] / [`Error::Query`] on failure (never containing the password) and
 /// [`Error::Unsupported`] for engines without an introspector.
 pub async fn test_connection(target: &str, options: &Options) -> Result<TestOutcome, Error> {
+    let target = with_default_tls(target);
+    let target = &*target;
     match detect_dialect(target)? {
         Dialect::Sqlite => sqlite::ping(target).await,
         Dialect::Postgres => postgres::ping(target, options).await,

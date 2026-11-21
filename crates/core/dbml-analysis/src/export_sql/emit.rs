@@ -36,9 +36,12 @@ pub(super) fn emit_schemas(out: &mut String, schema: &Schema, dialect: SqlDialec
             }
             SqlDialect::SqlServer => {
                 out.push_str("IF SCHEMA_ID(N");
-                write_sql_string(out, s);
+                write_sql_string(out, s, dialect);
                 out.push_str(") IS NULL EXEC(N'CREATE SCHEMA ");
-                write_single_ident(out, s, dialect);
+                // O identificador vai dentro de um literal N'...': as aspas simples dele dobram.
+                let mut ident = String::new();
+                write_single_ident(&mut ident, s, dialect);
+                out.push_str(&ident.replace('\'', "''"));
                 out.push_str("');\n");
             }
             _ => {}
@@ -54,7 +57,7 @@ pub(super) fn emit_table_comments(out: &mut String, table: &Table, dialect: SqlD
         out.push_str("COMMENT ON TABLE ");
         write_qualified_ident(out, table.schema.as_deref(), &table.name, dialect);
         out.push_str(" IS ");
-        write_sql_string(out, note);
+        write_sql_string(out, note, dialect);
         out.push_str(";\n");
     }
     for col in &table.columns {
@@ -64,7 +67,7 @@ pub(super) fn emit_table_comments(out: &mut String, table: &Table, dialect: SqlD
             out.push('.');
             write_single_ident(out, &col.name, dialect);
             out.push_str(" IS ");
-            write_sql_string(out, note);
+            write_sql_string(out, note, dialect);
             out.push_str(";\n");
         }
     }
@@ -149,7 +152,7 @@ pub(super) fn write_create_table(
             && let Some(note) = &col.note
         {
             out.push_str(" COMMENT ");
-            write_sql_string(out, note);
+            write_sql_string(out, note, dialect);
         }
     }
 
@@ -184,7 +187,7 @@ pub(super) fn write_create_table(
         out.push_str("\n) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4");
         if let Some(note) = &table.note {
             out.push_str(" COMMENT=");
-            write_sql_string(out, note);
+            write_sql_string(out, note, dialect);
         }
         out.push_str(";\n");
     } else {

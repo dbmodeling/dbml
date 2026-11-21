@@ -100,6 +100,17 @@ pub fn layered(sizes: &[Size], edges: &[(usize, usize)], sp: &Spacing) -> Vec<Po
         cols[l].push(i);
     }
 
+    // vizinhos de cada nó, uma vez só: varrer `edges` por nó seria O(nós x arestas)
+    let mut neighbors: Vec<Vec<usize>> = vec![Vec::new(); n];
+    for &(a, b) in edges {
+        if a < n && b < n {
+            neighbors[a].push(b);
+            if a != b {
+                neighbors[b].push(a);
+            }
+        }
+    }
+
     // baricentro: 2 varreduras (esq→dir pelos vizinhos à esquerda, depois dir→esq)
     let mut order = vec![0f32; n];
     for col in &cols {
@@ -117,13 +128,9 @@ pub fn layered(sizes: &[Size], edges: &[(usize, usize)], sp: &Spacing) -> Vec<Po
             let mut keyed: Vec<(f32, usize)> = cols[c]
                 .iter()
                 .map(|&i| {
-                    let (sum, count) = edges
+                    let (sum, count) = neighbors[i]
                         .iter()
-                        .filter_map(|&(a, b)| match (a == i, b == i) {
-                            (true, _) => Some(b),
-                            (_, true) => Some(a),
-                            _ => None,
-                        })
+                        .copied()
                         .filter(|&o| {
                             (pass % 2 == 0 && layer[o] + 1 == c)
                                 || (pass % 2 == 1 && layer[o] == c + 1)
@@ -163,23 +170,10 @@ pub fn layered(sizes: &[Size], edges: &[(usize, usize)], sp: &Spacing) -> Vec<Po
 
 /// Camada de cada nó = maior distância até uma tabela sem dependências (arestas
 /// de retorno de ciclos são ignoradas via DFS).
+///
+/// A DFS usa pilha explícita: a profundidade segue a cadeia de FKs e a pilha do Wasm é
+/// pequena, então recursão proporcional ao schema abortaria o módulo.
 fn layers(n: usize, edges: &[(usize, usize)]) -> Vec<usize> {
-    fn visit(i: usize, deps: &[Vec<usize>], state: &mut [u8], layer: &mut [usize]) {
-        state[i] = 1;
-        let mut l = 0;
-        for &d in &deps[i] {
-            match state[d] {
-                0 => {
-                    visit(d, deps, state, layer);
-                    l = l.max(layer[d] + 1);
-                }
-                2 => l = l.max(layer[d] + 1),
-                _ => {} // aresta de retorno (ciclo): ignorada
-            }
-        }
-        layer[i] = l;
-        state[i] = 2;
-    }
     // dependências: a -> b significa "a referencia b"; b fica antes
     let mut deps: Vec<Vec<usize>> = vec![Vec::new(); n];
     for &(a, b) in edges {
@@ -189,9 +183,34 @@ fn layers(n: usize, edges: &[(usize, usize)]) -> Vec<usize> {
     }
     let mut state = vec![0u8; n]; // 0 novo, 1 na pilha, 2 pronto
     let mut layer = vec![0usize; n];
-    for i in 0..n {
-        if state[i] == 0 {
-            visit(i, &deps, &mut state, &mut layer);
+    // Quadro: (nó, próxima dependência a visitar, camada acumulada).
+    let mut stack: Vec<(usize, usize, usize)> = Vec::new();
+    for root in 0..n {
+        if state[root] != 0 {
+            continue;
+        }
+        state[root] = 1;
+        stack.push((root, 0, 0));
+        while let Some(frame) = stack.last_mut() {
+            let (i, next, _) = *frame;
+            if let Some(&d) = deps[i].get(next) {
+                frame.1 += 1;
+                match state[d] {
+                    0 => {
+                        state[d] = 1;
+                        stack.push((d, 0, 0));
+                    }
+                    2 => frame.2 = frame.2.max(layer[d] + 1),
+                    _ => {} // aresta de retorno (ciclo): ignorada
+                }
+            } else {
+                layer[i] = frame.2;
+                state[i] = 2;
+                stack.pop();
+                if let Some(parent) = stack.last_mut() {
+                    parent.2 = parent.2.max(layer[i] + 1);
+                }
+            }
         }
     }
     layer
@@ -694,6 +713,50 @@ mod tests {
             p[1].y > p[0].y,
             "segundo bloco vai para a linha de baixo: {p:?}"
         );
+    }
+
+    /// Cadeia FK de `n` tabelas (`i` referencia `i + 1`), como um schema real muito profundo.
+    fn chain(n: usize) -> (Vec<Size>, Vec<(usize, usize)>) {
+        let sizes = vec![Size { w: 100., h: 40. }; n];
+        let edges = (0..n - 1).map(|i| (i, i + 1)).collect();
+        (sizes, edges)
+    }
+
+    /// Roda `f` numa thread com pilha pequena, como a do Wasm: recursão proporcional ao
+    /// schema estoura a pilha (e aborta o processo) em vez de passar.
+    fn on_small_stack<T: Send + 'static>(f: impl FnOnce() -> T + Send + 'static) -> T {
+        std::thread::Builder::new()
+            .stack_size(128 * 1024)
+            .spawn(f)
+            .unwrap()
+            .join()
+            .unwrap()
+    }
+
+    #[test]
+    fn layers_handles_20000_table_chain_on_small_stack() {
+        let layer = on_small_stack(|| {
+            let (_, edges) = chain(20_000);
+            layers(20_000, &edges)
+        });
+        assert_eq!(layer[19_999], 0);
+        assert_eq!(layer[0], 19_999);
+    }
+
+    #[test]
+    fn layered_handles_20000_table_chain_on_small_stack() {
+        let pos = on_small_stack(|| {
+            let (sizes, edges) = chain(20_000);
+            layered(&sizes, &edges, &SP)
+        });
+        assert_eq!(pos.len(), 20_000);
+        assert!(pos[0].x > pos[19_999].x);
+    }
+
+    #[test]
+    fn layers_ignores_back_edges_of_cycles() {
+        let layer = layers(3, &[(0, 1), (1, 2), (2, 0)]);
+        assert_eq!(layer.iter().max(), Some(&2));
     }
 
     #[test]

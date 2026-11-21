@@ -6,17 +6,28 @@ on:
     paths:
       - 'Cargo.lock'
       - 'Cargo.toml'
+      - 'deny.toml'
       - 'crates/**/Cargo.toml'
+      - 'packages/*/package*.json'
+      - 'vscode-extension/package*.json'
+      - '.github/workflows/security.yml'
   pull_request:
     branches: [ main, master ]
     paths:
       - 'Cargo.lock'
       - 'Cargo.toml'
+      - 'deny.toml'
       - 'crates/**/Cargo.toml'
+      - 'packages/*/package*.json'
+      - 'vscode-extension/package*.json'
+      - '.github/workflows/security.yml'
   schedule:
     # Executa toda segunda-feira às 06:00 UTC para detectar novas CVEs publicadas
     - cron: '0 6 * * 1'
   workflow_dispatch:
+
+permissions:
+  contents: read
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -29,10 +40,49 @@ jobs:
 
     steps:
       - name: Checkout do repositório
-        uses: actions/checkout@v6
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       - name: Instalar cargo-audit
-        uses: taiki-e/install-action@cargo-audit
+        uses: taiki-e/install-action@25f51f6b1bf4e18876107cece836f4f77ac17c8c # v2
+        with:
+          tool: cargo-audit
 
       - name: Checagem com cargo-audit
         run: cargo audit
+
+  deny:
+    name: Licenças, fontes e versões duplicadas (cargo-deny)
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout do repositório
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Instalar cargo-deny
+        uses: taiki-e/install-action@25f51f6b1bf4e18876107cece836f4f77ac17c8c # v2
+        with:
+          tool: cargo-deny
+
+      - name: Checagem com cargo-deny
+        run: cargo deny --locked check
+
+  npm-audit:
+    name: Auditoria npm (${{ matrix.project }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        project: [packages/canvas-web, vscode-extension]
+
+    steps:
+      - name: Checkout do repositório
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Configurar Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 24
+
+      - name: npm audit (severidade alta ou crítica)
+        run: npm audit --audit-level=high
+        working-directory: ${{ matrix.project }}

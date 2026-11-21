@@ -390,6 +390,19 @@ struct ColumnFlags {
     has_default: bool,
 }
 
+/// Whether a raw SQL expression has a `;` outside single-quoted string literals.
+fn has_statement_terminator(expr: &str) -> bool {
+    let mut in_string = false;
+    for ch in expr.chars() {
+        match ch {
+            '\'' => in_string = !in_string,
+            ';' if !in_string => return true,
+            _ => {}
+        }
+    }
+    false
+}
+
 fn check_column_settings(
     cname: &str,
     ct: &[SyntaxToken],
@@ -524,6 +537,23 @@ fn check_column_settings(
                                 "Invalid referential action `{val}` for `{kw}:` (expected: no action, restrict, cascade, set null, set default)"
                             ),
                         ));
+                    }
+                } else if matches!(kw.as_str(), "default" | "check") {
+                    for tok in &part[2..] {
+                        let raw = tok.text();
+                        let expr = raw
+                            .strip_prefix('`')
+                            .map_or(raw, |r| r.strip_suffix('`').unwrap_or(r));
+                        let raw_expr = tok.kind() != SyntaxKind::Str || raw.starts_with('`');
+                        if raw_expr && has_statement_terminator(expr) {
+                            out.push(diag(
+                                range(tok),
+                                Severity::Warning,
+                                format!(
+                                    "Raw `{kw}:` expression on column `{cname}` contains a statement terminator `;`; it is exported verbatim to SQL"
+                                ),
+                            ));
+                        }
                     }
                 }
             }
@@ -1164,6 +1194,8 @@ fn check_fk_semantics(
     }
 }
 
+/// DFS iterativa (pilha explícita): a profundidade segue a cadeia de FKs e a pilha do Wasm é
+/// pequena, então recursão proporcional ao schema abortaria o módulo.
 fn detect_fk_cycles(
     fk_graph: &BTreeMap<String, BTreeSet<String>>,
     fk_anchors: &BTreeMap<(String, String), Range<usize>>,
@@ -1175,74 +1207,64 @@ fn detect_fk_cycles(
         Visited,
     }
 
-    fn dfs<'a>(
-        node: &'a str,
-        fk_graph: &'a BTreeMap<String, BTreeSet<String>>,
-        fk_anchors: &BTreeMap<(String, String), Range<usize>>,
-        state: &mut HashMap<&'a str, State>,
-        stack: &mut Vec<&'a str>,
-        seen_cycles: &mut HashSet<Vec<&'a str>>,
-        out: &mut Vec<Diagnostic>,
-    ) {
-        state.insert(node, State::Visiting);
-        stack.push(node);
-        if let Some(neighbors) = fk_graph.get(node) {
-            for next in neighbors {
-                match state.get(next.as_str()) {
-                    None => dfs(next, fk_graph, fk_anchors, state, stack, seen_cycles, out),
-                    Some(State::Visiting) => {
-                        if let Some(pos) = stack.iter().position(|&n| n == next) {
-                            let cycle_nodes = &stack[pos..];
-                            let min_pos = cycle_nodes
-                                .iter()
-                                .enumerate()
-                                .min_by(|(_, a), (_, b)| a.cmp(b))
-                                .map_or(0, |(i, _)| i);
-                            let canonical: Vec<&'a str> = cycle_nodes[min_pos..]
-                                .iter()
-                                .chain(cycle_nodes[..min_pos].iter())
-                                .copied()
-                                .collect();
-                            if seen_cycles.insert(canonical) {
-                                let mut path: Vec<&str> = cycle_nodes.to_vec();
-                                path.push(next.as_str());
-                                if let Some(anchor) =
-                                    fk_anchors.get(&(node.to_string(), next.clone()))
-                                {
-                                    out.push(diag(
-                                        anchor.clone(),
-                                        Severity::Warning,
-                                        format!(
-                                            "Circular foreign key dependency detected: {}",
-                                            path.join(" -> ")
-                                        ),
-                                    ));
-                                }
-                            }
+    static NO_NEIGHBORS: BTreeSet<String> = BTreeSet::new();
+    let neighbors_of = |node: &str| fk_graph.get(node).unwrap_or(&NO_NEIGHBORS).iter();
+
+    let mut state: HashMap<&str, State> = HashMap::new();
+    let mut seen_cycles: HashSet<Vec<&str>> = HashSet::new();
+    for root in fk_graph.keys() {
+        if state.contains_key(root.as_str()) {
+            continue;
+        }
+        state.insert(root, State::Visiting);
+        let mut stack: Vec<&str> = vec![root];
+        let mut iters = vec![neighbors_of(root)];
+        while let Some(it) = iters.last_mut() {
+            let node = stack[stack.len() - 1];
+            let Some(next) = it.next() else {
+                iters.pop();
+                stack.pop();
+                state.insert(node, State::Visited);
+                continue;
+            };
+            match state.get(next.as_str()) {
+                None => {
+                    state.insert(next, State::Visiting);
+                    stack.push(next);
+                    iters.push(neighbors_of(next));
+                }
+                Some(State::Visiting) => {
+                    let Some(pos) = stack.iter().position(|&n| n == next) else {
+                        continue;
+                    };
+                    let cycle_nodes = &stack[pos..];
+                    let min_pos = cycle_nodes
+                        .iter()
+                        .enumerate()
+                        .min_by(|(_, a), (_, b)| a.cmp(b))
+                        .map_or(0, |(i, _)| i);
+                    let canonical: Vec<&str> = cycle_nodes[min_pos..]
+                        .iter()
+                        .chain(cycle_nodes[..min_pos].iter())
+                        .copied()
+                        .collect();
+                    if seen_cycles.insert(canonical) {
+                        let mut path: Vec<&str> = cycle_nodes.to_vec();
+                        path.push(next.as_str());
+                        if let Some(anchor) = fk_anchors.get(&(node.to_string(), next.clone())) {
+                            out.push(diag(
+                                anchor.clone(),
+                                Severity::Warning,
+                                format!(
+                                    "Circular foreign key dependency detected: {}",
+                                    path.join(" -> ")
+                                ),
+                            ));
                         }
                     }
-                    Some(State::Visited) => {}
                 }
+                Some(State::Visited) => {}
             }
-        }
-        stack.pop();
-        state.insert(node, State::Visited);
-    }
-
-    let mut state = HashMap::new();
-    let mut stack = Vec::new();
-    let mut seen_cycles = HashSet::new();
-    for node in fk_graph.keys() {
-        if !state.contains_key(node.as_str()) {
-            dfs(
-                node,
-                fk_graph,
-                fk_anchors,
-                &mut state,
-                &mut stack,
-                &mut seen_cycles,
-                out,
-            );
         }
     }
 }
@@ -1328,6 +1350,41 @@ mod tests {
             "{m:?}"
         );
         assert!(m.iter().any(|s| s.contains("requires a value")), "{m:?}");
+    }
+
+    #[test]
+    fn fk_cycle_detection_survives_20000_table_chain_on_small_stack() {
+        let out = std::thread::Builder::new()
+            .stack_size(128 * 1024)
+            .spawn(|| {
+                let n = 20_000;
+                let name = |i: usize| format!("t{i:05}");
+                let mut graph: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+                let mut anchors = BTreeMap::new();
+                for i in 0..n {
+                    let to = (i + 1) % n; // a última tabela fecha o ciclo
+                    graph.entry(name(i)).or_default().insert(name(to));
+                    anchors.insert((name(i), name(to)), 0..1);
+                }
+                let mut out = Vec::new();
+                detect_fk_cycles(&graph, &anchors, &mut out);
+                out
+            })
+            .unwrap()
+            .join()
+            .unwrap();
+        assert_eq!(out.len(), 1, "um único ciclo de 20000 tabelas");
+    }
+
+    #[test]
+    fn raw_default_and_check_with_statement_terminator_warn() {
+        let src = "Table t {\n  a int [default: `1; DROP TABLE t`]\n  b int [check: `b > 0; --`]\n  c text [default: `'a;b'`]\n  d int [default: `now()`]\n}\n";
+        let m = msgs(src);
+        let hits = m
+            .iter()
+            .filter(|s| s.contains("statement terminator"))
+            .count();
+        assert_eq!(hits, 2, "{m:?}");
     }
 
     #[test]

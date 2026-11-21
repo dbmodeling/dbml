@@ -4,6 +4,20 @@
 
 Free code signing for official Windows releases is provided by [SignPath.io](https://about.signpath.io/), using a certificate by the [SignPath Foundation](https://signpath.org/).
 
+### What the pipeline signs
+
+`release.yml` signs official artifacts when the signing credentials are configured in the repository, and fails the job if signing is configured but fails:
+
+| Platform | Mechanism | Configuration (repository settings) |
+| :--- | :--- | :--- |
+| Windows installer | SignPath (`signpath/github-action-submit-signing-request`) | secret `SIGNPATH_API_TOKEN`; variables `SIGNPATH_ORGANIZATION_ID`, `SIGNPATH_PROJECT_SLUG`, `SIGNPATH_SIGNING_POLICY_SLUG` |
+| macOS `.app`, `.pkg`, `.dmg` | `codesign` (Hardened Runtime), `pkgbuild --sign`, `notarytool` + `stapler` | secrets `MACOS_APP_CERT_P12`, `MACOS_INSTALLER_CERT_P12`, `MACOS_CERT_PASSWORD`, `APPLE_ID`, `APPLE_TEAM_ID`, `APPLE_APP_PASSWORD`; variables `MACOS_CODESIGN_IDENTITY`, `MACOS_INSTALLER_IDENTITY` |
+| Linux `.deb` / `.rpm` | Not signed; verify with the published checksums | n/a |
+
+Set the repository variable `SIGNING_REQUIRED=true` for official releases: the Windows and macOS jobs then **fail** when the credentials above are missing instead of publishing unsigned installers. Without it, a missing credential only produces a log warning and the artifact is published unsigned, so treat a release built without `SIGNING_REQUIRED=true` as unsigned.
+
+Every release also publishes `SHA256SUMS.txt`. `scripts/install.sh` downloads the package by resolved tag and aborts if its SHA-256 does not match. To check manually: `sha256sum -c SHA256SUMS.txt --ignore-missing`.
+
 ### Signing & Release Roles
 
 - **Build origin:** All official release artifacts are built reproducibly via GitHub Actions from [`.github/workflows/release.yml`](.github/workflows/release.yml) on protected release tags (`v*`). No locally compiled binaries are uploaded as official releases.

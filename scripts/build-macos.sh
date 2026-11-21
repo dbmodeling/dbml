@@ -12,6 +12,49 @@ BUILD_DIR="$(pwd)/target/macosbuild"
 APP_DIR="$BUILD_DIR/$APP_NAME.app"
 DMG_STAGE="$BUILD_DIR/dmg_stage"
 
+# ============================================================
+# Assinatura e notarização (opcionais; só rodam com os segredos presentes)
+#   MACOS_CODESIGN_IDENTITY   "Developer ID Application: ..." (assina o .app e o .dmg)
+#   MACOS_INSTALLER_IDENTITY  "Developer ID Installer: ..."   (assina o .pkg)
+#   APPLE_ID, APPLE_TEAM_ID, APPLE_APP_PASSWORD   credenciais do `notarytool`
+#   MACOS_SIGNING_REQUIRED=1  falha o build se a assinatura não estiver configurada
+# Qualquer falha de codesign/productsign/notarytool aborta o script (set -e).
+# ============================================================
+signing_configured() {
+    [ -n "${MACOS_CODESIGN_IDENTITY:-}" ] && [ -n "${MACOS_INSTALLER_IDENTITY:-}" ]
+}
+notarization_configured() {
+    [ -n "${APPLE_ID:-}" ] && [ -n "${APPLE_TEAM_ID:-}" ] && [ -n "${APPLE_APP_PASSWORD:-}" ]
+}
+
+if [ "${MACOS_SIGNING_REQUIRED:-0}" = "1" ] && { ! signing_configured || ! notarization_configured; }; then
+    echo "Erro: MACOS_SIGNING_REQUIRED=1, mas faltam identidades de assinatura ou credenciais de notarização." >&2
+    exit 1
+fi
+if ! signing_configured; then
+    echo "Aviso: assinatura macOS não configurada; os artefatos sairão NÃO assinados." >&2
+fi
+
+sign_app_bundle() {
+    [ -n "${MACOS_CODESIGN_IDENTITY:-}" ] || return 0
+    echo "==> Assinando $APP_DIR (Hardened Runtime)..."
+    local bin
+    for bin in "$APP_DIR"/Contents/MacOS/*; do
+        codesign --force --timestamp --options runtime --sign "$MACOS_CODESIGN_IDENTITY" "$bin"
+    done
+    codesign --force --timestamp --options runtime --sign "$MACOS_CODESIGN_IDENTITY" "$APP_DIR"
+    codesign --verify --strict --verbose=2 "$APP_DIR"
+}
+
+# notarize_and_staple <arquivo .pkg|.dmg>
+notarize_and_staple() {
+    notarization_configured || return 0
+    echo "==> Notarizando $1..."
+    xcrun notarytool submit "$1" \
+        --apple-id "$APPLE_ID" --team-id "$APPLE_TEAM_ID" --password "$APPLE_APP_PASSWORD" --wait
+    xcrun stapler staple "$1"
+}
+
 # Seleção de arquitetura via argumento ($1), variável de ambiente (ARCH) ou detecção automática
 REQ_ARCH="${1:-${ARCH:-arm64}}"
 
@@ -222,6 +265,8 @@ echo "==> DB Modeling e CLI (dbml) desinstalados com sucesso do sistema."
 UNINST
 chmod 0755 "$APP_DIR/Contents/Resources/uninstall.sh"
 
+sign_app_bundle
+
 # ============================================================
 # Geração do Assistente de Instalação Apple Package (.pkg)
 # ============================================================
@@ -236,11 +281,17 @@ if command -v pkgbuild &>/dev/null; then
         chmod 0755 "$PKG_ROOT/usr/local/bin/dbml"
     fi
     ln -sf "/Applications/DB Modeling.app/Contents/MacOS/db-modeling" "$PKG_ROOT/usr/local/bin/db-modeling"
+    PKG_SIGN=()
+    if [ -n "${MACOS_INSTALLER_IDENTITY:-}" ]; then
+        PKG_SIGN=(--sign "$MACOS_INSTALLER_IDENTITY" --timestamp)
+    fi
     pkgbuild --identifier "com.dbmodeling.app" \
              --version "${VERSION}" \
              --root "$PKG_ROOT" \
              --install-location "/" \
+             ${PKG_SIGN[@]+"${PKG_SIGN[@]}"} \
              "$PKG_OUT"
+    notarize_and_staple "$PKG_OUT"
     cp -f "$PKG_OUT" "$DISTDIR/${NAME}-macos-setup.pkg"
     echo " Assistente PKG gerado: $PKG_OUT"
 fi
@@ -265,6 +316,13 @@ else
     echo "Aviso: Nenhuma ferramenta de imagem de disco (hdiutil/genisoimage/mkisofs) foi encontrada."
     echo "Compactando bundle DB Modeling.app como arquivo .tar.gz..."
     tar -czf "$DISTDIR/${NAME}-v${VERSION}-${ARCH_NAME}.app.tar.gz" -C "$BUILD_DIR" "${APP_NAME}.app"
+fi
+
+if [ -f "$DMG_OUT" ]; then
+    if [ -n "${MACOS_CODESIGN_IDENTITY:-}" ]; then
+        codesign --force --timestamp --sign "$MACOS_CODESIGN_IDENTITY" "$DMG_OUT"
+    fi
+    notarize_and_staple "$DMG_OUT"
 fi
 
 # Se for arm64, cria também link/alias com aarch64 para máxima conveniência de download

@@ -1,6 +1,6 @@
 //! Connection form fields to a connection URL (shared by Desktop, Web and CLI front ends).
 
-use crate::{Dialect, Error};
+use crate::{Dialect, Error, TlsMode, is_loopback_host};
 use percent_encoding::{AsciiSet, NON_ALPHANUMERIC, utf8_percent_encode};
 
 /// Everything except RFC 3986 unreserved characters is percent-encoded.
@@ -27,8 +27,11 @@ pub struct ConnectionParams {
     pub password: String,
     /// SQLite database file.
     pub path: String,
-    /// SQL Server only: accept a self-signed server certificate.
+    /// SQL Server only: accept a self-signed server certificate (same as [`TlsMode::Require`]).
     pub trust_server_certificate: bool,
+    /// Transport protection. [`TlsMode::Auto`] writes nothing: remote hosts then get verified
+    /// TLS from the introspection entry points; set [`TlsMode::Disable`] to opt out explicitly.
+    pub tls: TlsMode,
 }
 
 impl ConnectionParams {
@@ -44,6 +47,7 @@ impl ConnectionParams {
             password: String::new(),
             path: String::new(),
             trust_server_certificate: false,
+            tls: TlsMode::Auto,
         }
     }
 
@@ -57,6 +61,33 @@ impl ConnectionParams {
             Dialect::Oracle => Some(1521),
             Dialect::Sqlite => None,
         }
+    }
+
+    /// Query string that spells out [`ConnectionParams::tls`] for the engine, if any.
+    fn tls_query(&self) -> Option<&'static str> {
+        match (self.dialect, self.tls) {
+            (Dialect::Postgres, TlsMode::Verify) => Some("sslmode=verify-full"),
+            (Dialect::Postgres, TlsMode::Require) => Some("sslmode=require"),
+            (Dialect::Postgres, TlsMode::Disable) => Some("sslmode=disable"),
+            (Dialect::Mysql, TlsMode::Verify) => Some("ssl-mode=VERIFY_IDENTITY"),
+            (Dialect::Mysql, TlsMode::Require) => Some("ssl-mode=REQUIRED"),
+            (Dialect::Mysql, TlsMode::Disable) => Some("ssl-mode=DISABLED"),
+            (Dialect::SqlServer, TlsMode::Verify) => Some("encrypt=true"),
+            (Dialect::SqlServer, TlsMode::Require) => {
+                Some("encrypt=true&trustServerCertificate=true")
+            }
+            (Dialect::SqlServer, TlsMode::Disable) => Some("encrypt=false"),
+            (Dialect::SqlServer, TlsMode::Auto) if self.trust_server_certificate => {
+                Some("trustServerCertificate=true")
+            }
+            _ => None,
+        }
+    }
+
+    /// Whether the form targets a host that is not this machine (so TLS matters).
+    #[must_use]
+    pub fn is_remote(&self) -> bool {
+        self.dialect != Dialect::Sqlite && !is_loopback_host(&self.host)
     }
 
     /// Builds the connection URL, percent-encoding user and password.
@@ -109,8 +140,9 @@ impl ConnectionParams {
             url.push('/');
             url.push_str(&utf8_percent_encode(db, ENCODE).to_string());
         }
-        if self.dialect == Dialect::SqlServer && self.trust_server_certificate {
-            url.push_str("?trustServerCertificate=true");
+        if let Some(query) = self.tls_query() {
+            url.push('?');
+            url.push_str(query);
         }
         Ok(url)
     }
@@ -147,6 +179,42 @@ mod tests {
             ms.to_url().unwrap(),
             "sqlserver://app:p%40ss%3Aw%2Frd%261@localhost:1433/shop?trustServerCertificate=true"
         );
+    }
+
+    #[test]
+    fn tls_mode_is_spelled_out_per_engine() {
+        let cases = [
+            (Dialect::Postgres, TlsMode::Verify, "?sslmode=verify-full"),
+            (Dialect::Postgres, TlsMode::Require, "?sslmode=require"),
+            (Dialect::Postgres, TlsMode::Disable, "?sslmode=disable"),
+            (Dialect::Mysql, TlsMode::Verify, "?ssl-mode=VERIFY_IDENTITY"),
+            (Dialect::Mysql, TlsMode::Require, "?ssl-mode=REQUIRED"),
+            (Dialect::Mysql, TlsMode::Disable, "?ssl-mode=DISABLED"),
+            (Dialect::SqlServer, TlsMode::Verify, "?encrypt=true"),
+            (
+                Dialect::SqlServer,
+                TlsMode::Require,
+                "?encrypt=true&trustServerCertificate=true",
+            ),
+            (Dialect::SqlServer, TlsMode::Disable, "?encrypt=false"),
+        ];
+        for (dialect, tls, suffix) in cases {
+            let mut c = p(dialect);
+            c.tls = tls;
+            let url = c.to_url().unwrap();
+            assert!(url.ends_with(suffix), "{dialect:?} {tls:?}: {url}");
+        }
+        // Auto não escreve nada: o padrão seguro é aplicado na conexão.
+        assert!(!p(Dialect::Postgres).to_url().unwrap().contains('?'));
+    }
+
+    #[test]
+    fn remote_detection_follows_the_host() {
+        let mut c = p(Dialect::Postgres);
+        assert!(!c.is_remote(), "host vazio é localhost");
+        c.host = "db.example.com".into();
+        assert!(c.is_remote());
+        assert!(!ConnectionParams::new(Dialect::Sqlite).is_remote());
     }
 
     #[test]
