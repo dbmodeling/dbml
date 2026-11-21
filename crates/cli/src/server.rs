@@ -13,6 +13,8 @@ use axum::{
 };
 use futures_util::{SinkExt, StreamExt};
 use serde::Deserialize;
+use std::sync::Arc;
+use tokio::sync::broadcast::error::RecvError;
 
 #[derive(Deserialize, Debug)]
 #[serde(tag = "type", content = "payload")]
@@ -140,12 +142,24 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
     let (reply_tx, mut reply_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
     let send_loop = async {
         loop {
-            let msg = tokio::select! {
-                Ok(msg) = rx.recv() => msg,
-                Some(msg) = reply_rx.recv() => msg,
+            let msg: Arc<str> = tokio::select! {
+                outcome = rx.recv() => match outcome {
+                    Ok(msg) => msg,
+                    // Cliente atrasado: perdeu mensagens, então reenvia o documento atual e segue.
+                    Err(RecvError::Lagged(_)) => {
+                        let doc = state.doc.read().await;
+                        state.document_message("update", &doc).await.into()
+                    }
+                    Err(RecvError::Closed) => break,
+                },
+                Some(msg) = reply_rx.recv() => msg.into(),
                 else => break,
             };
-            if sender.send(Message::Text(msg.into())).await.is_err() {
+            if sender
+                .send(Message::Text(msg.as_ref().into()))
+                .await
+                .is_err()
+            {
                 break;
             }
         }

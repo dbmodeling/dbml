@@ -57,7 +57,7 @@ pub fn start_file_watcher(state: AppState) -> anyhow::Result<()> {
                 "source": source,
                 "documentId": path.to_string_lossy(),
             });
-            let _ = state.tx.send(message.to_string());
+            let _ = state.tx.send(message.to_string().into());
         }
     });
 

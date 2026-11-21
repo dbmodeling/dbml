@@ -173,6 +173,61 @@ async fn shutdown_closes_sockets_and_waits_for_their_tasks() {
 }
 
 #[tokio::test]
+async fn lagging_client_gets_the_current_state_and_keeps_receiving() {
+    let h = spawn("lagged").await;
+    let url = format!("ws://{}/ws?token={}", h.addr, h.state.token());
+    let (mut ws, _) = tokio_tungstenite::connect_async(&url).await.unwrap();
+    ws.next().await.unwrap().unwrap(); // init
+    while h.state.lifecycle.running() == 0 {
+        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+    }
+
+    // Sem ceder o runtime, estoura a capacidade do canal: o receptor do socket fica atrasado.
+    for i in 0..(dbml_cli::state::BROADCAST_CAPACITY * 4) {
+        let _ = h
+            .state
+            .tx
+            .send(format!(r#"{{"type":"noise","n":{i}}}"#).into());
+    }
+    let _ = h.state.tx.send(r#"{"type":"marker"}"#.into());
+
+    let mut saw_update = false;
+    let seen_marker = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        loop {
+            let Some(Ok(Message::Text(text))) = ws.next().await else {
+                return false;
+            };
+            if text.contains(r#""type":"update""#) {
+                saw_update = true;
+                assert!(
+                    text.contains("Table a"),
+                    "o update deve trazer o documento: {text}"
+                );
+            }
+            if text.contains(r#""type":"marker""#) {
+                return true;
+            }
+        }
+    })
+    .await;
+    assert_eq!(seen_marker, Ok(true), "o cliente parou de receber");
+    assert!(
+        saw_update,
+        "ao atrasar, o cliente deve receber o estado atual"
+    );
+
+    // Depois do atraso continua recebendo normalmente.
+    let _ = h.state.tx.send(r#"{"type":"after"}"#.into());
+    let next = tokio::time::timeout(std::time::Duration::from_secs(5), ws.next())
+        .await
+        .unwrap();
+    let Some(Ok(Message::Text(text))) = next else {
+        panic!("esperava texto, veio {next:?}")
+    };
+    assert!(text.contains("after"), "{text}");
+}
+
+#[tokio::test]
 async fn shutdown_waits_for_pending_writes() {
     let h = spawn("shutdown_write").await;
     let writer = {

@@ -96,6 +96,9 @@ where
         .map_err(|e| anyhow::anyhow!("write task failed: {e}"))?
 }
 
+/// Capacidade do canal de difusão; ao estourar, o cliente atrasado recebe o estado atual.
+pub const BROADCAST_CAPACITY: usize = 16;
+
 /// Tempo que as edições (`apply_patch`) esperam antes de ir para o disco; rajadas de patches
 /// viram uma única gravação atômica. Salvar, trocar de arquivo e encerrar gravam na hora.
 pub const WRITE_DEBOUNCE: std::time::Duration = std::time::Duration::from_millis(150);
@@ -149,7 +152,9 @@ pub struct AppState {
     pub project_dir: Option<PathBuf>,
     /// Documento ativo (arquivo, sidecar, conteúdo, layout e hash) sob um único lock.
     pub doc: Arc<RwLock<DocState>>,
-    pub tx: broadcast::Sender<String>,
+    /// Mensagens para todos os clientes. `Arc<str>` evita copiar o documento por receptor e a
+    /// capacidade é pequena: quem atrasa recebe o estado atual em vez de um histórico.
+    pub tx: broadcast::Sender<Arc<str>>,
     /// Tasks em segundo plano (sockets, watcher) e sinal de encerramento.
     pub lifecycle: Arc<crate::lifecycle::Lifecycle>,
 }
@@ -226,7 +231,7 @@ impl AppState {
 
         let layout = tokio::fs::read_to_string(&layout_path).await.ok();
 
-        let (tx, _) = broadcast::channel(100);
+        let (tx, _) = broadcast::channel(BROADCAST_CAPACITY);
 
         crate::session::save_async(crate::session::CliSession {
             last_target: Some(target_abs.clone()),
@@ -411,7 +416,7 @@ impl AppState {
             .await;
 
             let update = this.document_message("update", &doc).await;
-            let _ = this.tx.send(update);
+            let _ = this.tx.send(update.into());
             Ok(())
         })
         .await
