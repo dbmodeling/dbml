@@ -3,8 +3,9 @@ name: CI
 # How CI works (same 5 lines in CONTRIBUTING.md):
 #  1. PR into develop: a cheap preflight (branch name, changed paths, fmt, scripts), then the full
 #     Linux/Windows/macOS + web suite for the areas the PR touches. This is the gate.
-#  2. Merge into develop: the suite runs once more on the squashed commit. It catches the rare
-#     break when develop moved after the PR ran, and it is the ONLY run that saves the build cache.
+#  2. Merge into develop: the PR already ran the suite, so nothing is repeated, EXCEPT when the
+#     dependency set changed (Cargo.lock, toolchain, .cargo, npm lockfiles, ci.yml). Only then does
+#     the suite run on develop, because that run is the only one that can save the build cache.
 #  3. PR develop -> main: nothing is rebuilt; `gate` requires the develop run of that SHA to be green.
 #  4. PR release/* | hotfix/* | dependabot/* -> main, and "Run workflow" on any branch: full suite.
 #  5. The only required check is `CI ok`; a job skipped on purpose counts as ok. Fedora: fedora.yml.
@@ -84,7 +85,8 @@ jobs:
       - name: Checkout
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
-          fetch-depth: 2
+          # Push: full history so the pushed range (before..after) can be diffed.
+          fetch-depth: ${{ github.event_name == 'push' && '0' || '2' }}
 
       - name: Decide which groups run
         id: diff
@@ -93,8 +95,29 @@ jobs:
           DRAFT: ${{ github.event.pull_request.draft }}
           HEAD_REF: ${{ github.head_ref }}
           BASE_REF: ${{ github.base_ref }}
+          BEFORE: ${{ github.event.before }}
         run: |
           set_all() { for g in rust web scripts; do echo "$g=$1" >> "$GITHUB_OUTPUT"; done; }
+          if [ "$EVENT" = "push" ]; then
+            # The PR that produced this commit already ran the suite. Re-run the heavy jobs only
+            # when the dependency set changed: the cache holds dependencies only (rust-cache never
+            # stores workspace crates) and cache keys are immutable, so any other push could not
+            # save anything new. A new branch or an unreachable BEFORE runs everything.
+            echo "scripts=true" >> "$GITHUB_OUTPUT"
+            if [ -z "$BEFORE" ] || [ "${BEFORE//0/}" = "" ] || ! git cat-file -e "$BEFORE^{commit}" 2>/dev/null; then
+              echo "push without a usable BEFORE: run everything"; set_all true; exit 0
+            fi
+            files="$(git diff --name-only "$BEFORE" HEAD)"
+            echo "$files"
+            if grep -Eq '^(Cargo\.(toml|lock)$|rust-toolchain\.toml$|\.cargo/|\.github/workflows/ci\.yml$|packages/[^/]+/package-lock\.json$|vscode-extension/package-lock\.json$)' <<< "$files"; then
+              echo "dependency set changed: run the suite and refresh the develop cache"
+              set_all true
+            else
+              echo "dependencies unchanged: PR already tested this code, no cache to refresh"
+              echo "rust=false" >> "$GITHUB_OUTPUT"; echo "web=false" >> "$GITHUB_OUTPUT"
+            fi
+            exit 0
+          fi
           if [ "$EVENT" != "pull_request" ]; then
             echo "$EVENT: run everything, unfiltered"; set_all true; exit 0
           fi

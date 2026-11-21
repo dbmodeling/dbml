@@ -97,7 +97,7 @@ main    ──▶ hotfix/<desc> ───PR (merge commit)─▶ main ──PR m
 How CI works ([`.github/workflows/ci.yml`](.github/workflows/ci.yml)), in five lines:
 
 1. **PR into `develop`:** a cheap preflight (branch name, changed paths, `cargo fmt`, scripts), then the full Linux/Windows/macOS + web suite for the areas the PR touches. This is the gate.
-2. **Merge into `develop`:** the suite runs once more on the squashed commit. It catches the rare break when `develop` moved after the PR ran, and it is the **only run that saves the build cache**.
+2. **Merge into `develop`:** nothing is repeated, because the PR already ran the suite. The one exception is a change to the dependency set (`Cargo.lock`, toolchain, `.cargo/`, npm lockfiles, `ci.yml`): then the suite runs on `develop`, because that run is the only one that can save the build cache.
 3. **PR `develop → main`:** nothing is rebuilt; the `gate` job requires the `develop` run of that exact commit to be green.
 4. **PR `release/*`, `hotfix/*`, `dependabot/*` → `main`, and Actions → CI → "Run workflow" on any branch:** full suite.
 5. **The only required check is `CI ok`**; a job skipped on purpose (path filter, draft PR) counts as ok. Fedora runs weekly on `develop` ([`fedora.yml`](.github/workflows/fedora.yml)).
