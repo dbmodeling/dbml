@@ -1,6 +1,8 @@
 export type Language = 'pt-BR' | 'en';
 
 export const translations: ReadonlyArray<readonly [string, string]> = [
+  ["O motor de análise falhou. Exporte o DBML e recarregue a página para continuar.", "The analysis engine failed. Export the DBML and reload the page to continue."],
+  ["Motor de análise parado. Recarregue a página.", "Analysis engine stopped. Reload the page."],
   ["Barra de título", "Title bar"],
   ["Painéis", "Panels"],
   ["Painel lateral", "Side panel"],

@@ -63,6 +63,12 @@ type Drag =
 
 const esc = (s: string): string =>
   String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+/** Trap do Wasm (`panic = "abort"` vira `RuntimeError: unreachable`): a instância não é mais confiável. */
+export function isFatalWasmError(e: unknown): boolean {
+  if (typeof WebAssembly !== 'undefined' && e instanceof WebAssembly.RuntimeError) return true;
+  const message = e instanceof Error ? e.message : '';
+  return /^(unreachable|memory access out of bounds|recursive use of an object)/i.test(message);
+}
 const errorMessage = (e: unknown): string => (e instanceof Error ? e.message : String(e));
 const ICON = (n: IconName, s = 16, c = 'currentColor'): string => iconSvg(n, s, c);
 const IDENT = /^[\p{L}\p{N}_]+$/u;
@@ -232,6 +238,8 @@ export class Workbench {
   /** Algo além da câmera mudou desde o último quadro. */
   private fullDirty = false;
   private announcedSelection = '';
+  /** O Wasm sofreu um trap: nenhuma outra chamada é feita até recarregar a página. */
+  private engineFailed = false;
   private styleEl: HTMLStyleElement | null = null;
   private resizeObserver: ResizeObserver | null = null;
 
@@ -481,8 +489,20 @@ export class Workbench {
     this.renderAll();
   }
 
+  /** Registra a falha de uma chamada ao Wasm; se for fatal, avisa o usuário uma única vez. */
+  private wasmFailed(context: string, e: unknown): boolean {
+    console.error(`Error in ${context}:`, e);
+    if (!isFatalWasmError(e)) return false;
+    if (!this.engineFailed) {
+      this.engineFailed = true;
+      this.toast(t('O motor de análise falhou. Exporte o DBML e recarregue a página para continuar.'));
+      this.renderStatus();
+    }
+    return true;
+  }
+
   private reanalyze(): void {
-    if (!this.wasm) return;
+    if (!this.wasm || this.engineFailed) return;
     try {
       const r = this.wasm.parse_and_analyze(this.source);
       const hasError = (r.diagnostics as Diagnostic[]).some((d) => d.severity === 'error');
@@ -497,14 +517,14 @@ export class Workbench {
         if (!hasError || r.schema.tables.length > 0) this.lastValid = r.schema;
       }
     } catch (e) {
-      console.error('Error analyzing DBML via Wasm:', e);
+      this.wasmFailed('analyzing DBML via Wasm', e);
     }
     this.selection = this.selection.filter((n) => this.schema.tables.some((t) => qualifiedTableName(t) === n));
     this.computeScene();
   }
 
   private computeScene(): void {
-    if (!this.wasm) return;
+    if (!this.wasm || this.engineFailed) return;
     const known: Record<string, Pt> = {};
     for (const t of this.schema.tables) {
       const qname = qualifiedTableName(t);
@@ -521,7 +541,7 @@ export class Workbench {
         if (!this.positions[k]) this.positions[k] = this.scene!.positions[k];
       }
     } catch (e) {
-      console.error('Error in compute_scene:', e);
+      this.wasmFailed('compute_scene', e);
     }
     this.pendingNew = null;
   }
@@ -707,7 +727,7 @@ export class Workbench {
   }
 
   private dispatch(cmd: Command): TextPatch | null {
-    if (!this.wasm) return null;
+    if (!this.wasm || this.engineFailed) return null;
     try {
       const before = this.captureSnapshot();
       const patch: TextPatch = this.wasm.apply_command(this.source, cmd);
@@ -757,13 +777,13 @@ export class Workbench {
       this.scheduleRender();
       return patch;
     } catch (e) {
-      this.toast(errorMessage(e));
+      if (!this.wasmFailed('apply_command', e)) this.toast(errorMessage(e));
       return null;
     }
   }
 
   private relayout(fit = true, recordHistory = true): void {
-    if (!this.wasm) return;
+    if (!this.wasm || this.engineFailed) return;
     try {
       if (recordHistory) this.pushHistory();
       const r = this.wasm.compute_layout(this.source, {});
@@ -774,7 +794,7 @@ export class Workbench {
       });
       this.queueSaveLayout();
     } catch (e) {
-      console.error('Error in auto-layout:', e);
+      this.wasmFailed('auto-layout', e);
     }
   }
 
@@ -1438,6 +1458,11 @@ export class Workbench {
     return translate("Clique em uma tabela para inspecionar · arraste o fundo para selecionar · role para mover · Ctrl+role para zoom");
   }
 
+  private engineHtml(): string {
+    if (!this.engineFailed) return '';
+    return `<span class="stat" role="status" data-engine-failed style="color:var(--danger)">${ICON('CircleX', 12)}${esc(t('Motor de análise parado. Recarregue a página.'))}</span>`;
+  }
+
   /** Só aparece fora do estado `online`: edições feitas sem canal com o servidor não são gravadas. */
   private connectionHtml(): string {
     if (this.connection === 'online') return '';
@@ -1454,7 +1479,7 @@ export class Workbench {
     this.els['status'].innerHTML = `
       <span class="stat" data-act="ShowProblems" title="${t("Problemas")}" style="color:${errs ? 'var(--danger)' : problems ? 'var(--warning)' : 'var(--ok)'}">${ICON(problems ? 'CircleX' : 'CircleCheck', 12)}${probTxt}</span>
       <span class="cnts">${ICON('Table2', 12)}${t('{} tabelas · {} relações', this.schema.tables.length, this.schema.refs.length)}</span>
-      ${this.connectionHtml()}
+      ${this.connectionHtml()}${this.engineHtml()}
       <span class="hint">${esc(this.hint())}</span>
       <span>${Math.round(this.zoom * 100)}%</span><span>DBML</span><span>v0.1.4</span>
       <span class="theme" data-act="ToggleTheme" title="${t("Alternar tema · Ctrl+T")}">${ICON(dark ? 'Moon' : 'Sun', 12)}${t(dark ? 'Escuro' : 'Claro')}</span>`;
@@ -3461,9 +3486,10 @@ export class Workbench {
 
   /** Recalcula rotas ortogonais com as posições atuais (Wasm: `layout::route`). */
   private recomputeEdges(): void {
+    if (this.engineFailed) return;
     try {
       this.scene = this.wasm!.compute_scene(this.source, this.positions);
-    } catch { /* mantém a cena anterior */ }
+    } catch (e) { this.wasmFailed('compute_scene (arrasto)', e); /* mantém a cena anterior */ }
   }
 
   private onUp(): void {
