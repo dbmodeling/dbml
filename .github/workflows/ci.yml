@@ -1,41 +1,187 @@
 name: CI
 
+# How CI works (same 5 lines in CONTRIBUTING.md):
+#  1. PR into develop: a cheap preflight (branch name, changed paths, fmt, scripts), then the full
+#     Linux/Windows/macOS + web suite for the areas the PR touches. This is the gate.
+#  2. Merge into develop: the PR already ran the suite, so nothing is repeated, EXCEPT when the
+#     dependency set changed (Cargo.lock, toolchain, .cargo, npm lockfiles, ci.yml). Only then does
+#     the suite run on develop, because that run is the only one that can save the build cache.
+#  3. PR develop -> main: nothing is rebuilt; `gate` requires the develop run of that SHA to be green.
+#  4. PR release/* | hotfix/* | dependabot/* -> main, and "Run workflow" on any branch: full suite.
+#  5. The only required check is `CI ok`; a job skipped on purpose counts as ok. Fedora: fedora.yml.
+#
+# Why the cache is saved only on develop: GitHub scopes a cache to the ref that created it. A PR's
+# cache lives on refs/pull/N/merge and no other run can restore it; it only fills the 10 GB quota
+# and evicts the develop cache. Every PR into develop restores the develop cache (~3.5 min on
+# Windows/macOS); a run with no cache builds ~400 crates from scratch (~16-20 min measured).
+#
+# Why no merge queue: merge_group runs live on gh-readonly-queue/develop/* refs, which can restore
+# caches only from their own ref and the default branch (main), not from develop. Every queued
+# merge would wait for a cold build, instead of merging at once and testing afterwards, warm.
+
 on:
   push:
-    branches: [ main, master, develop, dev ]
+    branches: [ develop ]
   pull_request:
-    branches: [ main, master, develop, dev ]
+    branches: [ develop, main ]
+    types: [ opened, synchronize, reopened, ready_for_review ]
+  # Escape hatch: Actions -> CI -> "Run workflow" runs the full, unfiltered suite on any branch.
+  workflow_dispatch:
 
-# Somente leitura por padrão; nenhum job de CI precisa escrever no repositório.
+# Read-only by default; no CI job needs to write to the repository.
 permissions:
   contents: read
 
-# Cancela execuções concorrentes do mesmo PR se novos commits forem enviados
+# New commits on a PR cancel that PR's previous run. Pushes to develop are never cancelled:
+# they save the cache and are what the `gate` job checks.
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
   CARGO_TERM_COLOR: always
-  # Manter igual a `channel` em rust-toolchain.toml.
+  # Keep in sync with `channel` in rust-toolchain.toml.
   RUST_TOOLCHAIN: "1.99.1"
 
-# Todas as ações de terceiros são fixadas por SHA de commit (comentário = versão);
-# scripts/check-workflow-pins.sh rejeita tags/branches mutáveis.
+# Every third-party action is pinned by commit SHA (comment = version);
+# scripts/check-workflow-pins.sh rejects mutable tags/branches.
 jobs:
+  # ------------------------------------------------------------------ preflight
+  # One cheap job (~15-30 s) that gates the expensive matrix: branch name, changed paths,
+  # formatting and the script/workflow checks. If any of these fail, no heavy runner starts.
+  preflight:
+    name: Preflight (branch, paths, fmt, scripts)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      rust: ${{ steps.diff.outputs.rust }}
+      web: ${{ steps.diff.outputs.web }}
+    steps:
+      - name: Validate source branch name
+        if: github.event_name == 'pull_request'
+        env:
+          HEAD_REF: ${{ github.head_ref }}
+          BASE_REF: ${{ github.base_ref }}
+        run: |
+          case "$BASE_REF" in
+            develop)
+              pattern='^((feat|bug|improve|chore|ci)/[a-z0-9][a-z0-9._-]*|dependabot/.+|main)$'
+              examples='feat/pdf-export, bug/parser-crlf, improve/zoom, chore/deps, ci/cache' ;;
+            main)
+              pattern='^(develop|release/v?[0-9]+\.[0-9]+(\.[0-9]+)?(-[a-z0-9.]+)?|hotfix/[a-z0-9][a-z0-9._-]*|dependabot/.+)$'
+              examples='develop, release/v0.3.0, hotfix/crash-on-open' ;;
+            *)
+              echo "::error::Unexpected base branch: $BASE_REF"; exit 1 ;;
+          esac
+          if [[ "$HEAD_REF" =~ $pattern ]]; then
+            echo "ok: '$HEAD_REF' -> '$BASE_REF'"
+          else
+            echo "::error::Branch '$HEAD_REF' is not accepted in a PR into '$BASE_REF'. Pattern: $pattern (e.g. $examples)"
+            exit 1
+          fi
+
+      # On a PR, HEAD is the merge commit GitHub tests; its first parent is the base it merges
+      # onto, so depth 2 is enough to list exactly what the PR changes.
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          # Push: full history so the pushed range (before..after) can be diffed.
+          fetch-depth: ${{ github.event_name == 'push' && '0' || '2' }}
+
+      - name: Decide which groups run
+        id: diff
+        env:
+          EVENT: ${{ github.event_name }}
+          DRAFT: ${{ github.event.pull_request.draft }}
+          HEAD_REF: ${{ github.head_ref }}
+          BASE_REF: ${{ github.base_ref }}
+          BEFORE: ${{ github.event.before }}
+        run: |
+          set_all() { for g in rust web scripts; do echo "$g=$1" >> "$GITHUB_OUTPUT"; done; }
+          if [ "$EVENT" = "push" ]; then
+            # The PR that produced this commit already ran the suite. Re-run the heavy jobs only
+            # when the dependency set changed: the cache holds dependencies only (rust-cache never
+            # stores workspace crates) and cache keys are immutable, so any other push could not
+            # save anything new. A new branch or an unreachable BEFORE runs everything.
+            echo "scripts=true" >> "$GITHUB_OUTPUT"
+            if [ -z "$BEFORE" ] || [ "${BEFORE//0/}" = "" ] || ! git cat-file -e "$BEFORE^{commit}" 2>/dev/null; then
+              echo "push without a usable BEFORE: run everything"; set_all true; exit 0
+            fi
+            files="$(git diff --name-only "$BEFORE" HEAD)"
+            echo "$files"
+            if grep -Eq '^(Cargo\.(toml|lock)$|rust-toolchain\.toml$|\.cargo/|\.github/workflows/ci\.yml$|packages/[^/]+/package-lock\.json$|vscode-extension/package-lock\.json$)' <<< "$files"; then
+              echo "dependency set changed: run the suite and refresh the develop cache"
+              set_all true
+            else
+              echo "dependencies unchanged: PR already tested this code, no cache to refresh"
+              echo "rust=false" >> "$GITHUB_OUTPUT"; echo "web=false" >> "$GITHUB_OUTPUT"
+            fi
+            exit 0
+          fi
+          if [ "$EVENT" != "pull_request" ]; then
+            echo "$EVENT: run everything, unfiltered"; set_all true; exit 0
+          fi
+          if [ "$DRAFT" = "true" ]; then
+            echo "draft PR: light checks only"; set_all false; exit 0
+          fi
+          if [ "$BASE_REF" = "main" ] && [ "$HEAD_REF" = "develop" ]; then
+            echo "develop -> main: covered by the gate job"; set_all false; exit 0
+          fi
+          files="$(git diff --name-only HEAD^1 HEAD)"
+          echo "$files"
+          has() { grep -Eq "$1" <<< "$files" && echo true || echo false; }
+          rust="$(has '^(crates/|\.cargo/|Cargo\.(toml|lock)$|rust-toolchain\.toml$|\.github/workflows/ci\.yml$)')"
+          web="$(has '^(packages/|vscode-extension/|scripts/(build|check)-web-assets\.sh$)')"
+          [ "$rust" = "true" ] && web=true
+          scripts="$(has '^(scripts/|\.github/)|(^|/)package(-lock)?\.json$')"
+          { echo "rust=$rust"; echo "web=$web"; echo "scripts=$scripts"; } | tee -a "$GITHUB_OUTPUT"
+
+      - name: Workflow actions pinned by SHA
+        if: steps.diff.outputs.scripts == 'true'
+        run: |
+          ./scripts/check-workflow-pins.sh --self-test
+          ./scripts/check-workflow-pins.sh
+
+      - name: Frontend dependencies with exact versions
+        if: steps.diff.outputs.scripts == 'true'
+        run: |
+          ./scripts/check-npm-pins.sh --self-test
+          ./scripts/check-npm-pins.sh
+
+      - name: Build and install script tests
+        if: steps.diff.outputs.scripts == 'true'
+        run: |
+          ./scripts/check-web-assets.sh --self-test
+          ./scripts/tests/install_test.sh
+
+      - name: Install Rust toolchain (rustfmt)
+        uses: dtolnay/rust-toolchain@39008827e6b4319a349e9a42dfc90579dd25f1ca # stable
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+          components: rustfmt
+
+      - name: Check formatting (cargo fmt)
+        run: cargo fmt --all -- --check
+
+  # ------------------------------------------------------------------ heavy jobs
+  # Full suite on all 3 OSes: "pure" crates also break per OS (CRLF on the Windows checkout,
+  # path separators, case-insensitive macOS filesystem).
   quality:
     name: Rust (${{ matrix.os }})
+    needs: preflight
+    if: needs.preflight.outputs.rust == 'true'
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
     strategy:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, windows-latest, macos-latest]
 
     steps:
-      - name: Checkout do repositório
+      - name: Checkout
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
-      - name: Instalar dependências nativas (GPUI / Wayland / Vulkan / X11 / Fontconfig)
+      - name: Install native dependencies (GPUI / Wayland / Vulkan / X11 / Fontconfig)
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
@@ -53,131 +199,65 @@ jobs:
             libxcb-xkb-dev \
             libssl-dev
 
-      - name: Instalar Toolchain Rust
+      - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@39008827e6b4319a349e9a42dfc90579dd25f1ca # stable
         with:
           toolchain: ${{ env.RUST_TOOLCHAIN }}
-          components: clippy, rustfmt
+          components: clippy
 
-      - name: Cache de compilação do Rust
+      - name: Rust build cache
         uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
         with:
           shared-key: "workspace-ci-${{ matrix.os }}"
+          save-if: ${{ github.ref == 'refs/heads/develop' }}
 
-      - name: Verificar formatação (cargo fmt)
-        if: runner.os == 'Linux'
-        run: cargo fmt --all -- --check
-
-      - name: Executar linter (cargo clippy)
+      - name: Lint (cargo clippy)
         run: cargo clippy --locked --workspace --all-targets -- -D warnings
 
-      - name: Executar suíte de testes (cargo test)
+      - name: Test suite (cargo test)
         run: cargo test --locked --workspace
 
-  fedora:
-    name: Rust (Fedora)
-    runs-on: ubuntu-latest
-    container:
-      image: fedora:latest
-
-    steps:
-      - name: Instalar dependências nativas (Fedora / GPUI / Wayland / Vulkan / X11 / Fontconfig)
-        run: |
-          dnf install -y \
-            git \
-            curl \
-            tar \
-            gcc \
-            gcc-c++ \
-            pkg-config \
-            fontconfig-devel \
-            freetype-devel \
-            alsa-lib-devel \
-            libxkbcommon-devel \
-            libxkbcommon-x11-devel \
-            vulkan-loader-devel \
-            wayland-devel \
-            libX11-devel \
-            libxcb-devel \
-            openssl-devel
-
-      - name: Checkout do repositório
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-
-      - name: Instalar Toolchain Rust
-        uses: dtolnay/rust-toolchain@39008827e6b4319a349e9a42dfc90579dd25f1ca # stable
-        with:
-          toolchain: ${{ env.RUST_TOOLCHAIN }}
-          components: clippy
-
-      - name: Cache de compilação do Rust
-        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
-        with:
-          shared-key: "workspace-ci-fedora"
-
-      - name: Executar linter (cargo clippy)
-        run: cargo clippy --locked --workspace --all-targets -- -D warnings
-
-      - name: Executar suíte de testes (cargo test)
-        run: cargo test --locked --workspace
-
-  wasm:
-    name: Wasm (dbml-wasm)
-    runs-on: ubuntu-latest
-
-    steps:
-      - name: Checkout do repositório
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-
-      - name: Instalar Toolchain Rust (alvo wasm32)
-        uses: dtolnay/rust-toolchain@39008827e6b4319a349e9a42dfc90579dd25f1ca # stable
-        with:
-          toolchain: ${{ env.RUST_TOOLCHAIN }}
-          components: clippy
-          targets: wasm32-unknown-unknown
-
-      - name: Cache de compilação do Rust
-        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
-        with:
-          shared-key: "wasm-ci"
-
-      - name: Clippy para wasm32
-        run: cargo clippy --locked -p dbml-wasm --target wasm32-unknown-unknown -- -D warnings
-
-      - name: Compilar dbml-wasm (release)
-        run: cargo build --locked -p dbml-wasm --target wasm32-unknown-unknown --release
-
+  # Also covers dbml-wasm: build-web-assets.sh builds the Wasm (release) and the wasm32 clippy
+  # runs here.
   web:
-    name: Web (canvas-web, bundle da CLI e extensão VS Code)
+    name: Web (canvas-web, CLI bundle and VS Code extension)
+    needs: preflight
+    if: needs.preflight.outputs.web == 'true'
     runs-on: ubuntu-latest
+    timeout-minutes: 30
 
     steps:
-      - name: Checkout do repositório
+      - name: Checkout
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
-      - name: Instalar Toolchain Rust (alvo wasm32)
+      - name: Install Rust toolchain (wasm32 target)
         uses: dtolnay/rust-toolchain@39008827e6b4319a349e9a42dfc90579dd25f1ca # stable
         with:
           toolchain: ${{ env.RUST_TOOLCHAIN }}
+          components: clippy
           targets: wasm32-unknown-unknown
 
-      - name: Cache de compilação do Rust
+      - name: Rust build cache
         uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
         with:
           shared-key: "web-ci"
+          save-if: ${{ github.ref == 'refs/heads/develop' }}
 
-      - name: Descobrir a versão do wasm-bindgen travada no Cargo.lock
+      - name: Clippy for wasm32
+        run: cargo clippy --locked -p dbml-wasm --target wasm32-unknown-unknown -- -D warnings
+
+      - name: Read the wasm-bindgen version locked in Cargo.lock
         id: bindgen
         run: |
           version="$(awk '/^name = "wasm-bindgen"$/ {getline; gsub(/[version = "]/, ""); print; exit}' Cargo.lock)"
           echo "version=${version}" >> "$GITHUB_OUTPUT"
 
-      - name: Instalar wasm-bindgen-cli
+      - name: Install wasm-bindgen-cli
         uses: taiki-e/install-action@25f51f6b1bf4e18876107cece836f4f77ac17c8c # v2
         with:
           tool: wasm-bindgen@${{ steps.bindgen.outputs.version }}
 
-      - name: Configurar Node.js
+      - name: Set up Node.js
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: 24
@@ -186,28 +266,28 @@ jobs:
             packages/canvas-web/package-lock.json
             vscode-extension/package-lock.json
 
-      - name: Instalar dependências do canvas-web
+      - name: Install canvas-web dependencies
         run: npm ci
         working-directory: packages/canvas-web
 
-      - name: Testes do canvas-web (vitest)
+      - name: canvas-web tests (vitest)
         run: npm test
         working-directory: packages/canvas-web
 
-      - name: Reconstruir os ativos web (Wasm + canvas-web -> crates/cli/web)
+      - name: Rebuild web assets (Wasm + canvas-web -> crates/cli/web)
         run: ./scripts/build-web-assets.sh
 
-      # O bundle em crates/cli/web é versionado e embutido na CLI: se divergir do que o código
-      # atual gera, alguém esqueceu de rodar ./scripts/sync-build.sh e a UI publicada estaria velha.
-      - name: Verificar que o bundle versionado está em dia
+      # The bundle in crates/cli/web is committed and embedded in the CLI: if it differs from what
+      # the current code generates, someone forgot ./scripts/sync-build.sh and the shipped UI is stale.
+      - name: Check the committed bundle is up to date
         run: |
           if [ -n "$(git status --porcelain -- crates/cli/web)" ]; then
-            echo "::error::crates/cli/web está desatualizado. Rode ./scripts/sync-build.sh e faça commit."
+            echo "::error::crates/cli/web is out of date. Run ./scripts/sync-build.sh and commit."
             git status --short -- crates/cli/web
             exit 1
           fi
 
-      - name: Enviar bundle reconstruído pelo CI (diagnóstico de divergência)
+      - name: Upload the CI-built bundle (divergence diagnostics)
         if: failure()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
@@ -215,39 +295,78 @@ jobs:
           path: crates/cli/web
           retention-days: 7
 
-      - name: Instalar dependências da extensão VS Code
+      - name: Install VS Code extension dependencies
         run: npm ci
         working-directory: vscode-extension
 
-      - name: Verificar tipos e empacotar a extensão
+      - name: Type-check and bundle the extension
         run: |
           rm -rf dist
           npm run compile
           npm run build
         working-directory: vscode-extension
 
-      - name: Verificar saídas de build sem referência
+      - name: Check for unreferenced build outputs
         run: ./scripts/check-web-assets.sh
 
-  scripts:
-    name: Scripts e workflows
+  # ------------------------------------------------------------------ gate and aggregator
+  # PR develop -> main: the PR head is the same SHA already tested on develop. A PR into main
+  # cannot restore the develop cache, so re-testing would be a cold ~19 min build. Instead,
+  # confirm that run passed. Never passes by omission.
+  gate:
+    name: Gate (develop → main)
+    if: github.event_name == 'pull_request' && github.base_ref == 'main' && github.head_ref == 'develop'
     runs-on: ubuntu-latest
-
+    timeout-minutes: 35
+    permissions:
+      actions: read
     steps:
-      - name: Checkout do repositório
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-
-      - name: Ações de workflow fixadas por SHA
+      - name: Require a green develop run (push or manual) for the same SHA
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          SHA: ${{ github.event.pull_request.head.sha }}
         run: |
-          ./scripts/check-workflow-pins.sh --self-test
-          ./scripts/check-workflow-pins.sh
+          api="repos/${REPO}/actions/workflows/ci.yml/runs?head_sha=${SHA}&branch=develop&per_page=20"
+          # The PR's own run has the same head SHA and branch, so keep only push / manual runs.
+          jq_run='[.workflow_runs[] | select(.event == "push" or .event == "workflow_dispatch")][0] // {}
+            | "\(.status // "none") \(.conclusion // "none") \(.html_url // "-")"'
+          for attempt in $(seq 1 60); do
+            read -r status conclusion url < <(gh api "$api" --jq "$jq_run")
+            echo "attempt ${attempt}: status=${status} conclusion=${conclusion} ${url}"
+            if [ "$status" = "completed" ]; then
+              if [ "$conclusion" = "success" ]; then
+                echo "ok: ${SHA} passed on develop"; exit 0
+              fi
+              echo "::error::The develop run for ${SHA} finished with '${conclusion}': ${url}"
+              exit 1
+            fi
+            if [ "$status" = "none" ] && [ "$attempt" -ge 4 ]; then
+              echo "::error::No CI run on develop for ${SHA}. Use Actions -> CI -> Run workflow on develop, then re-run this check."
+              exit 1
+            fi
+            sleep 30
+          done
+          echo "::error::Timed out waiting for the develop run for ${SHA}."
+          exit 1
 
-      - name: Dependências frontend com versões exatas
+  # The single required check. `always()` so it reports even when a job fails or is cancelled
+  # (a required check that is skipped would count as passing).
+  ci-ok:
+    name: CI ok
+    if: always()
+    needs: [preflight, quality, web, gate]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Aggregate results
+        env:
+          RESULTS: ${{ join(needs.*.result, ' ') }}
         run: |
-          ./scripts/check-npm-pins.sh --self-test
-          ./scripts/check-npm-pins.sh
-
-      - name: Testes dos scripts de build e instalação
-        run: |
-          ./scripts/check-web-assets.sh --self-test
-          ./scripts/tests/install_test.sh
+          echo "results: ${RESULTS}"
+          for r in ${RESULTS}; do
+            case "$r" in
+              success|skipped) ;;
+              *) echo "::error::A job finished with '${r}'."; exit 1 ;;
+            esac
+          done

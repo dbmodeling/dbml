@@ -43,9 +43,10 @@ DB Modeling shares a single Rust core across three targets:
    git clone https://github.com/<your-username>/dbml.git
    cd dbml
    ```
-2. Create a feature or fix branch:
+2. Create your branch from `develop`, following the [branch naming rules](#branching-model):
    ```bash
-   git checkout -b feat/my-feature
+   git switch develop && git pull
+   git switch -c feat/my-feature
    ```
 
 ---
@@ -71,9 +72,53 @@ If you change UI behavior, keyboard shortcuts, or visual styling in `crates/app`
 
 ---
 
+## Branching Model
+
+```
+develop ──▶ feat|bug|improve|chore|ci/<desc> ──PR (squash)──────▶ develop
+develop ──▶ release/<version> ────────────────PR (merge commit)─▶ main ──tag v*──▶ release
+develop ─────────────────────────────────────PR (merge commit)─▶ main
+main    ──▶ hotfix/<desc> ───PR (merge commit)─▶ main ──PR main→develop (squash)─▶ develop
+```
+
+| Pull request into | Accepted source branches |
+| :--- | :--- |
+| `develop` | `feat/…`, `bug/…`, `improve/…`, `chore/…`, `ci/…` (lowercase kebab-case), `dependabot/…`, `main` (hotfix back-merge) |
+| `main` | `develop`, `release/vX.Y.Z`, `hotfix/…`, `dependabot/…` (security updates) |
+
+* `develop` and `main` only change through pull requests. The single required check is **`CI ok`**.
+* PRs into `develop` are **squash-merged**; PRs into `main` use a **merge commit**.
+* After a hotfix lands on `main`, open the `main → develop` back-merge right away.
+* Only organization owners can force-push or delete `develop` and `main` (for exceptional
+  rebase fixes).
+
+## Continuous Integration
+
+How CI works ([`.github/workflows/ci.yml`](.github/workflows/ci.yml)), in five lines:
+
+1. **PR into `develop`:** a cheap preflight (branch name, changed paths, `cargo fmt`, scripts), then the full Linux/Windows/macOS + web suite for the areas the PR touches. This is the gate.
+2. **Merge into `develop`:** nothing is repeated, because the PR already ran the suite. The one exception is a change to the dependency set (`Cargo.lock`, toolchain, `.cargo/`, npm lockfiles, `ci.yml`): then the suite runs on `develop`, because that run is the only one that can save the build cache.
+3. **PR `develop → main`:** nothing is rebuilt; the `gate` job requires the `develop` run of that exact commit to be green.
+4. **PR `release/*`, `hotfix/*`, `dependabot/*` → `main`, and Actions → CI → "Run workflow" on any branch:** full suite.
+5. **The only required check is `CI ok`**; a job skipped on purpose (path filter, draft PR) counts as ok. Fedora runs weekly on `develop` ([`fedora.yml`](.github/workflows/fedora.yml)).
+
+Pushes to a work branch without a PR run nothing, and draft PRs run only the preflight.
+
+Why only `develop` saves the cache: GitHub scopes a cache to the ref that created it. A PR's cache
+lives on its merge ref and no other run can restore it; it only fills the 10 GB repository quota
+and evicts the `develop` cache. Every PR into `develop` restores the `develop` cache (~3.5 min on
+Windows/macOS); without it, ~400 crates build from scratch (~16-20 min). A slow PR run means the
+`develop` cache is missing or being rebuilt (e.g. right after a toolchain change).
+
+Why no merge queue: queue runs live on `gh-readonly-queue/develop/*` refs, which can restore caches
+only from their own ref and from `main`, not from `develop`, so every queued merge would build cold.
+
+Dependabot opens at most one grouped PR per ecosystem every Monday (06:00 America/Manaus) against
+`develop`, without auto-rebase. Comment `@dependabot rebase` to refresh one.
+
 ## Checks Before Opening a Pull Request
 
-CI runs the following checks on every pull request (see [`.github/workflows/ci.yml`](.github/workflows/ci.yml)):
+CI runs the following checks on pull requests (see [`.github/workflows/ci.yml`](.github/workflows/ci.yml)):
 
 ```bash
 # 1. Check formatting

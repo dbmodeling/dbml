@@ -1,0 +1,72 @@
+name: Fedora (weekly)
+
+# Fedora is not part of the per-commit CI: it uses the same rustc and target as the Ubuntu job,
+# so clippy and most tests would be identical. What differs is the system libraries (glibc,
+# fontconfig, freetype), which only matter for linking and raster export. The release workflow
+# builds the .rpm on an Ubuntu runner, so this is the only job that builds against Fedora's
+# libraries. Running it weekly (and on demand) catches drift without paying for it on every PR.
+#
+# Scheduled workflows run from the default branch, so this file must exist on `main`. It
+# checks out `develop` to test the integration branch.
+
+on:
+  schedule:
+    # Monday 10:00 UTC (06:00 America/Manaus), after the Dependabot window.
+    - cron: '0 10 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  # Keep in sync with `channel` in rust-toolchain.toml.
+  RUST_TOOLCHAIN: "1.99.1"
+
+jobs:
+  fedora:
+    name: Rust (Fedora)
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    container:
+      # `latest` on purpose: the point of this job is to notice when a new Fedora breaks us.
+      image: fedora:latest
+
+    steps:
+      - name: Install native dependencies (Fedora / GPUI / Wayland / Vulkan / X11 / Fontconfig)
+        run: |
+          dnf install -y \
+            git \
+            curl \
+            tar \
+            gcc \
+            gcc-c++ \
+            pkg-config \
+            fontconfig-devel \
+            freetype-devel \
+            alsa-lib-devel \
+            libxkbcommon-devel \
+            libxkbcommon-x11-devel \
+            vulkan-loader-devel \
+            wayland-devel \
+            libX11-devel \
+            libxcb-devel \
+            openssl-devel
+
+      - name: Checkout develop
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: develop
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@39008827e6b4319a349e9a42dfc90579dd25f1ca # stable
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+
+      # No rust-cache: a weekly run would keep ~1.2 GB of the 10 GB quota alive for one job.
+      - name: Test suite (cargo test)
+        run: cargo test --locked --workspace
