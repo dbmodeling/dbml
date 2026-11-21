@@ -715,7 +715,7 @@ impl Shell {
         let (selected, selected_enum, multi) = d.selection_state();
         crate::history::DocSnapshot {
             text: doc.last_text.clone(),
-            pos: d.positions().clone(),
+            pos: doc.history.share_pos(d.positions()),
             edges: d.edges().clone(),
             selected,
             selected_enum,
@@ -786,17 +786,15 @@ impl Shell {
                 let val = ed.read(cx).value().to_string();
                 let suppress = this.suppress_history;
                 if let Some(doc) = this.docs.iter_mut().find(|d| &d.editor == ed) {
-                    if !suppress && val.as_str() != doc.last_text.as_ref() {
-                        let d = doc.diagram.read(cx);
-                        let (selected, selected_enum, multi) = d.selection_state();
-                        doc.history.push(crate::history::DocSnapshot {
-                            text: doc.last_text.clone(),
-                            pos: d.positions().clone(),
-                            edges: d.edges().clone(),
-                            selected,
-                            selected_enum,
-                            multi,
-                        });
+                    let now = std::time::Instant::now();
+                    if !suppress
+                        && val.as_str() != doc.last_text.as_ref()
+                        && !doc.history.extend_text_run(now)
+                    {
+                        // Passo novo: guarda o texto anterior e compartilha o mapa de
+                        // posições com o passo vizinho (edições só-texto não o clonam).
+                        let snap = Self::snapshot_of(doc, cx);
+                        doc.history.push_text_edit(snap, now);
                     }
                     doc.last_text = std::sync::Arc::from(val.as_str());
                     doc.dirty = doc.last_text.as_ref() != doc.saved_text.as_ref();
@@ -865,7 +863,7 @@ impl Shell {
                             doc.diagram.read(cx).selection_state();
                         doc.history.push(crate::history::DocSnapshot {
                             text: doc.last_text.clone(),
-                            pos: old_pos.clone(),
+                            pos: doc.history.share_pos(old_pos),
                             edges: doc.diagram.read(cx).edges().clone(),
                             selected,
                             selected_enum,
@@ -3632,7 +3630,7 @@ impl Shell {
         diagram.update(cx, |d, cx| {
             d.apply_snapshot(
                 schema,
-                snap.pos,
+                std::sync::Arc::unwrap_or_clone(snap.pos),
                 snap.selected,
                 snap.selected_enum,
                 snap.multi,
