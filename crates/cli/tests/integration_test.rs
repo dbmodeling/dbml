@@ -348,6 +348,50 @@ async fn startup_removes_only_stale_atomic_write_leftovers() {
 }
 
 #[tokio::test]
+async fn watcher_reports_only_external_changes_to_the_active_file() {
+    use std::time::Duration;
+    let d = Doc::new("watcher_filter").await;
+    dbml_cli::watcher::start_file_watcher(d.state.clone()).unwrap();
+    let mut rx = d.state.tx.subscribe();
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    // Outro arquivo da pasta e um temporário de gravação atômica: nenhuma mensagem.
+    tokio::fs::write(d.dir.join("other.dbml"), "Table o { id int }\n")
+        .await
+        .unwrap();
+    tokio::fs::write(d.dir.join(".schema.dbml.tmp-1-1"), "x")
+        .await
+        .unwrap();
+    tokio::time::sleep(Duration::from_millis(400)).await;
+    assert!(rx.try_recv().is_err(), "evento irrelevante gerou mensagem");
+
+    // Edição externa do arquivo ativo: mensagem external_change com o novo texto.
+    tokio::fs::write(&d.file, "Table editada { id int }\n")
+        .await
+        .unwrap();
+    let msg = tokio::time::timeout(Duration::from_secs(5), rx.recv())
+        .await
+        .expect("watcher não reagiu")
+        .unwrap();
+    assert!(
+        msg.contains("external_change") && msg.contains("editada"),
+        "{msg}"
+    );
+
+    // A própria gravação (flush de um patch) não vira external_change.
+    let source = d.content().await;
+    d.state
+        .apply_patch(&d.name, &source, 0, 0, "// nosso\n")
+        .await
+        .unwrap();
+    d.state.flush().await.unwrap();
+    tokio::time::sleep(Duration::from_millis(400)).await;
+    while let Ok(msg) = rx.try_recv() {
+        assert!(!msg.contains("external_change"), "{msg}");
+    }
+}
+
+#[tokio::test]
 async fn save_document_flushes_pending_edits() {
     let d = Doc::new("flush_save").await;
     d.prepend("// editado\n").await;

@@ -47,7 +47,7 @@ pub const STALE_TEMP_AGE: std::time::Duration = std::time::Duration::from_secs(6
 /// (o padrão criado por [`atomic_write`] para os arquivos que este servidor grava; a comparação
 /// é exata de propósito, pois o nome é gerado por nós).
 #[allow(clippy::case_sensitive_file_extension_comparisons)]
-fn is_atomic_write_leftover(file_name: &str) -> bool {
+pub(crate) fn is_atomic_write_leftover(file_name: &str) -> bool {
     let Some(rest) = file_name.strip_prefix('.') else {
         return false;
     };
