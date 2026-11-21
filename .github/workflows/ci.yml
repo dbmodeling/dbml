@@ -12,8 +12,7 @@ name: CI
 # Why the cache is saved only on develop: GitHub scopes a cache to the ref that created it. A PR's
 # cache lives on refs/pull/N/merge and no other run can restore it; it only fills the 10 GB quota
 # and evicts the develop cache. Every PR into develop restores the develop cache (~3.5 min on
-# Windows/macOS); a run with no cache builds ~400 crates from scratch (~19 min measured with
-# optimised deps, ~8 min estimated with the unoptimised deps used below).
+# Windows/macOS); a run with no cache builds ~400 crates from scratch (~16-20 min measured).
 #
 # Why no merge queue: merge_group runs live on gh-readonly-queue/develop/* refs, which can restore
 # caches only from their own ref and the default branch (main), not from develop. Every queued
@@ -154,10 +153,6 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, windows-latest, macos-latest]
-    # bash on every OS so the `--config` quoting below is identical on Windows.
-    defaults:
-      run:
-        shell: bash
 
     steps:
       - name: Checkout
@@ -187,22 +182,17 @@ jobs:
           toolchain: ${{ env.RUST_TOOLCHAIN }}
           components: clippy
 
-      # CI builds dependencies WITHOUT optimisation (`--config` below; Cargo.toml keeps opt-level 3
-      # for a fast local app). The shared-key names that choice because rust-cache cannot see
-      # command-line flags: change both together. Measured on a cold 12-core build of this
-      # workspace: clippy 164 -> 72 s, test build 238 -> 98 s, rebuild after checkout 35 -> 24 s,
-      # test run 5 -> 9 s.
       - name: Rust build cache
         uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
         with:
-          shared-key: "ci-deps-o0-${{ matrix.os }}"
+          shared-key: "workspace-ci-${{ matrix.os }}"
           save-if: ${{ github.ref == 'refs/heads/develop' }}
 
       - name: Lint (cargo clippy)
-        run: cargo clippy --config 'profile.dev.package."*".opt-level=0' --locked --workspace --all-targets -- -D warnings
+        run: cargo clippy --locked --workspace --all-targets -- -D warnings
 
       - name: Test suite (cargo test)
-        run: cargo test --config 'profile.dev.package."*".opt-level=0' --locked --workspace
+        run: cargo test --locked --workspace
 
   # Also covers dbml-wasm: build-web-assets.sh builds the Wasm (release) and the wasm32 clippy
   # runs here.

@@ -107,8 +107,7 @@ Pushes to a work branch without a PR run nothing, and draft PRs run only the pre
 Why only `develop` saves the cache: GitHub scopes a cache to the ref that created it. A PR's cache
 lives on its merge ref and no other run can restore it; it only fills the 10 GB repository quota
 and evicts the `develop` cache. Every PR into `develop` restores the `develop` cache (~3.5 min on
-Windows/macOS); without it, ~400 crates build from scratch (CI builds them unoptimised to keep
-that under ~10 min). A slow PR run means the
+Windows/macOS); without it, ~400 crates build from scratch (~16-20 min). A slow PR run means the
 `develop` cache is missing or being rebuilt (e.g. right after a toolchain change).
 
 Why no merge queue: queue runs live on `gh-readonly-queue/develop/*` refs, which can restore caches
