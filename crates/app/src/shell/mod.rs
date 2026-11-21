@@ -1410,11 +1410,17 @@ impl Shell {
             loop {
                 bg.timer(std::time::Duration::from_millis(250)).await;
                 let requests = crate::handoff::take();
-                if requests.is_empty() {
+                let notices = crate::session::take_notices();
+                if requests.is_empty() && notices.is_empty() {
                     continue;
                 }
                 let alive = this.update_in(cx, |this, window, cx| {
-                    window.activate_window();
+                    for notice in notices {
+                        window.push_notification(notice, cx);
+                    }
+                    if !requests.is_empty() {
+                        window.activate_window();
+                    }
                     for path in requests.into_iter().flat_map(|r| r.paths) {
                         if path.is_dir() {
                             this.set_project(path, window, cx);

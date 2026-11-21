@@ -260,11 +260,63 @@ pub fn load() -> SessionState {
     path().map(|p| load_from(&p)).unwrap_or_default()
 }
 
+/// Avisos de persistência (falha ao gravar, arquivo ilegível) para o shell mostrar na janela.
+static NOTICES: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
+static LAST_NOTICE: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+
+/// Registra um aviso; repetir a mesma mensagem em seguida não empilha.
+pub fn notice(message: String) {
+    let (Ok(mut last), Ok(mut queue)) = (LAST_NOTICE.lock(), NOTICES.lock()) else { return };
+    if last.as_deref() != Some(message.as_str()) {
+        *last = Some(message.clone());
+        queue.push(message);
+    }
+}
+
+/// Uma gravação deu certo: o próximo erro igual volta a ser avisado.
+fn notice_recovered() {
+    if let Ok(mut last) = LAST_NOTICE.lock() {
+        *last = None;
+    }
+}
+
+pub fn take_notices() -> Vec<String> {
+    NOTICES.lock().map(|mut q| std::mem::take(&mut *q)).unwrap_or_default()
+}
+
+/// Copia o arquivo ilegível para `<nome>.bak` antes de ser substituído por padrões e avisa.
+pub fn quarantine(p: &Path, reason: &str) {
+    let mut bak = p.as_os_str().to_owned();
+    bak.push(".bak");
+    let bak = PathBuf::from(bak);
+    eprintln!("{}: {} ({reason})", crate::i18n::t("arquivo de estado ilegível"), p.display());
+    match std::fs::copy(p, &bak) {
+        Ok(_) => notice(
+            crate::i18n::t("Não foi possível ler {}. Uma cópia ficou em {} e o app usa os padrões.")
+                .replacen("{}", &p.display().to_string(), 1)
+                .replacen("{}", &bak.display().to_string(), 1),
+        ),
+        Err(e) => notice(
+            crate::i18n::t("Não foi possível ler {} e a cópia de segurança falhou: {}")
+                .replacen("{}", &p.display().to_string(), 1)
+                .replacen("{}", &e.to_string(), 1),
+        ),
+    }
+}
+
 pub fn load_from(p: &Path) -> SessionState {
-    let Ok(text) = std::fs::read_to_string(p) else {
-        return SessionState::default();
+    let text = match std::fs::read_to_string(p) {
+        Ok(t) => t,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return SessionState::default(),
+        Err(e) => {
+            quarantine(p, &e.to_string());
+            return SessionState::default();
+        }
     };
-    serde_json::from_str(&text).unwrap_or_default()
+    serde_json::from_str(&text).unwrap_or_else(|e| {
+        quarantine(p, &e.to_string());
+        SessionState::default()
+    })
 }
 
 pub fn save(state: &SessionState) {
@@ -275,8 +327,22 @@ pub fn save(state: &SessionState) {
 pub fn save_to(p: &Path, state: &SessionState) {
     let mut payload = state.clone();
     payload.version = 1;
-    if let Ok(json) = serde_json::to_string_pretty(&payload) {
-        let _ = atomic_write_sync(p, &json);
+    let Ok(json) = serde_json::to_string_pretty(&payload) else { return };
+    note_write_result(p, atomic_write_sync(p, &json));
+}
+
+/// Falha de gravação de estado (sessão/preferências) vira log + aviso na janela; sucesso rearma o aviso.
+pub fn note_write_result(p: &Path, result: std::io::Result<()>) {
+    match result {
+        Ok(()) => notice_recovered(),
+        Err(e) => {
+            eprintln!("could not write {}: {e}", p.display());
+            notice(
+                crate::i18n::t("Não foi possível salvar {}: {}")
+                    .replacen("{}", &p.display().to_string(), 1)
+                    .replacen("{}", &e.to_string(), 1),
+            );
+        }
     }
 }
 
@@ -460,6 +526,9 @@ mod tests {
         let corrupt = dir.join("session.json");
         std::fs::write(&corrupt, "{not valid json").unwrap();
         assert_eq!(load_from(&corrupt), SessionState::default());
+        // o arquivo ilegível é preservado em .bak antes de ser substituído
+        assert_eq!(std::fs::read_to_string(dir.join("session.json.bak")).unwrap(), "{not valid json");
+        assert!(take_notices().iter().any(|n| n.contains("session.json.bak")));
         let _ = std::fs::remove_dir_all(&dir);
     }
 
