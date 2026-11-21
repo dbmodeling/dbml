@@ -10,6 +10,13 @@ static TMP_SEQ: AtomicU64 = AtomicU64::new(0);
 
 /// Atomically writes `content` to `path` via a unique temporary file and rename.
 pub fn atomic_write_sync(path: &Path, content: &str) -> std::io::Result<()> {
+    atomic_write_bytes(path, content.as_bytes())
+}
+
+/// Como [`atomic_write_sync`], para dados binários (exports PNG/JPEG). Faz `fsync` do arquivo
+/// temporário antes do rename e, em Unix, do diretório depois, para que queda de energia não
+/// deixe o destino vazio ou parcial.
+pub fn atomic_write_bytes(path: &Path, content: &[u8]) -> std::io::Result<()> {
     use std::io::Write;
     let target = if std::fs::symlink_metadata(path).is_ok_and(|m| m.file_type().is_symlink()) {
         std::fs::canonicalize(path)?
@@ -31,13 +38,19 @@ pub fn atomic_write_sync(path: &Path, content: &str) -> std::io::Result<()> {
     }
     let mut file = options.open(&tmp_path)?;
     let result = (|| {
-        file.write_all(content.as_bytes())?;
+        file.write_all(content)?;
         if let Some(permissions) = permissions { file.set_permissions(permissions)?; }
+        file.sync_all()?;
         drop(file);
         std::fs::rename(&tmp_path, &target)
     })();
     if result.is_err() { let _ = std::fs::remove_file(&tmp_path); }
     result?;
+    // Persiste a entrada de diretório do rename (não existe em Windows; melhor esforço).
+    #[cfg(unix)]
+    if let Ok(dir) = std::fs::File::open(parent) {
+        let _ = dir.sync_all();
+    }
     Ok(())
 }
 
@@ -214,6 +227,37 @@ mod tests {
         assert_eq!(std::fs::read_to_string(&target).unwrap(), "after");
         assert!(std::fs::symlink_metadata(&link).unwrap().file_type().is_symlink());
         assert_eq!(std::fs::metadata(&target).unwrap().permissions().mode() & 0o777, 0o600);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn atomic_write_bytes_replaces_content_without_leaving_temp_files() {
+        let dir = std::env::temp_dir().join(format!("dbm-atomic-bytes-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let target = dir.join("export.png");
+        std::fs::write(&target, b"old").unwrap();
+        atomic_write_bytes(&target, &[0x89, b'P', b'N', b'G', 0, 255]).unwrap();
+        assert_eq!(std::fs::read(&target).unwrap(), [0x89, b'P', b'N', b'G', 0, 255]);
+        let leftovers: Vec<_> = std::fs::read_dir(&dir)
+            .unwrap()
+            .filter_map(Result::ok)
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .filter(|n| n.contains(".tmp-"))
+            .collect();
+        assert!(leftovers.is_empty(), "temporários sobrando: {leftovers:?}");
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn atomic_write_failure_keeps_original_and_cleans_temp() {
+        let dir = std::env::temp_dir().join(format!("dbm-atomic-fail-{}", std::process::id()));
+        let target = dir.join("dest");
+        std::fs::create_dir_all(target.join("child")).unwrap();
+        // rename de arquivo sobre diretório não vazio falha: nada pode ficar para trás
+        assert!(atomic_write_sync(&target, "x").is_err());
+        assert!(target.join("child").is_dir());
+        let entries = std::fs::read_dir(&dir).unwrap().filter_map(Result::ok).count();
+        assert_eq!(entries, 1);
         std::fs::remove_dir_all(dir).unwrap();
     }
 

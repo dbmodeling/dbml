@@ -1506,7 +1506,7 @@ impl Shell {
                 }
             };
             let res = build().and_then(|bytes| {
-                std::fs::write(&path, bytes).map_err(|error| {
+                crate::session::atomic_write_bytes(&path, &bytes).map_err(|error| {
                     eprintln!("Could not write export {}: {error}", path.display());
                     crate::i18n::t(export_write_hint(&error)).to_owned()
                 })
