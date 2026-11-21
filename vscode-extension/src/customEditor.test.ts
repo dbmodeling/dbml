@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { DbmlCustomEditorProvider } from './customEditor.js';
 import { nodeCliHost } from './cliHost.node.js';
 import { fakeContext, openEditor } from './test/harness.js';
@@ -102,6 +102,57 @@ describe('validação das mensagens da Webview', () => {
     await h.send(null);
     await h.send('x');
     expect(h.posted).toHaveLength(0);
+  });
+});
+
+describe('sincronização de texto com a webview', () => {
+  const changed = (h: { document: { uri: Uri } }) => mockState.textListeners.forEach((l) => l({ document: h.document }));
+
+  afterEach(() => vi.useRealTimers());
+
+  it('rajada de alterações vira um único update, sem recalcular a lista de arquivos', async () => {
+    const h = await openEditor(DbmlCustomEditorProvider, { text: 'a' });
+    await h.send({ command: 'ready' });
+    h.posted.length = 0;
+    const findsBefore = mockState.findFilesCalls.length;
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    for (const t of ['ab', 'abc', 'abcd']) {
+      h.document.text = t;
+      h.document.isDirty = true;
+      changed(h);
+    }
+    vi.advanceTimersByTime(100);
+    const updates = h.posted.filter((m) => m.type === 'update');
+    expect(updates).toHaveLength(1);
+    expect(updates[0].source).toBe('abcd');
+    expect(updates[0].files).toBeUndefined();
+    expect(mockState.findFilesCalls.length).toBe(findsBefore);
+  });
+
+  it('não reenvia quando texto e estado de salvo não mudaram', async () => {
+    const h = await openEditor(DbmlCustomEditorProvider, { text: 'a' });
+    await h.send({ command: 'ready' });
+    h.posted.length = 0;
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    changed(h); // nada mudou desde o 'ready'
+    vi.advanceTimersByTime(100);
+    expect(h.posted).toHaveLength(0);
+  });
+
+  it('aba oculta não recebe updates; ao voltar, o ready reenvia tudo', async () => {
+    const h = await openEditor(DbmlCustomEditorProvider, { text: 'a' });
+    await h.send({ command: 'ready' });
+    h.posted.length = 0;
+    h.panel.visible = false;
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    h.document.text = 'novo';
+    changed(h);
+    vi.advanceTimersByTime(100);
+    expect(h.posted).toHaveLength(0);
+    h.panel.visible = true;
+    vi.useRealTimers();
+    await h.send({ command: 'ready' });
+    expect(h.posted.find((m) => m.type === 'update').source).toBe('novo');
   });
 });
 

@@ -98,6 +98,7 @@ export class DbmlCustomEditorProvider implements vscode.CustomTextEditorProvider
             : '';
         } catch { /* The host still reports its dirty state. */ }
       }
+      lastPosted = { source: document.getText(), saved: !document.isDirty };
       webview.postMessage({
         type: 'update',
         documentId,
@@ -113,18 +114,27 @@ export class DbmlCustomEditorProvider implements vscode.CustomTextEditorProvider
     };
 
     // Alterações textuais (digitação no editor nativo, Ctrl+Z, outros editores): reenviadas com debounce.
-    // O Workbench ignora o eco quando o texto já é idêntico ao que ele aplicou.
+    // O Workbench ignora o eco quando o texto já é idêntico ao que ele aplicou. Atualizações levam só texto/estado
+    // (a lista de arquivos só é recalculada em criar/excluir/renomear) e são puladas quando nada mudou ou a
+    // aba está oculta (ao reaparecer, o 'ready' reenvia tudo).
+    let lastPosted: { source: string; saved: boolean } | null = null;
+    const postTextUpdate = (extra: Record<string, unknown> = {}) => {
+      if (!webviewPanel.visible) return;
+      const source = document.getText();
+      const saved = !document.isDirty;
+      if (lastPosted && lastPosted.source === source && lastPosted.saved === saved) return;
+      lastPosted = { source, saved };
+      void webview.postMessage({ type: 'update', source, documentId, saved, ...extra });
+    };
     let changeTimer: ReturnType<typeof setTimeout> | null = null;
     const changeSub = vscode.workspace.onDidChangeTextDocument((e) => {
       if (e.document.uri.toString() !== document.uri.toString()) return;
       if (changeTimer) clearTimeout(changeTimer);
-      changeTimer = setTimeout(() => {
-        webview.postMessage({ type: 'update', source: document.getText(), documentId, saved: !document.isDirty, title: title() });
-      }, 80);
+      changeTimer = setTimeout(() => postTextUpdate({ title: title() }), 80);
     });
     const saveSub = vscode.workspace.onDidSaveTextDocument((savedDocument) => {
       if (savedDocument.uri.toString() !== documentId) return;
-      void webview.postMessage({ type: 'update', source: savedDocument.getText(), documentId, saved: true });
+      postTextUpdate();
     });
     const filesSub = [
       vscode.workspace.onDidCreateFiles(() => void refreshFiles()),
