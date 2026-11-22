@@ -6,6 +6,7 @@ import {
   CSP_NONCE_BYTES,
   DELTA_OVERHEAD_BYTES,
   DELTA_SIZE_RATIO,
+  GLOBAL_STATE_KEY,
   HEX_PAD_CHAR,
   HEX_PAD_LEN,
   HEX_RADIX,
@@ -13,6 +14,7 @@ import {
   WEBVIEW_APP_ROOT_ID,
   WEBVIEW_BG_COLOR,
   WEBVIEW_CANVAS_BUNDLE,
+  WEBVIEW_COMMAND,
   WEBVIEW_DIST_DIR,
   WEBVIEW_HTML_LANG,
   WEBVIEW_OUTBOUND_TYPE,
@@ -128,6 +130,12 @@ export class DbmlCustomEditorProvider implements vscode.CustomTextEditorProvider
         title: title(),
         files,
         session: withLayout ? sanitizeSession(this.context.workspaceState.get(sessionKey)) : undefined,
+        guideState: withLayout
+          ? {
+              onboardingDone: this.context.globalState.get<boolean>(GLOBAL_STATE_KEY.ONBOARDING_DONE, false),
+              lastSeenVersion: this.context.globalState.get<string | null>(GLOBAL_STATE_KEY.LAST_SEEN_VERSION, null),
+            }
+          : undefined,
       });
     };
 
@@ -336,6 +344,11 @@ export class DbmlCustomEditorProvider implements vscode.CustomTextEditorProvider
           }
           case 'save_session': {
             await this.context.workspaceState.update(sessionKey, sanitizeSession(message.session));
+            break;
+          }
+          case WEBVIEW_COMMAND.SAVE_GUIDE_STATE: {
+            await this.context.globalState.update(GLOBAL_STATE_KEY.ONBOARDING_DONE, message.state.onboardingDone);
+            await this.context.globalState.update(GLOBAL_STATE_KEY.LAST_SEEN_VERSION, message.state.lastSeenVersion);
             break;
           }
           case 'ready': {

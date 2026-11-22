@@ -293,10 +293,16 @@ export interface TestConnectionResult {
   schemas: string[];
 }
 
+export interface GuideStateMetadata {
+  onboardingDone: boolean;
+  lastSeenVersion: string | null;
+}
+
 export interface DocumentMetadata {
   title?: string;
   files?: WorkspaceFileEntry[];
   session?: SessionSnapshot;
+  guideState?: GuideStateMetadata;
   documentId?: string;
   saved?: boolean;
   savedSource?: string;
@@ -322,6 +328,7 @@ export interface HostTransport {
   createNewFile?(): Promise<void>;
   saveSession?(session: SessionSnapshot): void;
   getSession?(): SessionSnapshot | null;
+  saveGuideState?(state: GuideStateMetadata): void;
   onDocumentUpdated(
     callback: (
       source: string,

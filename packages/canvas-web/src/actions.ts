@@ -49,6 +49,8 @@ export type ActionId =
   | 'ToggleFocusMode'
   | 'CycleFocusDepth'
   | 'ShowShortcuts'
+  | 'ShowTour'
+  | 'ShowWhatsNew'
   | 'ExportSvg'
   | 'ExportPng'
   | 'ExportJpeg'
@@ -187,5 +189,7 @@ export function catalog(): ActionEntry[] {
     e('f', ['F'], 'ToggleFocusMode', 'Canvas', 'Modo Foco (vizinhança FK)'),
     e('shift-f', ['Shift', 'F'], 'CycleFocusDepth', 'Canvas', 'Modo Foco: alternar 1-hop / 2-hop'),
     e('ctrl-/', ['Ctrl', '/'], 'ShowShortcuts', 'Ajuda', 'Atalhos de teclado'),
+    e('', [], 'ShowTour', 'Ajuda', 'Tour guiado'),
+    e('', [], 'ShowWhatsNew', 'Ajuda', 'O que há de novo'),
   ];
 }
