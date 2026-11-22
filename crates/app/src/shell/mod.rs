@@ -4972,7 +4972,9 @@ mod tests {
         assert!(super::is_tls_cert_error(
             "could not connect: error communicating with database: invalid peer certificate: UnknownIssuer"
         ));
-        assert!(!super::is_tls_cert_error("connection refused (os error 111)"));
+        assert!(!super::is_tls_cert_error(
+            "connection refused (os error 111)"
+        ));
         assert!(
             super::connection_hint("invalid peer certificate: UnknownIssuer", false)
                 .contains("TLS para Exigir")
@@ -4985,8 +4987,6 @@ mod tests {
             super::connection_hint("password authentication failed for user", false)
                 .contains("Confira o usuário e a senha")
         );
-        assert!(
-            super::connection_hint("unable to open database file", true).contains("SQLite")
-        );
+        assert!(super::connection_hint("unable to open database file", true).contains("SQLite"));
     }
 }

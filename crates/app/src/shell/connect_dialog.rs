@@ -293,8 +293,9 @@ impl Shell {
             let w = w.clone();
             let shell_entity = shell_entity.clone();
             let menu_focus = menu_focus.clone();
-            dialog_bare(dialog, &g, k::DB_DIALOG_W_PX).margin_top(px(k::DB_DIALOG_TOP_PX)).content(
-                move |content, _, cx| {
+            dialog_bare(dialog, &g, k::DB_DIALOG_W_PX)
+                .margin_top(px(k::DB_DIALOG_TOP_PX))
+                .content(move |content, _, cx| {
                     let model = w.model.clone();
                     let st = model.read(cx).clone();
                     let is_file = st.dialect == Dialect::Sqlite;
@@ -325,12 +326,7 @@ impl Shell {
                             .flex_1()
                             .child(Input::new(field).small().appearance(false))
                     };
-                    let line = || {
-                        div()
-                            .flex()
-                            .items_center()
-                            .gap(px(k::DB_FIELD_GAP_PX))
-                    };
+                    let line = || div().flex().items_center().gap(px(k::DB_FIELD_GAP_PX));
                     let row = |text: &'static str, field: &Entity<InputState>| {
                         line()
                             .child(label(text, k::DB_FIELD_LABEL_W_PX))
@@ -464,20 +460,27 @@ impl Shell {
                         .is_some_and(|(raw, hint)| !raw.trim().is_empty() && raw.trim() != hint);
                     let offer_tls_require = !is_file
                         && st.tls != db_introspect::TlsMode::Require
-                        && failed_raw
-                            .as_deref()
-                            .is_some_and(is_tls_cert_error);
+                        && failed_raw.as_deref().is_some_and(is_tls_cert_error);
 
                     let status_line = match &st.status {
-                        Status::Idle => {
-                            div().child(crate::i18n::t("Somente leitura: apenas o catálogo é lido, nunca os seus dados."))
+                        Status::Idle => div().child(crate::i18n::t(
+                            "Somente leitura: apenas o catálogo é lido, nunca os seus dados.",
+                        )),
+                        Status::Connecting => {
+                            div().child(crate::i18n::t("Conectando e lendo o esquema…"))
                         }
-                        Status::Connecting => div().child(crate::i18n::t("Conectando e lendo o esquema…")),
                         Status::Failed(_) => div()
                             .text_color(rgb(crate::glass::DIAG_ERROR))
                             .child(failed_hint.unwrap_or_default()),
                         Status::Tested(msg) => div().child(msg.clone()),
-                        Status::Ready => div().child(crate::i18n::t(if st.tables == 1 { "{} tabela encontrada. Substitua o documento ou insira-a." } else { "{} tabelas encontradas. Substitua o documento ou insira-as." }).replace("{}", &st.tables.to_string())),
+                        Status::Ready => div().child(
+                            crate::i18n::t(if st.tables == 1 {
+                                "{} tabela encontrada. Substitua o documento ou insira-a."
+                            } else {
+                                "{} tabelas encontradas. Substitua o documento ou insira-as."
+                            })
+                            .replace("{}", &st.tables.to_string()),
+                        ),
                     };
 
                     // Banco: dropdown com o mesmo menu do kit da barra de título (teclado, Esc).
@@ -524,7 +527,10 @@ impl Shell {
                             });
                         });
                         line()
-                            .child(label(crate::i18n::t("Tipo de banco"), k::DB_FIELD_LABEL_W_PX))
+                            .child(label(
+                                crate::i18n::t("Tipo de banco"),
+                                k::DB_FIELD_LABEL_W_PX,
+                            ))
                             .child(
                                 div()
                                     // seta para baixo também abre a lista (Enter/Espaço vêm do botão)
@@ -595,49 +601,69 @@ impl Shell {
                     if is_file {
                         let pick = {
                             let w = w.clone();
-                            dialog_btn(&g, k::ID_DB_PICK_FILE, crate::i18n::t("Procurar…"), None, false, true, true)
-                                .h(px(k::DB_FIELD_H_PX))
-                                .text_color(g.text)
-                                .on_click(move |_, window, cx| {
-                                    let rx = cx.prompt_for_paths(PathPromptOptions {
-                                        files: true,
-                                        directories: false,
-                                        multiple: false,
-                                        prompt: Some(crate::i18n::t("Selecione o banco SQLite").into()),
-                                    });
-                                    let w = w.clone();
-                                    window
-                                        .spawn(cx, async move |cx| {
-                                            let Ok(Ok(Some(paths))) = rx.await else {
-                                                return;
-                                            };
-                                            let Some(p) = paths.into_iter().next() else {
-                                                return;
-                                            };
-                                            cx.update(|window, cx| {
-                                                w.path.update(cx, |e, cx| {
-                                                    e.set_value(p.display().to_string(), window, cx);
-                                                });
-                                                w.field_edited(window, cx);
-                                            })
-                                            .ok();
+                            dialog_btn(
+                                &g,
+                                k::ID_DB_PICK_FILE,
+                                crate::i18n::t("Procurar…"),
+                                None,
+                                false,
+                                true,
+                                true,
+                            )
+                            .h(px(k::DB_FIELD_H_PX))
+                            .text_color(g.text)
+                            .on_click(move |_, window, cx| {
+                                let rx = cx.prompt_for_paths(PathPromptOptions {
+                                    files: true,
+                                    directories: false,
+                                    multiple: false,
+                                    prompt: Some(crate::i18n::t("Selecione o banco SQLite").into()),
+                                });
+                                let w = w.clone();
+                                window
+                                    .spawn(cx, async move |cx| {
+                                        let Ok(Ok(Some(paths))) = rx.await else {
+                                            return;
+                                        };
+                                        let Some(p) = paths.into_iter().next() else {
+                                            return;
+                                        };
+                                        cx.update(|window, cx| {
+                                            w.path.update(cx, |e, cx| {
+                                                e.set_value(p.display().to_string(), window, cx);
+                                            });
+                                            w.field_edited(window, cx);
                                         })
-                                        .detach();
-                                })
+                                        .ok();
+                                    })
+                                    .detach();
+                            })
                         };
                         form = form.child(
                             line()
-                                .child(div().flex_1().child(row(crate::i18n::t("Arquivo"), &w.path)))
+                                .child(
+                                    div()
+                                        .flex_1()
+                                        .child(row(crate::i18n::t("Arquivo"), &w.path)),
+                                )
                                 .child(pick),
                         );
                     } else {
                         let eye = {
                             let w = w.clone();
-                            let text = crate::i18n::t(if st.revealed { "Ocultar senha" } else { "Mostrar senha" });
+                            let text = crate::i18n::t(if st.revealed {
+                                "Ocultar senha"
+                            } else {
+                                "Mostrar senha"
+                            });
                             Button::new(k::ID_DB_PASSWORD_REVEAL)
                                 .ghost()
                                 .xsmall()
-                                .icon(if st.revealed { IconName::EyeOff } else { IconName::Eye })
+                                .icon(if st.revealed {
+                                    IconName::EyeOff
+                                } else {
+                                    IconName::Eye
+                                })
                                 .toggled(st.revealed)
                                 .tooltip(text)
                                 .accessibility_label(text)
@@ -649,7 +675,9 @@ impl Shell {
                             .child(
                                 row("Host", &w.host)
                                     .child(label(crate::i18n::t("Porta"), k::DB_FIELD_LABEL2_W_PX))
-                                    .child(input_box(&w.port).flex_none().w(px(k::DB_PORT_FIELD_W_PX))),
+                                    .child(
+                                        input_box(&w.port).flex_none().w(px(k::DB_PORT_FIELD_W_PX)),
+                                    ),
                             )
                             .child(row(crate::i18n::t("Banco"), &w.database))
                             .child(
@@ -658,7 +686,9 @@ impl Shell {
                                     .child(
                                         field_box()
                                             .flex_1()
-                                            .child(div().flex_1().child(Input::new(&w.password).small().appearance(false)))
+                                            .child(div().flex_1().child(
+                                                Input::new(&w.password).small().appearance(false),
+                                            ))
                                             .child(eye),
                                     ),
                             )
@@ -760,12 +790,20 @@ impl Shell {
                             .w_full()
                             .key_context(actions::CONNECT_DB)
                             .on_action(move |_: &TogglePasswordVisibility, window, cx| {
-                                toggle_reveal(&toggle_w.model, &toggle_w.password, &toggle_w.conn, window, cx);
+                                toggle_reveal(
+                                    &toggle_w.model,
+                                    &toggle_w.password,
+                                    &toggle_w.conn,
+                                    window,
+                                    cx,
+                                );
                             })
                             .child(dialog_header(
                                 &g,
                                 crate::i18n::t("Conectar ao banco"),
-                                crate::i18n::t("Faça a engenharia reversa de um esquema existente para DBML."),
+                                crate::i18n::t(
+                                    "Faça a engenharia reversa de um esquema existente para DBML.",
+                                ),
                             ))
                             .child(form)
                             .child(
@@ -790,14 +828,16 @@ impl Shell {
                                         } else {
                                             IconName::ShieldCheck
                                         })
-                                            .size(px(k::DB_STATUS_ICON_PX))
-                                            .mt(px(2.0))
-                                            .flex_none()
-                                            .text_color(if is_failed {
+                                        .size(px(k::DB_STATUS_ICON_PX))
+                                        .mt(px(2.0))
+                                        .flex_none()
+                                        .text_color(
+                                            if is_failed {
                                                 rgb(crate::glass::DIAG_ERROR).into()
                                             } else {
                                                 g.ok
-                                            }),
+                                            },
+                                        ),
                                     )
                                     .child(div().flex_1().min_w_0().child(status_line)),
                             )
@@ -884,9 +924,13 @@ impl Shell {
                                 }
                             })
                             .when(!conflicts.is_empty(), |d| {
-                                d.child(div().px(px(k::DB_FORM_PAD_X_PX)).text_size(TEXT_XS)
-                                    .text_color(rgb(crate::glass::DIAG_WARNING))
-                                    .child(conflicts.clone()))
+                                d.child(
+                                    div()
+                                        .px(px(k::DB_FORM_PAD_X_PX))
+                                        .text_size(TEXT_XS)
+                                        .text_color(rgb(crate::glass::DIAG_WARNING))
+                                        .child(conflicts.clone()),
+                                )
                             })
                             .when(!st.warnings.is_empty(), |d| {
                                 let mut list = div()
@@ -915,21 +959,40 @@ impl Shell {
                                     .child(div().flex_1())
                                     .child({
                                         let model = model.clone();
-                                        dialog_btn(&g, k::ID_DB_CANCEL, crate::i18n::t("Cancelar"), None, false, false, true)
-                                            .on_click(move |_, window, cx| {
+                                        dialog_btn(
+                                            &g,
+                                            k::ID_DB_CANCEL,
+                                            crate::i18n::t("Cancelar"),
+                                            None,
+                                            false,
+                                            false,
+                                            true,
+                                        )
+                                        .on_click(
+                                            move |_, window, cx| {
                                                 model.update(cx, |m, _| m.close());
                                                 window.close_dialog(cx);
-                                            })
+                                            },
+                                        )
                                     })
                                     .child(connect_btn)
                                     .when(can_apply, |d| {
-                                        d.child(apply_btn(k::ID_DB_REPLACE, replace_label, true, false))
-                                            .child(apply_btn(k::ID_DB_INSERT, crate::i18n::t("Inserir").to_string(), false, true))
+                                        d.child(apply_btn(
+                                            k::ID_DB_REPLACE,
+                                            replace_label,
+                                            true,
+                                            false,
+                                        ))
+                                        .child(apply_btn(
+                                            k::ID_DB_INSERT,
+                                            crate::i18n::t("Inserir").to_string(),
+                                            false,
+                                            true,
+                                        ))
                                     }),
                             ),
                     )
-                },
-            )
+                })
         });
     }
 }
