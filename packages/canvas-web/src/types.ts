@@ -315,8 +315,27 @@ export interface DocumentMetadata {
 /** `connecting`: tentando (re)conectar; `online`: canal aberto; `offline`: caiu, aguardando nova tentativa. */
 export type ConnectionState = 'connecting' | 'online' | 'offline';
 
+/** Código de erro de `git_base_result` (ver `GIT_BASE_ERROR` em `constants.ts`). */
+export type GitBaseErrorCode =
+  | 'git_unavailable'
+  | 'not_a_repo'
+  | 'no_commits'
+  | 'untracked'
+  | 'not_utf8'
+  | 'other';
+
+/** Versão base do modo Comparar: o arquivo aberto no `HEAD` do git (ou o motivo de não haver). */
+export type GitBaseResult =
+  | { ok: true; source: string }
+  | { ok: false; code: GitBaseErrorCode; message: string };
+
 export interface HostTransport {
   checkDatabaseSupport?(): Promise<void>;
+  /**
+   * Modo Comparar: conteúdo do documento ativo no `HEAD` do git. Somente leitura. Falhas esperadas
+   * (sem git, sem repositório, arquivo novo) voltam como `{ ok: false }`; só erro de canal rejeita.
+   */
+  requestGitBase?(documentId?: string): Promise<GitBaseResult>;
   /** Só confere as credenciais e lista os schemas (sem ler tabelas). */
   testConnection?(req: IntrospectRequest, signal?: AbortSignal): Promise<TestConnectionResult>;
   /** Lê o catálogo de um banco (somente leitura) e devolve DBML; ausente quando o host não suporta. */

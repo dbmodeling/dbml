@@ -3,7 +3,7 @@
  * com a Webview do VS Code e com o servidor Axum CLI via WebSocket.
  */
 
-import { TRANSPORT_COMMAND, TRANSPORT_ERROR, TRANSPORT_EVENT } from './constants';
+import { GIT_BASE_ERROR, TRANSPORT_COMMAND, TRANSPORT_ERROR, TRANSPORT_EVENT } from './constants';
 import {
   HostTransport,
   DocumentMetadata,
@@ -16,6 +16,8 @@ import {
   IntrospectResult,
   ConnectionState,
   TestConnectionResult,
+  GitBaseErrorCode,
+  GitBaseResult,
 } from './types';
 
 declare function acquireVsCodeApi(): {
@@ -58,6 +60,22 @@ class DocumentVersion {
   }
 }
 
+const GIT_BASE_CODES: readonly string[] = Object.values(GIT_BASE_ERROR);
+
+/**
+ * Converte a resposta `git_base_result` (CLI ou VS Code) em `GitBaseResult`. `source` presente é
+ * sucesso; senão vale `error_code` (desconhecido vira `other`) com a mensagem do host.
+ */
+export function parseGitBaseResult(msg: { source?: unknown; error?: unknown; error_code?: unknown }): GitBaseResult {
+  if (typeof msg.source === 'string') return { ok: true, source: msg.source };
+  const code = typeof msg.error_code === 'string' && GIT_BASE_CODES.includes(msg.error_code)
+    ? (msg.error_code as GitBaseErrorCode)
+    : GIT_BASE_ERROR.OTHER;
+  return { ok: false, code, message: typeof msg.error === 'string' ? msg.error : '' };
+}
+
+type GitBaseWaiter = { resolve: (r: GitBaseResult) => void; reject: (e: Error) => void };
+
 /** Transporte para execução dentro da Webview do VS Code */
 export class VsCodeTransport implements HostTransport {
   private readonly version = new DocumentVersion();
@@ -94,6 +112,7 @@ export class VsCodeTransport implements HostTransport {
     number,
     { resolve: (r: TestConnectionResult) => void; reject: (e: Error) => void }
   >();
+  private pendingGitBase = new Map<number, GitBaseWaiter>();
 
   constructor() {
     this.vscode = getVsCodeApi();
@@ -166,6 +185,12 @@ export class VsCodeTransport implements HostTransport {
             this.errorCallback(message.diagnostics);
           }
           break;
+        case TRANSPORT_EVENT.GIT_BASE_RESULT: {
+          const p = this.pendingGitBase.get(message.id);
+          this.pendingGitBase.delete(message.id);
+          p?.resolve(parseGitBaseResult(message));
+          break;
+        }
         case 'test_connection_result': {
           const p = this.pendingTest.get(message.id);
           this.pendingTest.delete(message.id);
@@ -194,9 +219,20 @@ export class VsCodeTransport implements HostTransport {
     for (const p of this.pending.values()) p.reject(error);
     for (const p of this.pendingIntrospect.values()) p.reject(error);
     for (const p of this.pendingTest.values()) p.reject(error);
+    for (const p of this.pendingGitBase.values()) p.reject(error);
     this.pending.clear();
     this.pendingIntrospect.clear();
     this.pendingTest.clear();
+    this.pendingGitBase.clear();
+  }
+
+  /** O host da extensão lê o arquivo no `HEAD` (`git cat-file`); a Webview não executa processos. */
+  public requestGitBase(): Promise<GitBaseResult> {
+    const id = ++this.requestSeq;
+    return new Promise((resolve, reject) => {
+      this.pendingGitBase.set(id, { resolve, reject });
+      this.vscode.postMessage({ command: TRANSPORT_COMMAND.GIT_BASE, id });
+    });
   }
 
   public checkDatabaseSupport(): Promise<void> {
@@ -340,6 +376,7 @@ export class WebSocketTransport implements HostTransport {
   /** Aba oculta: nenhuma tentativa agendada até `visibilitychange`. */
   private waitingVisible = false;
   private requestSeq = 0;
+  private pendingGitBase = new Map<number, GitBaseWaiter>();
   private pending = new Map<number, { resolve: () => void; reject: (e: Error) => void }>();
   private request(type: string, payload: unknown): Promise<void> {
     if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return Promise.reject(new Error('Disconnected; reconnect and save again'));
@@ -383,6 +420,8 @@ export class WebSocketTransport implements HostTransport {
     }
     for (const p of this.pending.values()) p.reject(new Error(TRANSPORT_ERROR.CONNECTION_CLOSED));
     this.pending.clear();
+    for (const p of this.pendingGitBase.values()) p.reject(new Error(TRANSPORT_ERROR.CONNECTION_CLOSED));
+    this.pendingGitBase.clear();
     for (const q of this.offlinePatches.splice(0)) q.reject(new Error(TRANSPORT_ERROR.CONNECTION_CLOSED));
     this.pendingLayout = null;
     this.connectionCallback = undefined;
@@ -437,6 +476,10 @@ export class WebSocketTransport implements HostTransport {
             const p = this.pending.get(msg.id);
             this.pending.delete(msg.id);
             if (msg.error) p?.reject(new Error(msg.error)); else p?.resolve();
+          } else if (msg.type === TRANSPORT_EVENT.GIT_BASE_RESULT) {
+            const p = this.pendingGitBase.get(msg.id);
+            this.pendingGitBase.delete(msg.id);
+            p?.resolve(parseGitBaseResult(msg));
           } else if (msg.type === 'init' || msg.type === 'update' || msg.type === 'patch_rejected') {
             // `init` abre uma conexão nova (o servidor pode ter reiniciado): a versão é a dele.
             // `patch_rejected` traz o estado atual do documento para o cliente ressincronizar; o erro
@@ -481,6 +524,8 @@ export class WebSocketTransport implements HostTransport {
       this.ws.onclose = () => {
         for (const p of this.pending.values()) p.reject(new Error('Connection lost; reconnect and save again'));
         this.pending.clear();
+        for (const p of this.pendingGitBase.values()) p.reject(new Error('Connection lost; reconnect and compare again'));
+        this.pendingGitBase.clear();
         this.setConnectionState('offline');
         this.scheduleReconnect();
       };
@@ -531,6 +576,17 @@ export class WebSocketTransport implements HostTransport {
   public async saveDocument(expected_source: string, expected_file?: string): Promise<void> {
     const base_version = this.version.base();
     await this.request('save_document', { base_version, expected_source, expected_file });
+  }
+
+  /** Pede ao servidor local (`dbml run`) o arquivo ativo no `HEAD` do git; somente leitura. */
+  public requestGitBase(documentId?: string): Promise<GitBaseResult> {
+    if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return Promise.reject(new Error('Disconnected; reconnect and compare again'));
+    const id = ++this.requestSeq;
+    return new Promise((resolve, reject) => {
+      this.pendingGitBase.set(id, { resolve, reject });
+      try { this.ws!.send(JSON.stringify({ type: TRANSPORT_COMMAND.GIT_BASE, payload: { expected_file: documentId ?? '' }, id })); }
+      catch (error) { this.pendingGitBase.delete(id); reject(error); }
+    });
   }
 
   public async testConnection(req: IntrospectRequest, signal?: AbortSignal): Promise<TestConnectionResult> {

@@ -2,6 +2,16 @@
 //! Coordenadas de mundo → tela: `tela = mundo * zoom + pan` (relativo à origem do canvas).
 
 use crate::actions::{self, *};
+use crate::constants::{
+    CARD_ROWS_TOP_PAD, DIFF_DASH_GAP_PX, DIFF_DASH_PX, DIFF_EDGE_W_PX, DIFF_FOCUS_MIN_ZOOM,
+    DIFF_GHOST_GAP, DIFF_GHOST_OPACITY, DIFF_GHOST_PER_ROW, DIFF_HALO_ALPHA, DIFF_HALO_SPREAD_PX,
+    DIFF_ITEM_H_PX, DIFF_MARK_W_PX, DIFF_MINIMAP_GHOST_ALPHA, DIFF_PANEL_MARGIN_PX,
+    DIFF_PANEL_MAX_H_PX, DIFF_PANEL_PAD_PX, DIFF_PANEL_W_PX, DIFF_ROW_TINT, DIFF_UNCHANGED_OPACITY,
+    ID_DIFF_EXIT, ID_DIFF_GHOST_PREFIX, ID_DIFF_ITEM_PREFIX, ID_DIFF_LIST, ID_DIFF_PANEL,
+    ID_TOOL_DIFF, TOOL_ISLAND_OFFSET_Y_PX,
+};
+use crate::diff_view::{DiffGroup, DiffStatus, DiffTarget, DiffView};
+use crate::git_base::BaseState;
 use crate::glass::{
     FONT_MONO, Glass, Mode, TABLE_COLORS, TEXT_SM, TEXT_XS, card_shadow, elevation, hex,
 };
@@ -119,6 +129,75 @@ struct LayoutMotion {
     progress: Tween<1>,
 }
 
+/// Estado do canvas salvo ao entrar no modo Comparar; restaurado na saída.
+struct DiffSaved {
+    pan: (f32, f32),
+    zoom: f32,
+    selected: Option<String>,
+    selected_enum: Option<String>,
+    multi: Vec<String>,
+    selected_ref: Option<RefPair>,
+    focus_mode: bool,
+    highlighted_column: Option<(String, String)>,
+}
+
+/// Modo Comparar (#18): canvas somente leitura com o diff contra o `HEAD` do git.
+struct DiffSession {
+    /// Esquema da base: carregando (git em segundo plano), lido, ou a chave pt-BR do erro.
+    base: BaseState<Schema>,
+    view: Rc<DiffView>,
+    ghost_tables: HashMap<String, (f32, f32)>,
+    ghost_enums: HashMap<String, (f32, f32)>,
+    /// Item do resumo em foco (navegação por teclado).
+    cursor: Option<usize>,
+    saved: DiffSaved,
+}
+
+impl DiffSession {
+    /// Retângulos de mundo dos cartões fantasma (tabelas e enums removidos desde o `HEAD`).
+    fn ghost_rects(&self) -> Vec<layout::Rect> {
+        let tables = self.view.removed_tables.iter().filter_map(|t| {
+            let &(x, y) = self.ghost_tables.get(&t.qualified_name())?;
+            Some(layout::Rect {
+                x,
+                y,
+                w: CARD_W,
+                h: card_h(t.columns.len()),
+            })
+        });
+        let enums = self.view.removed_enums.iter().filter_map(|e| {
+            let &(x, y) = self.ghost_enums.get(&e.name)?;
+            Some(layout::Rect {
+                x,
+                y,
+                w: ENUM_W,
+                h: enum_h(e),
+            })
+        });
+        tables.chain(enums).collect()
+    }
+}
+
+/// Cor do status no modo Comparar: verde = adicionado, âmbar = modificado, vermelho = removido.
+fn diff_color(g: &Glass, status: DiffStatus) -> Hsla {
+    match status {
+        DiffStatus::Added => g.ok,
+        DiffStatus::Modified => g.warning,
+        DiffStatus::Removed => g.danger,
+    }
+}
+
+/// Rótulo (pt-BR, traduzido na exibição) de um grupo do resumo.
+const fn diff_group_label(group: DiffGroup) -> &'static str {
+    match group {
+        DiffGroup::Tables => "Tabelas",
+        DiffGroup::Columns => "Colunas",
+        DiffGroup::Indexes => "Índices",
+        DiffGroup::Enums => "Enums",
+        DiffGroup::Refs => "Relações",
+    }
+}
+
 pub struct Diagram {
     schema: Schema,
     /// Posição de mundo por nome de tabela (sobrevive a reparse).
@@ -169,6 +248,10 @@ pub struct Diagram {
     highlighted_column: Option<(String, String)>,
     /// Mapa compartilhado de bounds reais dos controles para o Spotlight Tour.
     pub tour_bounds: Option<crate::shell::guide_ui::TourBoundsMap>,
+    /// Modo Comparar ativo (somente leitura).
+    diff: Option<DiffSession>,
+    /// Ticket do último pedido de base do modo Comparar (descarta resultados obsoletos).
+    diff_ticket: u64,
 }
 
 impl Diagram {
@@ -211,6 +294,8 @@ impl Diagram {
             focus_depth: 1,
             highlighted_column: None,
             tour_bounds: None,
+            diff: None,
+            diff_ticket: 0,
         };
         d.set_schema(schema);
         d
@@ -257,6 +342,240 @@ impl Diagram {
         self.appearing.retain(|key, _| self.pos.contains_key(key));
         self.schema = schema;
         self.schema_rev += 1;
+        self.refresh_diff();
+    }
+
+    /// `true` com o modo Comparar ativo (canvas somente leitura).
+    pub fn diff_active(&self) -> bool {
+        self.diff.is_some()
+    }
+
+    /// Entra no modo Comparar com a base ainda carregando; devolve o ticket que
+    /// [`Self::finish_diff`] exige. Guarda vista e seleção para restaurar na saída; não altera
+    /// texto, posições nem histórico.
+    pub fn begin_diff(&mut self) -> u64 {
+        self.diff_ticket += 1;
+        self.enter_diff(BaseState::Loading(self.diff_ticket));
+        self.diff_ticket
+    }
+
+    /// `true` se o modo Comparar ainda espera a base do pedido `ticket`.
+    pub fn diff_waiting_for(&self, ticket: u64) -> bool {
+        self.diff
+            .as_ref()
+            .is_some_and(|s| matches!(s.base, BaseState::Loading(t) if t == ticket))
+    }
+
+    /// Aplica a base lida em segundo plano. Descarta (`false`) se o modo foi desligado ou
+    /// religado (outro ticket) desde o pedido.
+    pub fn finish_diff(&mut self, ticket: u64, base: Result<Schema, &'static str>) -> bool {
+        let Some(session) = &mut self.diff else {
+            return false;
+        };
+        if !session.base.resolve(ticket, base) {
+            return false;
+        }
+        self.refresh_diff();
+        true
+    }
+
+    fn enter_diff(&mut self, base: BaseState<Schema>) {
+        let saved = self.diff.take().map_or_else(
+            || DiffSaved {
+                pan: self.pan,
+                zoom: self.zoom,
+                selected: self.selected.take(),
+                selected_enum: self.selected_enum.take(),
+                multi: std::mem::take(&mut self.multi),
+                selected_ref: self.selected_ref.take(),
+                focus_mode: std::mem::replace(&mut self.focus_mode, false),
+                highlighted_column: self.highlighted_column.take(),
+            },
+            |old| old.saved,
+        );
+        self.drag = None;
+        self.context_menu = None;
+        self.diff = Some(DiffSession {
+            base,
+            view: Rc::default(),
+            ghost_tables: HashMap::new(),
+            ghost_enums: HashMap::new(),
+            cursor: None,
+            saved,
+        });
+        self.refresh_diff();
+    }
+
+    /// Sai do modo Comparar restaurando vista e seleção de antes.
+    pub fn exit_diff(&mut self) {
+        let Some(session) = self.diff.take() else {
+            return;
+        };
+        let s = session.saved;
+        let keep = |name: &Option<String>, ok: bool| name.clone().filter(|_| ok);
+        self.selected = keep(
+            &s.selected,
+            s.selected
+                .as_deref()
+                .is_some_and(|n| self.schema.table(n).is_some()),
+        );
+        self.selected_enum = keep(
+            &s.selected_enum,
+            s.selected_enum
+                .as_deref()
+                .is_some_and(|n| self.schema.enums.iter().any(|e| e.name == n)),
+        );
+        self.multi = s
+            .multi
+            .into_iter()
+            .filter(|n| self.schema.table(n).is_some())
+            .collect();
+        self.selected_ref = s.selected_ref;
+        self.focus_mode = s.focus_mode;
+        self.highlighted_column = s.highlighted_column;
+        self.animate_viewport([s.pan.0, s.pan.1, s.zoom]);
+    }
+
+    /// Recalcula o diff e os cartões fantasma (o head é o esquema atual do canvas).
+    fn refresh_diff(&mut self) {
+        let Some(session) = &self.diff else { return };
+        let Some(base) = session.base.ready() else {
+            return;
+        };
+        let view = crate::diff_view::build_diff_view(&schema::diff_schemas(base, &self.schema));
+        let pos = self.positions();
+        let mut occupied: Vec<layout::Rect> = Vec::new();
+        for t in &self.schema.tables {
+            if let Some(&(x, y)) = pos.get(&t.qualified_name()) {
+                let h = card_h(crate::diff_view::diff_row_count(t, &view));
+                occupied.push(layout::Rect { x, y, w: CARD_W, h });
+            }
+        }
+        for en in &self.schema.enums {
+            if let Some(&(x, y)) = pos.get(&enum_key(en)) {
+                occupied.push(layout::Rect {
+                    x,
+                    y,
+                    w: ENUM_W,
+                    h: enum_h(en),
+                });
+            }
+        }
+        let slots: Vec<(f32, f32)> = view
+            .removed_tables
+            .iter()
+            .map(|t| (CARD_W, card_h(t.columns.len())))
+            .chain(view.removed_enums.iter().map(|e| (ENUM_W, enum_h(e))))
+            .collect();
+        let row_max_w = DIFF_GHOST_PER_ROW * (CARD_W + DIFF_GHOST_GAP);
+        let mut placed =
+            crate::diff_view::place_ghosts(&occupied, &slots, DIFF_GHOST_GAP, row_max_w)
+                .into_iter();
+        let ghost_tables = view
+            .removed_tables
+            .iter()
+            .zip(placed.by_ref())
+            .map(|(t, p)| (t.qualified_name(), p))
+            .collect();
+        let ghost_enums = view
+            .removed_enums
+            .iter()
+            .zip(placed)
+            .map(|(e, p)| (e.name.clone(), p))
+            .collect();
+        if let Some(session) = &mut self.diff {
+            session.cursor = session.cursor.filter(|&i| i < view.items.len());
+            session.view = Rc::new(view);
+            session.ghost_tables = ghost_tables;
+            session.ghost_enums = ghost_enums;
+        }
+    }
+
+    /// Retângulo de mundo de um alvo do resumo (tabela/enum do head ou fantasma, relação).
+    fn diff_target_rect(&self, target: &DiffTarget) -> Option<(f32, f32, f32, f32)> {
+        let session = self.diff.as_ref()?;
+        let table_rect = |name: &str| -> Option<(f32, f32, f32, f32)> {
+            if let Some(t) = self.schema.table(name) {
+                let (x, y) = *self.positions().get(&t.qualified_name())?;
+                let rows = crate::diff_view::diff_row_count(t, &session.view);
+                return Some((x, y, CARD_W, card_h(rows)));
+            }
+            let t = session
+                .view
+                .removed_tables
+                .iter()
+                .find(|t| t.qualified_name() == name)?;
+            let (x, y) = *session.ghost_tables.get(name)?;
+            Some((x, y, CARD_W, card_h(t.columns.len())))
+        };
+        match target {
+            DiffTarget::Table { name, .. } => table_rect(name),
+            DiffTarget::Enum { name, removed } => {
+                if *removed {
+                    let en = session
+                        .view
+                        .removed_enums
+                        .iter()
+                        .find(|e| &e.name == name)?;
+                    let (x, y) = *session.ghost_enums.get(name)?;
+                    Some((x, y, ENUM_W, enum_h(en)))
+                } else {
+                    let en = self.schema.enums.iter().find(|e| &e.name == name)?;
+                    let (x, y) = *self.positions().get(&enum_key(en))?;
+                    Some((x, y, ENUM_W, enum_h(en)))
+                }
+            }
+            DiffTarget::Ref { key, .. } => {
+                let r = &session.view.refs.get(key)?.r;
+                let a = table_rect(&r.from.qualified_table())?;
+                let b = table_rect(&r.to.qualified_table())?;
+                let (x0, y0) = (a.0.min(b.0), a.1.min(b.1));
+                let (x1, y1) = ((a.0 + a.2).max(b.0 + b.2), (a.1 + a.3).max(b.1 + b.3));
+                Some((x0, y0, x1 - x0, y1 - y0))
+            }
+        }
+    }
+
+    /// Centraliza a vista no item `ix` do resumo (clique ou teclado); não mexe na seleção.
+    pub fn focus_diff_item(&mut self, ix: usize) {
+        let Some(target) = self
+            .diff
+            .as_ref()
+            .and_then(|s| s.view.items.get(ix))
+            .map(|i| i.target.clone())
+        else {
+            return;
+        };
+        if let Some(session) = &mut self.diff {
+            session.cursor = Some(ix);
+        }
+        let Some((x, y, w, h)) = self.diff_target_rect(&target) else {
+            return;
+        };
+        let (vw, vh) = (f32::from(self.size.width), f32::from(self.size.height));
+        let z = if self.zoom < DIFF_FOCUS_MIN_ZOOM {
+            1.0
+        } else {
+            self.zoom
+        };
+        let (cx_, cy_) = (x + w / 2., y + h / 2.);
+        self.animate_viewport([vw / 2. - cx_ * z, vh / 2. - cy_ * z, z]);
+    }
+
+    /// Vai ao próximo (`forward`) ou anterior item do resumo, em ciclo.
+    pub fn step_diff(&mut self, forward: bool) {
+        let Some(session) = &self.diff else { return };
+        let n = session.view.items.len();
+        if n == 0 {
+            return;
+        }
+        let next = match (session.cursor, forward) {
+            (None, true) => 0,
+            (None, false) => n - 1,
+            (Some(i), true) => (i + 1) % n,
+            (Some(i), false) => (i + n - 1) % n,
+        };
+        self.focus_diff_item(next);
     }
 
     /// Aplica posições salvas (sidecar de layout): cartões presentes mantêm o lugar salvo, os que
@@ -353,6 +672,7 @@ impl Diagram {
         self.selected_enum = selected_enum;
         self.selected_ref = None;
         self.multi = multi;
+        self.refresh_diff();
     }
 
     pub fn set_viewport(&mut self, zoom: f32, pan: (f32, f32)) {
@@ -480,10 +800,19 @@ impl Diagram {
         }
     }
 
+    /// O minimapa tem o que mostrar: tabelas do esquema ou fantasmas do modo Comparar.
+    fn minimap_has_cards(&self) -> bool {
+        !self.schema.tables.is_empty()
+            || self
+                .diff
+                .as_ref()
+                .is_some_and(|s| !s.ghost_tables.is_empty() || !s.ghost_enums.is_empty())
+    }
+
     fn minimap_transform(
         &self,
     ) -> Option<(crate::canvas_geom::MinimapTransform, (f32, f32, f32, f32))> {
-        if self.schema.tables.is_empty() {
+        if !self.minimap_has_cards() {
             return None;
         }
         let (vw, vh) = (
@@ -494,25 +823,15 @@ impl Diagram {
         let vp_y = -self.pan.1 / self.zoom;
         let vp_w = vw / self.zoom;
         let vp_h = vh / self.zoom;
-        let (mut min_x, mut min_y, mut max_x, mut max_y) = (vp_x, vp_y, vp_x + vp_w, vp_y + vp_h);
-        for t in &self.schema.tables {
-            let q = t.qualified_name();
-            if let Some(&(x, y)) = self.pos.get(&q) {
-                min_x = min_x.min(x);
-                min_y = min_y.min(y);
-                max_x = max_x.max(x + CARD_W);
-                max_y = max_y.max(y + card_h(t.columns.len()));
-            }
-        }
-        for en in &self.schema.enums {
-            let key = enum_key(en);
-            if let Some(&(x, y)) = self.pos.get(&key) {
-                min_x = min_x.min(x);
-                min_y = min_y.min(y);
-                max_x = max_x.max(x + ENUM_W);
-                max_y = max_y.max(y + enum_h(en));
-            }
-        }
+        let viewport = layout::Rect {
+            x: vp_x,
+            y: vp_y,
+            w: vp_w,
+            h: vp_h,
+        };
+        let (min_x, min_y, max_x, max_y) = crate::canvas_geom::world_bounds(
+            std::iter::once(viewport).chain(self.content_rects(&self.pos)),
+        )?;
         let margin = 40.0;
         let xf = crate::canvas_geom::MinimapTransform::compute(
             min_x - margin,
@@ -538,6 +857,12 @@ impl Diagram {
 
     /// Frase curta para a barra de status: o que o usuário pode fazer agora.
     pub fn hint(&self) -> String {
+        if self.diff.is_some() {
+            return crate::i18n::t(
+                "Comparar com HEAD (somente leitura) · clique em um item do resumo · N / Shift+N navega · Esc sai",
+            )
+            .into();
+        }
         match (&self.drag, self.tool) {
             (Some(Drag::Cards { .. }), _) => match self.multi.len() {
                 0 => crate::i18n::t("Movendo {}").replacen("{}", &self.selected.clone().unwrap_or_default(), 1),
@@ -640,37 +965,50 @@ impl Diagram {
         self.animate_viewport(to);
     }
 
+    /// Retângulos de mundo de todos os cartões desenhados: tabelas e enums do esquema (em `pos`)
+    /// e, no modo Comparar, os fantasmas (removidos desde o `HEAD`).
+    fn content_rects(&self, pos: &HashMap<String, (f32, f32)>) -> Vec<layout::Rect> {
+        let rows = |t: &schema::Table| {
+            self.diff.as_ref().map_or(t.columns.len(), |s| {
+                crate::diff_view::diff_row_count(t, &s.view)
+            })
+        };
+        let tables = self.schema.tables.iter().filter_map(|t| {
+            let &(x, y) = pos.get(&t.qualified_name())?;
+            Some(layout::Rect {
+                x,
+                y,
+                w: CARD_W,
+                h: card_h(rows(t)),
+            })
+        });
+        let enums = self.schema.enums.iter().filter_map(|en| {
+            let &(x, y) = pos.get(&enum_key(en))?;
+            Some(layout::Rect {
+                x,
+                y,
+                w: ENUM_W,
+                h: enum_h(en),
+            })
+        });
+        let ghosts = self
+            .diff
+            .as_ref()
+            .map(DiffSession::ghost_rects)
+            .unwrap_or_default();
+        tables.chain(enums).chain(ghosts).collect()
+    }
+
     fn do_fit(&mut self) {
         let (w, h) = (f32::from(self.size.width), f32::from(self.size.height));
-        if (self.schema.tables.is_empty() && self.schema.enums.is_empty()) || w < 1. || h < 1. {
+        if w < 1. || h < 1. {
             return;
         }
-        let (mut x0, mut y0, mut x1, mut y1) = (
-            f32::INFINITY,
-            f32::INFINITY,
-            f32::NEG_INFINITY,
-            f32::NEG_INFINITY,
-        );
-        for t in &self.schema.tables {
-            let Some(&(x, y)) = self.positions().get(&t.qualified_name()) else {
-                continue;
-            };
-            x0 = x0.min(x);
-            y0 = y0.min(y);
-            x1 = x1.max(x + CARD_W);
-            y1 = y1.max(y + card_h(t.columns.len()));
-        }
-        for en in &self.schema.enums {
-            if let Some(&(x, y)) = self.positions().get(&enum_key(en)) {
-                x0 = x0.min(x);
-                y0 = y0.min(y);
-                x1 = x1.max(x + ENUM_W);
-                y1 = y1.max(y + enum_h(en));
-            }
-        }
-        if !x0.is_finite() {
+        let Some((x0, y0, x1, y1)) =
+            crate::canvas_geom::world_bounds(self.content_rects(self.positions()))
+        else {
             return;
-        }
+        };
         let pad = 48.;
         // a ilha de ferramentas fica à esquerda (12 + 40 × escala base 1,3) e o grupo desenha 24 além
         let pad_x = 12. + 40. * crate::glass::UI_BASE + 24. + 12.;
@@ -1264,6 +1602,8 @@ impl Diagram {
             lit: f32,
             dim: f32,
             ends: (&'static str, &'static str),
+            /// cor do status no modo Comparar (adicionada/modificada)
+            tint: Option<Hsla>,
         }
         const FOCUS_DIM: f32 = 0.18;
         let now = Instant::now();
@@ -1291,6 +1631,15 @@ impl Diagram {
         };
         let s = move |v: f32| px(v * z);
         let schema = &self.schema;
+        let in_diff = self.diff.is_some();
+        let dv: Option<Rc<DiffView>> = self.diff.as_ref().map(|d| d.view.clone());
+        let diff_dim = |status: Option<DiffStatus>| {
+            if in_diff && status.is_none() {
+                DIFF_UNCHANGED_OPACITY
+            } else {
+                1.0
+            }
+        };
         let focus_sub: Option<schema::FocusSubgraph> = if self.focus_mode {
             let seeds: std::collections::HashSet<String> = self.selection().into_iter().collect();
             (!seeds.is_empty()).then(|| schema.neighborhood(&seeds, self.focus_depth))
@@ -1331,10 +1680,11 @@ impl Diagram {
                     window,
                     cx,
                 );
+                let status = dv.as_ref().and_then(|v| v.ref_status(r));
                 let dim = match &focus_sub {
                     Some(sub) if !sub.ref_indices.contains(&i) => FOCUS_DIM,
                     _ => 1.0,
-                };
+                } * diff_dim(status);
                 Some(Edge {
                     a: pts.first()?[0],
                     b: pts.last()?[3],
@@ -1344,6 +1694,7 @@ impl Diagram {
                     lit,
                     dim,
                     ends,
+                    tint: status.map(|st| diff_color(g, st)),
                 })
             })
             .collect();
@@ -1380,6 +1731,46 @@ impl Diagram {
         } else {
             None
         };
+        // modo Comparar: relações removidas, retas tracejadas entre as linhas das colunas
+        let removed_edges: Vec<(Point<Pixels>, Point<Pixels>)> = self
+            .diff
+            .as_ref()
+            .map(|d| {
+                let pos = self.positions();
+                let at = |q: &str| pos.get(q).or_else(|| d.ghost_tables.get(q)).copied();
+                let row_y = |(_, y): (f32, f32), row: usize| {
+                    y + HEADER_H + CARD_ROWS_TOP_PAD + ROW_H * (row as f32 + 0.5)
+                };
+                d.view
+                    .refs
+                    .values()
+                    .filter(|rd| rd.status == DiffStatus::Removed)
+                    .filter_map(|rd| {
+                        let (fq, tq) = (rd.r.from.qualified_table(), rd.r.to.qualified_table());
+                        let (a, b) = (at(&fq)?, at(&tq)?);
+                        let fr = crate::diff_view::column_row(
+                            &fq,
+                            rd.r.from.primary_column(),
+                            &schema.tables,
+                            &d.view,
+                        )?;
+                        let tr = crate::diff_view::column_row(
+                            &tq,
+                            rd.r.to.primary_column(),
+                            &schema.tables,
+                            &d.view,
+                        )?;
+                        let rightward = b.0 >= a.0;
+                        let ax = if rightward { a.0 + CARD_W } else { a.0 };
+                        let bx = if rightward { b.0 } else { b.0 + CARD_W };
+                        let to_screen =
+                            |x: f32, y: f32| point(px(x * z + pan_x), px(y * z + pan_y));
+                        Some((to_screen(ax, row_y(a, fr)), to_screen(bx, row_y(b, tr))))
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        let removed_color = g.danger.opacity(DIFF_GHOST_OPACITY);
         let warning = g.warning;
         let stroke = g.accent;
         // Traço das relações inativas.
@@ -1467,7 +1858,8 @@ impl Diagram {
                 cx.listener(|this, e: &MouseDownEvent, window, cx| {
                     this.interrupt_motion();
                     window.focus(&this.focus, cx);
-                    if this.tool == Tool::Hand || this.space {
+                    // modo Comparar é somente leitura: arrastar em qualquer lugar move a vista
+                    if this.tool == Tool::Hand || this.space || this.diff.is_some() {
                         this.drag = Some(Drag::Pan { last: e.position });
                     } else {
                         let at = this.to_world(e.position);
@@ -1583,6 +1975,9 @@ impl Diagram {
             .on_mouse_down(
                 MouseButton::Right,
                 cx.listener(|this, e: &MouseDownEvent, window, cx| {
+                    if this.diff.is_some() {
+                        return;
+                    }
                     this.interrupt_motion();
                     window.focus(&this.focus, cx);
                     let at = this.to_world(e.position);
@@ -1653,7 +2048,10 @@ impl Diagram {
                         let (a, b) = (bounds.origin + e.a, bounds.origin + e.b);
                         let pts: Vec<_> =
                             e.pts.iter().map(|c| c.map(|p| bounds.origin + p)).collect();
-                        let color = motion::color(line, stroke, e.lit).opacity(e.dim);
+                        let color = e
+                            .tint
+                            .unwrap_or_else(|| motion::color(line, stroke, e.lit))
+                            .opacity(e.dim);
                         // Halo sob o traço da relação ativa.
                         if e.lit > 0.
                             && let Some(path) = bezier(&pts, 8. * z)
@@ -1683,6 +2081,15 @@ impl Diagram {
                             .border_widths(px((1.5 * z).max(1.)))
                             .border_color(color),
                         );
+                    }
+                    for (a, b) in removed_edges {
+                        let mut pb = PathBuilder::stroke(px(DIFF_EDGE_W_PX));
+                        pb = pb.dash_array(&[px(DIFF_DASH_PX), px(DIFF_DASH_GAP_PX)]);
+                        pb.move_to(bounds.origin + a);
+                        pb.line_to(bounds.origin + b);
+                        if let Ok(path) = pb.build() {
+                            window.paint_path(path, removed_color);
+                        }
                     }
                     if let Some(h) = handle {
                         // círculo de 10 px (tamanho fixo na tela): acento com aro da cor do cartão
@@ -1810,7 +2217,7 @@ impl Diagram {
                             .on_mouse_down(
                                 MouseButton::Left,
                                 cx.listener(move |this, e: &MouseDownEvent, window, cx| {
-                                    if this.tool == Tool::Hand {
+                                    if this.tool == Tool::Hand || this.diff.is_some() {
                                         return;
                                     }
                                     this.interrupt_motion();
@@ -1907,8 +2314,20 @@ impl Diagram {
                 .or_else(|| grp.and_then(|gr| gr.color.as_deref()))
                 .and_then(hex)
                 .or_else(|| grp.map(|gr| group_color(schema, &gr.name)));
+            let table_status = dv.as_ref().and_then(|v| v.table_status(&qname));
+            let mark = |status: DiffStatus, k: f32| {
+                div()
+                    .flex_none()
+                    .w(px(DIFF_MARK_W_PX * k))
+                    .text_center()
+                    .font_family(FONT_MONO)
+                    .font_weight(FontWeight::BOLD)
+                    .text_color(diff_color(g, status))
+                    .child(status.mark())
+            };
             let mut rows: Vec<AnyElement> = Vec::new();
             for (i, c) in t.columns.iter().enumerate() {
+                let col_status = dv.as_ref().and_then(|v| v.column_status(&qname, &c.name));
                 let fk = c.fk || fks.contains(&(qname.clone(), c.name.as_str()));
                 let has_idx = t
                     .indexes
@@ -1949,9 +2368,14 @@ impl Diagram {
                         .gap(s(8.))
                         .text_size(s(13.))
                         .when(is_hi_col, |d| d.bg(g.accent.opacity(0.14)))
-                        .hover({
-                            let h = g.hover;
-                            move |st| st.bg(h)
+                        .when_some(col_status, |d, st| {
+                            d.bg(diff_color(g, st).opacity(DIFF_ROW_TINT))
+                        })
+                        .when(!in_diff, |d| {
+                            d.hover({
+                                let h = g.hover;
+                                move |st| st.bg(h)
+                            })
                         })
                         // trilho fixo do ícone: nomes alinhados com ou sem ícone
                         .child(
@@ -2001,6 +2425,7 @@ impl Diagram {
                                 .text_color(g.text_faint)
                                 .child(c.ty.clone()),
                         )
+                        .when_some(col_status, |d, st| d.child(mark(st, k)))
                         // porta: arraste até outra coluna para criar a relação
                         .child(
                             div()
@@ -2014,11 +2439,16 @@ impl Diagram {
                                 .border_color(g.accent)
                                 .bg(g.card)
                                 .invisible()
-                                .group_hover("col", gpui_kit::Styled::visible)
-                                .cursor_crosshair()
+                                .when(!in_diff, |d| {
+                                    d.group_hover("col", gpui_kit::Styled::visible)
+                                        .cursor_crosshair()
+                                })
                                 .on_mouse_down(
                                     MouseButton::Left,
                                     cx.listener(move |this, e: &MouseDownEvent, window, cx| {
+                                        if this.diff.is_some() {
+                                            return;
+                                        }
                                         this.interrupt_motion();
                                         window.focus(&this.focus, cx);
                                         let now = this.to_world(e.position);
@@ -2034,10 +2464,24 @@ impl Diagram {
                         .into_any_element(),
                 );
             }
+            // modo Comparar: colunas removidas no fim do cartão (não deslocam as arestas)
+            let ghost_cols = dv
+                .as_ref()
+                .and_then(|v| v.tables.get(&qname))
+                .map(|d| d.ghost_columns.as_slice())
+                .unwrap_or_default();
+            for c in ghost_cols {
+                rows.push(
+                    ghost_row(g, &c.name, &c.ty, z * scale)
+                        .child(mark(DiffStatus::Removed, z))
+                        .into_any_element(),
+                );
+            }
+            let n_rows = t.columns.len() + ghost_cols.len();
             let table_dim = match &focus_sub {
                 Some(sub) if !sub.tables.contains(&qname) => FOCUS_DIM,
                 _ => 1.0,
-            };
+            } * diff_dim(table_status);
             let table_note = t
                 .note
                 .as_deref()
@@ -2052,15 +2496,16 @@ impl Diagram {
                     .aria_label(crate::i18n::t("Tabela {}").replace("{}", &qname))
                     .absolute()
                     .left(px(sx + CARD_W * z * (1. - scale) / 2.))
-                    .top(px(
-                        sy + card_h(t.columns.len()) * z * (1. - scale) / 2. - 3. * lift
-                    ))
+                    .top(px(sy + card_h(n_rows) * z * (1. - scale) / 2. - 3. * lift))
                     .w(s(CARD_W))
-                    .h(s(card_h(t.columns.len())))
+                    .h(s(card_h(n_rows)))
                     .rounded(s(CARD_R))
                     .group("card")
                     .border_1()
-                    .border_color(motion::color(g.edge_soft, g.accent, on))
+                    .border_color(table_status.map_or_else(
+                        || motion::color(g.edge_soft, g.accent, on),
+                        |st| diff_color(g, st),
+                    ))
                     .opacity(appear * table_dim)
                     // sombra suave sempre; selecionado ganha o anel do destaque
                     .shadow({
@@ -2074,14 +2519,21 @@ impl Diagram {
                             halo.color = halo.color.opacity(on * appear.powi(3));
                             sh.push(halo);
                         }
+                        if let Some(st) = table_status {
+                            sh.push(diff_halo(diff_color(g, st)));
+                        }
                         sh
                     })
                     .bg(g.card)
-                    .when(self.tool == Tool::Select, gpui_kit::Styled::cursor_move)
+                    .when(
+                        self.tool == Tool::Select && !in_diff,
+                        gpui_kit::Styled::cursor_move,
+                    )
                     .on_mouse_down(
                         MouseButton::Left,
                         cx.listener(move |this, e: &MouseDownEvent, window, cx| {
-                            if this.tool == Tool::Hand || this.space {
+                            // modo Comparar: sem seleção/arrasto; o fundo move a vista
+                            if this.tool == Tool::Hand || this.space || this.diff.is_some() {
                                 return;
                             }
                             this.interrupt_motion();
@@ -2199,41 +2651,44 @@ impl Diagram {
                                     .font_weight(FontWeight::MEDIUM)
                                     .text_color(g.text_faint)
                                     .child(t.columns.len().to_string()),
-                            ),
-                    )
-                    .child(div().pt(s(4.)).children(rows))
-                    .child({
-                        let table = qname.clone();
-                        div()
-                            .id(SharedString::from(format!("addcol-{qname}")))
-                            .role(Role::Button)
-                            .aria_label(crate::i18n::t("Adicionar coluna"))
-                            .absolute()
-                            .bottom(s(-11.))
-                            .left(s(CARD_W / 2. - 11.))
-                            .size(s(22.))
-                            .rounded_full()
-                            .border_1()
-                            .border_color(g.edge)
-                            .bg(g.card)
-                            .flex()
-                            .items_center()
-                            .justify_center()
-                            .invisible()
-                            .group_hover("card", gpui_kit::Styled::visible)
-                            .hover({
-                                let a = g.accent;
-                                move |st| st.border_color(a)
-                            })
-                            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-                            .on_click(cx.listener(move |_, _, _, cx| {
-                                cx.emit(DiagramEvent::AddColumn(table.clone()));
-                            }))
-                            .child(
-                                Icon::new(IconName::Plus)
-                                    .size(s(12.))
-                                    .text_color(g.text_muted),
                             )
+                            .when_some(table_status, |d, st| d.child(mark(st, z))),
+                    )
+                    .child(div().pt(s(CARD_ROWS_TOP_PAD)).children(rows))
+                    .when(!in_diff, |d| {
+                        d.child({
+                            let table = qname.clone();
+                            div()
+                                .id(SharedString::from(format!("addcol-{qname}")))
+                                .role(Role::Button)
+                                .aria_label(crate::i18n::t("Adicionar coluna"))
+                                .absolute()
+                                .bottom(s(-11.))
+                                .left(s(CARD_W / 2. - 11.))
+                                .size(s(22.))
+                                .rounded_full()
+                                .border_1()
+                                .border_color(g.edge)
+                                .bg(g.card)
+                                .flex()
+                                .items_center()
+                                .justify_center()
+                                .invisible()
+                                .group_hover("card", gpui_kit::Styled::visible)
+                                .hover({
+                                    let a = g.accent;
+                                    move |st| st.border_color(a)
+                                })
+                                .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                                .on_click(cx.listener(move |_, _, _, cx| {
+                                    cx.emit(DiagramEvent::AddColumn(table.clone()));
+                                }))
+                                .child(
+                                    Icon::new(IconName::Plus)
+                                        .size(s(12.))
+                                        .text_color(g.text_muted),
+                                )
+                        })
                     }),
             );
         }
@@ -2289,6 +2744,13 @@ impl Diagram {
                 }
                 None => 1.0,
             };
+            let enum_diff = dv.as_ref().and_then(|v| v.enums.get(&en.name));
+            let enum_status = enum_diff.map(|d| d.status);
+            let enum_dim = enum_dim * diff_dim(enum_status);
+            let value_status = |name: &str| enum_diff.and_then(|d| d.values.get(name).copied());
+            let ghost_values = enum_diff
+                .map(|d| d.ghost_values.as_slice())
+                .unwrap_or_default();
             let card = div()
                 .id(SharedString::from(format!("enum-card-{}", en.name)))
                 .absolute()
@@ -2299,7 +2761,10 @@ impl Diagram {
                 .w(s(ENUM_W))
                 .rounded(s(CARD_R))
                 .border_1()
-                .border_color(motion::color(g.edge, g.accent, on))
+                .border_color(enum_status.map_or_else(
+                    || motion::color(g.edge, g.accent, on),
+                    |st| diff_color(g, st),
+                ))
                 .opacity(appear * enum_dim)
                 .shadow({
                     let mut shadow = card_shadow(g.mode);
@@ -2312,14 +2777,20 @@ impl Diagram {
                         halo.color = halo.color.opacity(selected * appear.powi(3));
                         sh.push(halo);
                     }
+                    if let Some(st) = enum_status {
+                        sh.push(diff_halo(diff_color(g, st)));
+                    }
                     sh
                 })
                 .bg(g.card)
-                .when(self.tool == Tool::Select, gpui_kit::Styled::cursor_move)
+                .when(
+                    self.tool == Tool::Select && !in_diff,
+                    gpui_kit::Styled::cursor_move,
+                )
                 .on_mouse_down(
                     MouseButton::Left,
                     cx.listener(move |this, e: &MouseDownEvent, window, cx| {
-                        if this.tool == Tool::Hand || this.space {
+                        if this.tool == Tool::Hand || this.space || this.diff.is_some() {
                             return;
                         }
                         this.interrupt_motion();
@@ -2373,13 +2844,42 @@ impl Diagram {
                         .text_size(s(12.5))
                         .text_color(g.text_muted)
                         .children(shown.map(|v| {
+                            let st = value_status(&v.name);
                             div()
                                 .h(s(ENUM_ROW_H))
                                 .flex()
                                 .items_center()
                                 .gap(s(9.))
+                                .when_some(st, |d, st| {
+                                    d.bg(diff_color(g, st).opacity(DIFF_ROW_TINT))
+                                })
                                 .child(Icon::new(IconName::Dot).size(s(14.)).text_color(g.accent))
-                                .child(div().truncate().child(v.name.clone()))
+                                .child(div().flex_1().truncate().child(v.name.clone()))
+                                .when_some(st, |d, st| {
+                                    d.child(
+                                        div()
+                                            .font_weight(FontWeight::BOLD)
+                                            .text_color(diff_color(g, st))
+                                            .child(st.mark()),
+                                    )
+                                })
+                        }))
+                        .children(ghost_values.iter().map(|name| {
+                            div()
+                                .h(s(ENUM_ROW_H))
+                                .flex()
+                                .items_center()
+                                .gap(s(9.))
+                                .opacity(DIFF_GHOST_OPACITY)
+                                .bg(g.danger.opacity(DIFF_ROW_TINT))
+                                .child(Icon::new(IconName::Dot).size(s(14.)).text_color(g.danger))
+                                .child(div().flex_1().truncate().line_through().child(name.clone()))
+                                .child(
+                                    div()
+                                        .font_weight(FontWeight::BOLD)
+                                        .text_color(g.danger)
+                                        .child(DiffStatus::Removed.mark()),
+                                )
                         }))
                         .when(en.values.is_empty(), |d| {
                             d.child(
@@ -2407,6 +2907,91 @@ impl Diagram {
                 );
             root = root.child(card);
         }
+        // modo Comparar: cartões fantasma (translúcidos) do que só existe no HEAD
+        if let Some(d) = &self.diff {
+            let ghost_card = |id: String, (x, y): (f32, f32), icon: IconName, name: &str| {
+                div()
+                    .id(SharedString::from(id))
+                    .role(Role::Group)
+                    .aria_label(crate::i18n::t("Removido desde o HEAD: {}").replace("{}", name))
+                    .absolute()
+                    .left(px(x * z + pan_x))
+                    .top(px(y * z + pan_y))
+                    .rounded(s(CARD_R))
+                    .border_1()
+                    .border_color(g.danger)
+                    .bg(g.card)
+                    .opacity(DIFF_GHOST_OPACITY)
+                    .child(
+                        div()
+                            .h(s(HEADER_H))
+                            .px(s(12.))
+                            .flex()
+                            .items_center()
+                            .gap(s(9.))
+                            .border_b_1()
+                            .border_color(g.edge_soft)
+                            .child(Icon::new(icon).size(s(14.)).text_color(g.danger))
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .truncate()
+                                    .text_size(s(13.))
+                                    .font_weight(FontWeight::SEMIBOLD)
+                                    .text_color(g.text)
+                                    .line_through()
+                                    .child(name.to_owned()),
+                            )
+                            .child(
+                                div()
+                                    .font_family(FONT_MONO)
+                                    .font_weight(FontWeight::BOLD)
+                                    .text_color(g.danger)
+                                    .child(DiffStatus::Removed.mark()),
+                            ),
+                    )
+            };
+            for t in &d.view.removed_tables {
+                let qname = t.qualified_name();
+                let Some(&p) = d.ghost_tables.get(&qname) else {
+                    continue;
+                };
+                root = root.child(
+                    ghost_card(
+                        format!("{ID_DIFF_GHOST_PREFIX}-table-{qname}"),
+                        p,
+                        IconName::Table2,
+                        &qname,
+                    )
+                    .w(s(CARD_W))
+                    .h(s(card_h(t.columns.len())))
+                    .child(
+                        div()
+                            .pt(s(CARD_ROWS_TOP_PAD))
+                            .children(t.columns.iter().map(|c| ghost_row(g, &c.name, &c.ty, z))),
+                    ),
+                );
+            }
+            for en in &d.view.removed_enums {
+                let Some(&p) = d.ghost_enums.get(&en.name) else {
+                    continue;
+                };
+                root = root.child(
+                    ghost_card(
+                        format!("{ID_DIFF_GHOST_PREFIX}-enum-{}", en.name),
+                        p,
+                        IconName::List,
+                        &en.name,
+                    )
+                    .w(s(ENUM_W))
+                    .child(
+                        div()
+                            .pt(s(CARD_ROWS_TOP_PAD))
+                            .children(en.values.iter().map(|v| ghost_row(g, &v.name, "", z))),
+                    ),
+                );
+            }
+        }
         if let Some(Drag::Marquee { start, now }) = &self.drag {
             let (x0, y0) = (start.0.min(now.0), start.1.min(now.1));
             let (w, h) = ((start.0 - now.0).abs(), (start.1 - now.1).abs());
@@ -2423,6 +3008,9 @@ impl Diagram {
             );
         }
         root = root.children(self.overlays(g, window, cx));
+        if let Some(d) = &self.diff {
+            root = root.child(Self::diff_panel(d, g, cx));
+        }
         if let Some((menu, position)) = &self.context_menu {
             root = root.child(
                 deferred(
@@ -2450,6 +3038,183 @@ impl Diagram {
 }
 
 impl Diagram {
+    /// Painel de resumo do modo Comparar: contagens, itens agrupados (clique centraliza a vista),
+    /// estado vazio ("sem diferenças") e de erro (sem base no git).
+    fn diff_panel(d: &DiffSession, g: &Glass, cx: &mut Context<Self>) -> Stateful<Div> {
+        let t = crate::i18n::t;
+        let summary = d.view.summary;
+        let counts = [
+            (DiffStatus::Added, summary.added),
+            (DiffStatus::Modified, summary.modified),
+            (DiffStatus::Removed, summary.removed),
+        ];
+        let header = div()
+            .flex()
+            .items_center()
+            .gap(px(DIFF_PANEL_PAD_PX))
+            .child(
+                div()
+                    .flex_1()
+                    .text_size(TEXT_SM)
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .text_color(g.text)
+                    .child(t("Comparar com HEAD")),
+            )
+            .when(d.base.ready().is_some(), |h| {
+                h.children(counts.map(|(st, n)| {
+                    div()
+                        .font_family(FONT_MONO)
+                        .text_size(TEXT_XS)
+                        .text_color(diff_color(g, st))
+                        .child(format!("{}{n}", st.mark()))
+                }))
+            })
+            .child(
+                div()
+                    .id(ID_DIFF_EXIT)
+                    .role(Role::Button)
+                    .aria_label(t("Sair do modo Comparar"))
+                    .px(px(DIFF_PANEL_PAD_PX / 2.))
+                    .rounded(px(DIFF_PANEL_PAD_PX / 2.))
+                    .text_size(TEXT_XS)
+                    .text_color(g.text_muted)
+                    .cursor_pointer()
+                    .hover(|s| s.bg(g.hover))
+                    .tooltip(|window, cx| {
+                        Tooltip::new(crate::i18n::t("Sair do modo Comparar"))
+                            .action(&ToggleDiffMode, Some(actions::CTX))
+                            .build(window, cx)
+                    })
+                    .on_click(|_, window, cx| {
+                        window.dispatch_action(Box::new(ToggleDiffMode), cx);
+                    })
+                    .child("Esc"),
+            );
+        let message = |text: &'static str, color: Hsla| {
+            div()
+                .py(px(DIFF_PANEL_PAD_PX))
+                .text_size(TEXT_SM)
+                .text_color(color)
+                .child(t(text))
+        };
+        let body = match &d.base {
+            BaseState::Loading(_) => {
+                message("Lendo o arquivo no HEAD do git…", g.text_muted).into_any_element()
+            }
+            BaseState::Failed(msg) => message(msg, g.danger).into_any_element(),
+            BaseState::Ready(_) if d.view.is_empty() => {
+                message("Sem diferenças em relação ao HEAD", g.text_muted).into_any_element()
+            }
+            BaseState::Ready(_) => {
+                let mut list = div()
+                    .id(ID_DIFF_LIST)
+                    .flex()
+                    .flex_col()
+                    .max_h(px(DIFF_PANEL_MAX_H_PX))
+                    .overflow_y_scroll();
+                for group in DiffGroup::ALL {
+                    let n = d.view.group_count(group);
+                    if n == 0 {
+                        continue;
+                    }
+                    list = list.child(
+                        div()
+                            .pt(px(DIFF_PANEL_PAD_PX))
+                            .text_size(TEXT_XS)
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .text_color(g.text_faint)
+                            .child(format!("{} · {n}", t(diff_group_label(group)))),
+                    );
+                    for (ix, item) in d
+                        .view
+                        .items
+                        .iter()
+                        .enumerate()
+                        .filter(|(_, i)| i.group == group)
+                    {
+                        let color = diff_color(g, item.status);
+                        let current = d.cursor == Some(ix);
+                        list = list.child(
+                            div()
+                                .id((ID_DIFF_ITEM_PREFIX, ix))
+                                .role(Role::Button)
+                                .aria_label(format!("{} {}", item.status.mark(), item.label))
+                                .h(px(DIFF_ITEM_H_PX))
+                                .flex_none()
+                                .flex()
+                                .items_center()
+                                .gap(px(DIFF_PANEL_PAD_PX / 2.))
+                                .px(px(DIFF_PANEL_PAD_PX / 2.))
+                                .rounded(px(DIFF_PANEL_PAD_PX / 2.))
+                                .cursor_pointer()
+                                .when(current, |r| r.bg(g.selected))
+                                .hover(|s| s.bg(g.hover))
+                                .on_click(cx.listener(move |this, _, _, cx| {
+                                    this.focus_diff_item(ix);
+                                    cx.notify();
+                                }))
+                                .child(
+                                    div()
+                                        .flex_none()
+                                        .w(px(DIFF_MARK_W_PX))
+                                        .text_center()
+                                        .font_family(FONT_MONO)
+                                        .font_weight(FontWeight::BOLD)
+                                        .text_color(color)
+                                        .child(item.status.mark()),
+                                )
+                                .child(
+                                    div()
+                                        .flex_1()
+                                        .min_w_0()
+                                        .truncate()
+                                        .font_family(FONT_MONO)
+                                        .text_size(TEXT_XS)
+                                        .text_color(g.text)
+                                        .child(item.label.clone()),
+                                )
+                                .when(!item.detail.is_empty(), |r| {
+                                    r.child(
+                                        div()
+                                            .flex_none()
+                                            .max_w(px(DIFF_PANEL_W_PX / 2.))
+                                            .truncate()
+                                            .font_family(FONT_MONO)
+                                            .text_size(TEXT_XS)
+                                            .text_color(g.text_faint)
+                                            .child(item.detail.clone()),
+                                    )
+                                }),
+                        );
+                    }
+                }
+                list.into_any_element()
+            }
+        };
+        div()
+            .id(ID_DIFF_PANEL)
+            .role(Role::Region)
+            .aria_label(t("Comparar com HEAD"))
+            .absolute()
+            .top(px(DIFF_PANEL_MARGIN_PX))
+            .right(px(DIFF_PANEL_MARGIN_PX))
+            .w(px(DIFF_PANEL_W_PX))
+            .p(px(DIFF_PANEL_PAD_PX))
+            .flex()
+            .flex_col()
+            .rounded(px(DIFF_PANEL_MARGIN_PX))
+            .border_1()
+            .border_color(g.edge_soft)
+            .bg(g.island)
+            .shadow(elevation(g.mode))
+            .occlude()
+            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+            .on_mouse_down(MouseButton::Right, |_, _, cx| cx.stop_propagation())
+            .on_scroll_wheel(|_, _, cx| cx.stop_propagation())
+            .child(header)
+            .child(body)
+    }
+
     fn open_context_menu(
         &mut self,
         position: Point<Pixels>,
@@ -2633,6 +3398,7 @@ impl Diagram {
                 "tool-select" => self.tool == Tool::Select,
                 "tool-hand" => self.tool == Tool::Hand,
                 "tool-focus" => self.focus_mode(),
+                ID_TOOL_DIFF => self.diff_active(),
                 "tool-editor" => g.editor_open,
                 _ => false,
             };
@@ -2650,7 +3416,7 @@ impl Diagram {
                 .absolute()
                 .left(px(12.))
                 .top(relative(0.5))
-                .mt(px(-130.))
+                .mt(px(TOOL_ISLAND_OFFSET_Y_PX))
                 .child(tools)
                 .when_some(self.tour_bounds.clone(), |d, map| {
                     d.child(crate::shell::guide_ui::track_tour_anchor(
@@ -2781,8 +3547,8 @@ impl Diagram {
                             IconName::Frame,
                             crate::i18n::t("Minimapa"),
                             Box::new(ToggleMinimap),
-                            self.minimap_open && !self.schema.tables.is_empty(),
-                            !self.schema.tables.is_empty(),
+                            self.minimap_open && self.minimap_has_cards(),
+                            self.minimap_has_cards(),
                             30.,
                         ))
                         .child(tool_btn(
@@ -2798,7 +3564,7 @@ impl Diagram {
                 .into_any_element(),
         );
 
-        let minimap_visible = self.minimap_open && !self.schema.tables.is_empty();
+        let minimap_visible = self.minimap_open && self.minimap_has_cards();
         if minimap_visible && let Some((xf, vp_world)) = self.minimap_transform() {
             self.minimap_xform.set(Some(xf));
             let map_w = crate::canvas_geom::MINIMAP_W;
@@ -2869,6 +3635,19 @@ impl Diagram {
                     mm_enums.push((mx0, my0, (mx1 - mx0).max(3.), (my1 - my0).max(3.)));
                 }
             }
+            let mm_ghosts: Vec<(f32, f32, f32, f32)> = self
+                .diff
+                .as_ref()
+                .map(DiffSession::ghost_rects)
+                .unwrap_or_default()
+                .into_iter()
+                .map(|r| {
+                    let (mx0, my0) = xf.world_to_map(r.x, r.y);
+                    let (mx1, my1) = xf.world_to_map(r.x + r.w, r.y + r.h);
+                    (mx0, my0, (mx1 - mx0).max(3.), (my1 - my0).max(3.))
+                })
+                .collect();
+            let ghost_color = diff_color(g, DiffStatus::Removed);
             let (vp_left, vp_top) = xf.world_to_map(vp_world.0, vp_world.1);
             let (vp_right, vp_bottom) =
                 xf.world_to_map(vp_world.0 + vp_world.2, vp_world.1 + vp_world.3);
@@ -2971,6 +3750,18 @@ impl Diagram {
                                                 size(px(w), px(h)),
                                             ),
                                             if sel { accent } else { c.opacity(0.75) },
+                                        )
+                                        .corner_radii(px(2.)),
+                                    );
+                                }
+                                for &(x, y, w, h) in &mm_ghosts {
+                                    window.paint_quad(
+                                        fill(
+                                            Bounds::new(
+                                                bounds.origin + point(px(x), px(y)),
+                                                size(px(w), px(h)),
+                                            ),
+                                            ghost_color.opacity(DIFF_MINIMAP_GHOST_ALPHA),
                                         )
                                         .corner_radii(px(2.)),
                                     );
@@ -3225,6 +4016,45 @@ fn sel_ring(g: &Glass) -> BoxShadow {
     }
 }
 
+/// Halo do cartão alterado no modo Comparar (cor do status).
+fn diff_halo(color: Hsla) -> BoxShadow {
+    BoxShadow {
+        color: color.opacity(DIFF_HALO_ALPHA),
+        offset: point(px(0.), px(0.)),
+        blur_radius: px(0.),
+        spread_radius: px(DIFF_HALO_SPREAD_PX),
+        inset: false,
+    }
+}
+
+/// Linha fantasma (coluna/valor removido): nome riscado e tipo, sobre o tom de "removido".
+fn ghost_row(g: &Glass, name: &str, ty: &str, k: f32) -> Div {
+    div()
+        .h(px(ROW_H * k))
+        .px(px(12. * k))
+        .flex()
+        .items_center()
+        .gap(px(8. * k))
+        .text_size(px(12.5 * k))
+        .bg(g.danger.opacity(DIFF_ROW_TINT))
+        .opacity(DIFF_GHOST_OPACITY)
+        .child(
+            div()
+                .flex_1()
+                .truncate()
+                .line_through()
+                .text_color(g.text_muted)
+                .child(name.to_owned()),
+        )
+        .child(
+            div()
+                .text_size(px(11. * k))
+                .font_family(FONT_MONO)
+                .text_color(g.text_faint)
+                .child(ty.to_owned()),
+        )
+}
+
 /// Selo mono 600 9.5px (FK, NN, UQ, IDX, ENUM). `k` escala com o zoom (1 fora do mundo).
 fn badge(label: &'static str, bg: Hsla, fg: Hsla, k: f32) -> Div {
     div()
@@ -3294,6 +4124,13 @@ fn tool_items() -> Vec<ToolItem> {
             IconName::Scan,
             crate::i18n::t("Modo Foco (vizinhança FK)"),
             Box::new(ToggleFocusMode),
+            false,
+        ),
+        (
+            ID_TOOL_DIFF,
+            IconName::GitCompare,
+            crate::i18n::t("Comparar com HEAD (git)"),
+            Box::new(ToggleDiffMode),
             false,
         ),
         (
@@ -3493,6 +4330,27 @@ mod tests {
                     d.pos.get_mut("c").unwrap().0 += 10.;
                     d.validate_routes();
                     assert!(!Rc::ptr_eq(&first, &d.ref_geom(0).unwrap()));
+                    // modo Comparar: base lida em segundo plano; só o último pedido é aceito
+                    let stale = d.begin_diff();
+                    let ticket = d.begin_diff();
+                    assert!(d.diff_waiting_for(ticket) && !d.diff_waiting_for(stale));
+                    assert!(!d.finish_diff(stale, Ok(Schema::default())));
+                    let base = dbml_analysis::analyze(
+                        "Table a {\n id int\n}\nTable b {\n id int\n}\nTable c {\n id int\n}\nTable old {\n id int\n}",
+                    );
+                    assert!(d.finish_diff(ticket, Ok(base)));
+                    assert!(!d.diff_waiting_for(ticket));
+                    // o cartão fantasma (abaixo do diagrama) cabe no "ajustar à tela"
+                    let ghost = d.diff.as_ref().unwrap().ghost_rects()[0];
+                    d.do_fit();
+                    let (vw, vh) = (f32::from(d.size.width), f32::from(d.size.height));
+                    let (gx0, gy0) = (ghost.x * d.zoom + d.pan.0, ghost.y * d.zoom + d.pan.1);
+                    let (gx1, gy1) = (gx0 + ghost.w * d.zoom, gy0 + ghost.h * d.zoom);
+                    assert!(gx0 >= 0. && gy0 >= 0. && gx1 <= vw && gy1 <= vh, "{ghost:?}");
+                    assert!(d.minimap_has_cards());
+                    d.exit_diff();
+                    assert!(!d.finish_diff(ticket, Ok(Schema::default())));
+                    assert!(!d.diff_active());
                     cx.notify();
                 });
                 draw(cx);
@@ -3585,7 +4443,7 @@ mod tests {
     /// Ações e divisores da ilha de ferramentas.
     #[::core::prelude::v1::test]
     fn tool_island_order_and_separators() {
-        let want: [(&str, &dyn Action, bool); 8] = [
+        let want: [(&str, &dyn Action, bool); 9] = [
             ("tool-select", &ToolSelect, false),
             ("tool-hand", &ToolHand, false),
             ("tool-table", &NewTable, true),
@@ -3593,6 +4451,7 @@ mod tests {
             ("tool-group", &GroupSelection, false),
             ("tool-layout", &Relayout, true),
             ("tool-focus", &ToggleFocusMode, false),
+            (ID_TOOL_DIFF, &ToggleDiffMode, false),
             ("tool-editor", &ToggleEditor, false),
         ];
         let got = tool_items();
@@ -3601,6 +4460,70 @@ mod tests {
             assert_eq!((*id, *sep), (wid, wsep));
             assert!(a.partial_eq(wa), "{id}: ação errada");
         }
+    }
+
+    fn diff_session(base: &str, head: &Schema) -> DiffSession {
+        let base = dbml_analysis::analyze(base);
+        let view = crate::diff_view::build_diff_view(&schema::diff_schemas(&base, head));
+        DiffSession {
+            base: BaseState::Ready(base),
+            view: Rc::new(view),
+            ghost_tables: HashMap::from([("old".to_string(), (0., 900.))]),
+            ghost_enums: HashMap::from([("gone".to_string(), (400., 900.))]),
+            cursor: None,
+            saved: DiffSaved {
+                pan: (0., 0.),
+                zoom: 1.,
+                selected: None,
+                selected_enum: None,
+                multi: Vec::new(),
+                selected_ref: None,
+                focus_mode: false,
+                highlighted_column: None,
+            },
+        }
+    }
+
+    /// Cartões fantasma (removidos) entram nos limites do "ajustar à tela" e do minimapa.
+    #[::core::prelude::v1::test]
+    fn ghost_cards_extend_the_diagram_bounds() {
+        let head = dbml_analysis::analyze("Table a {\n id int\n}\n");
+        let s = diff_session(
+            "Table a {\n id int\n}\nTable old {\n id int\n x int\n}\nEnum gone {\n  v\n}\n",
+            &head,
+        );
+        let ghosts = s.ghost_rects();
+        let old_h = card_h(2);
+        assert_eq!(ghosts.len(), 2);
+        assert!(ghosts.contains(&layout::Rect {
+            x: 0.,
+            y: 900.,
+            w: CARD_W,
+            h: old_h
+        }));
+        let gone = &dbml_analysis::analyze("Enum gone {\n  v\n}\n").enums[0];
+        assert!(ghosts.contains(&layout::Rect {
+            x: 400.,
+            y: 900.,
+            w: ENUM_W,
+            h: enum_h(gone)
+        }));
+        let head_card = layout::Rect {
+            x: 0.,
+            y: 0.,
+            w: CARD_W,
+            h: card_h(1),
+        };
+        let b = crate::canvas_geom::world_bounds(std::iter::once(head_card).chain(ghosts));
+        assert_eq!(
+            b,
+            Some((0., 0., 400. + ENUM_W, 900. + old_h.max(enum_h(gone))))
+        );
+        // base ainda carregando: nenhum fantasma
+        let mut loading = diff_session("Table old {}\n", &head);
+        loading.base = BaseState::Loading(1);
+        loading.view = Rc::default();
+        assert_eq!(loading.ghost_rects(), Vec::new());
     }
 
     /// Enum v4: cabeçalho + linhas de 26px + 6px de respiro em cima e embaixo.

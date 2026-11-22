@@ -938,6 +938,41 @@ const TRANSLATIONS: &[(&str, &str)] = &[
     ("RECENTES", "RECENT"),
     ("SVG vetorial", "SVG vector"),
     ("somente leitura", "read-only"),
+    ("Comparar com HEAD (git)", "Compare with HEAD (git)"),
+    ("Comparar com HEAD", "Compare with HEAD"),
+    ("Comparar: próxima mudança", "Compare: next change"),
+    ("Comparar: mudança anterior", "Compare: previous change"),
+    ("Sair do modo Comparar", "Exit Compare mode"),
+    (
+        "Lendo o arquivo no HEAD do git…",
+        "Reading the file at git HEAD…",
+    ),
+    (
+        "Sem diferenças em relação ao HEAD",
+        "No differences from HEAD",
+    ),
+    ("Removido desde o HEAD: {}", "Removed since HEAD: {}"),
+    (
+        "Comparar com HEAD (somente leitura) · clique em um item do resumo · N / Shift+N navega · Esc sai",
+        "Compare with HEAD (read-only) · click a summary item · N / Shift+N to navigate · Esc to exit",
+    ),
+    (
+        "Salve o arquivo para comparar com o HEAD do git",
+        "Save the file to compare it with git HEAD",
+    ),
+    ("git não encontrado no PATH", "git not found on PATH"),
+    (
+        "O arquivo não está em um repositório git",
+        "The file is not in a git repository",
+    ),
+    (
+        "O repositório ainda não tem commits",
+        "The repository has no commits yet",
+    ),
+    (
+        "Arquivo novo ou não rastreado: não existe no HEAD",
+        "New or untracked file: it does not exist in HEAD",
+    ),
     ("Modo", "Mode"),
     (
         "não foi possível gravar o layout de {}: {}",

@@ -45,6 +45,7 @@ export const TRANSPORT_EVENT = {
   PATCH_REJECTED: 'patch_rejected',
   EXTERNAL_CHANGE: 'external_change',
   WORKSPACE_FILES: 'workspace_files',
+  GIT_BASE_RESULT: 'git_base_result',
 } as const;
 
 export const TRANSPORT_COMMAND = {
@@ -52,7 +53,58 @@ export const TRANSPORT_COMMAND = {
   SAVE_DOCUMENT: 'save_document',
   SAVE_LAYOUT: 'save_layout',
   SAVE_GUIDE_STATE: 'save_guide_state',
+  GIT_BASE: 'git_base',
 } as const;
+
+/** Códigos de erro de `git_base_result` (CLI `dbml run` e extensão VS Code usam os mesmos). */
+export const GIT_BASE_ERROR = {
+  GIT_UNAVAILABLE: 'git_unavailable',
+  NOT_A_REPO: 'not_a_repo',
+  NO_COMMITS: 'no_commits',
+  UNTRACKED: 'untracked',
+  NOT_UTF8: 'not_utf8',
+  OTHER: 'other',
+} as const;
+
+/** Erros do modo Comparar além dos de `git_base_result`. */
+export const DIFF_ERROR = {
+  BASE_INVALID: 'base_invalid',
+  HEAD_INVALID: 'head_invalid',
+  UNSUPPORTED: 'unsupported',
+} as const;
+
+/** Modo Comparar: textos que não são traduzidos (símbolos, ids de DOM e atributos). */
+export const DIFF_PANE_ID = 'diff';
+export const DIFF_ACT = {
+  FOCUS: 'diff-focus',
+  RETRY: 'diff-retry',
+  EXIT: 'ToggleDiff',
+} as const;
+/** Cor (variável CSS do tema) por status: verde = adicionado, âmbar = modificado, vermelho = removido. */
+export const DIFF_STATUS_COLOR_VAR = {
+  added: 'var(--ok)',
+  modified: 'var(--warning)',
+  removed: 'var(--danger)',
+} as const;
+/** Opacidade (0-1) dos cartões fantasma de itens removidos. */
+export const DIFF_GHOST_OPACITY = 0.55;
+/** Espessura (px de mundo) das arestas adicionadas/modificadas. */
+export const DIFF_EDGE_WIDTH = 2.2;
+/** Traço tracejado das arestas removidas (`stroke-dasharray`). */
+export const DIFF_GHOST_DASH = '6 4';
+/** Traço tracejado (`stroke-dasharray`, px do minimapa) do contorno dos cartões fantasma no minimapa. */
+export const MINIMAP_GHOST_DASH = '3 2';
+/** Espessura (px de mundo) da aresta removida. */
+export const DIFF_GHOST_EDGE_WIDTH = 1.6;
+/** Largura (px) e altura estimada de um cartão de enum (espelha `.card.enum-card` no CSS). */
+export const ENUM_CARD_W = 220;
+export const ENUM_CARD_HEAD_H = 40;
+export const ENUM_CARD_ROW_H = 26;
+export const ENUM_CARD_PAD_H = 12;
+/** Zoom mínimo ao focar um item do resumo (não afasta a vista se já estiver perto). */
+export const DIFF_FOCUS_MIN_ZOOM = 0.85;
+/** Folga (px de mundo) ao enquadrar o item focado. */
+export const DIFF_FOCUS_PAD = 40;
 
 export const GUIDE_STORAGE_KEY = {
   ONBOARDING_DONE: 'dbmodeling.onboardingDone',

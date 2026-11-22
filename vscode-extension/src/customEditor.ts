@@ -6,6 +6,7 @@ import {
   CSP_NONCE_BYTES,
   DELTA_OVERHEAD_BYTES,
   DELTA_SIZE_RATIO,
+  GIT_BASE_ERROR,
   GLOBAL_STATE_KEY,
   HEX_PAD_CHAR,
   HEX_PAD_LEN,
@@ -21,6 +22,7 @@ import {
   WEBVIEW_TITLE,
   WEBVIEW_WASM_BUNDLE,
 } from './constants.js';
+import { gitHeadError, type GitHeadResult } from './gitBase.js';
 import { parseWebviewMessage, type WebviewMessage } from './messages.js';
 import { sanitizeSession } from './session.js';
 import { isAllowedDbmlUri } from './uriPolicy.js';
@@ -322,6 +324,24 @@ export class DbmlCustomEditorProvider implements vscode.CustomTextEditorProvider
                 error: e instanceof Error ? e.message : String(e),
               });
             }
+            break;
+          }
+          case WEBVIEW_COMMAND.GIT_BASE: {
+            // Modo Comparar: leitura do arquivo no HEAD do git. Só arquivos locais, só em workspace confiável.
+            let result: GitHeadResult;
+            try {
+              if (document.uri.scheme !== 'file') result = gitHeadError(GIT_BASE_ERROR.NOT_A_REPO);
+              else if (!vscode.workspace.isTrusted) {
+                result = { ok: false, code: GIT_BASE_ERROR.OTHER, message: 'Compare mode is disabled in untrusted workspaces. Trust this workspace to use it.' };
+              } else result = await this.cli.readGitHead(document.uri.fsPath);
+            } catch (e) {
+              result = { ok: false, code: GIT_BASE_ERROR.OTHER, message: e instanceof Error ? e.message : String(e) };
+            }
+            void webview.postMessage(
+              result.ok
+                ? { type: WEBVIEW_OUTBOUND_TYPE.GIT_BASE_RESULT, id: message.id, source: result.source }
+                : { type: WEBVIEW_OUTBOUND_TYPE.GIT_BASE_RESULT, id: message.id, error: result.message, error_code: result.code }
+            );
             break;
           }
           case 'open_file': {
