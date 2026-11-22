@@ -5,12 +5,16 @@
  */
 
 import {
+  CONNECT_DIALOG,
   CONNECT_NETWORK_ROW_IDS,
   DIFF_ACT,
   DIFF_EDGE_WIDTH,
   MINIMAP_GHOST_DASH,
   DIFF_PANE_ID,
   DIFF_STATUS_COLOR_VAR,
+  COPY_FEEDBACK_MS,
+  ENGINE_COMING_SOON,
+  ENGINE_COMING_SOON_LABEL,
   GUIDE_STORAGE_KEY,
   JUNCTION_ACTION,
   JUNCTION_INPUT_ID,
@@ -21,6 +25,8 @@ import {
   TLS_ROW_ID,
   TLS_SELECT_ID,
   TLS_SELECT_OPTIONS,
+  URL_PARSE_DEBOUNCE_MS,
+  URL_PASTE_SETTLE_MS,
 } from './constants';
 import {
   Command,
@@ -32,6 +38,7 @@ import {
   SidecarLayout,
   ConnectionState,
   IntrospectRequest,
+  TlsMode,
   WasmApi,
   WasmSession,
   EdgeStyle,
@@ -67,7 +74,8 @@ import { curvedEdge, edgeDrawing } from './edge-path';
 import { MOTION, actSelector, cssQ, easeOut, lerp, noMotion } from './motion';
 import { exportToMermaid, exportToSvg, exportSvgStringToRasterBlob } from './export';
 import { canvasGridStep, canvasGroups } from './scene-style';
-import { ConnectDbModel, DB_ENGINES, DbEngine, INTROSPECT_TIMEOUT_MS, IntrospectGuard, buildRequest } from './connect-db';
+import { ConnectDbModel, DB_ENGINES, DbEngine, INTROSPECT_TIMEOUT_MS, IntrospectGuard, nextEnabledOption, urlErrorMessage } from './connect-db';
+import { copyText } from './clipboard';
 import { IMPORT_DIALECTS, ImportDialect, ImportSqlModel, ImportSqlResult } from './import-sql';
 import { APP_VERSION, GuideState, PRODUCT_GUIDE, TourTarget, decideStartupGuide, pickText } from './guide';
 import { TourController } from './tour';
@@ -298,6 +306,8 @@ export class Workbench {
   private minimapVpRect: { x: number; y: number; w: number; h: number } | null = null;
   private minimapDrag: { grabX: number; grabY: number } | null = null;
   private connectEngine: DbEngine = 'postgres';
+  /** Diálogo "Conectar ao banco" aberto, para a ação de revelar a senha da command palette. */
+  private connectDialog: { bg: HTMLElement; togglePassword: () => void } | null = null;
   private importDialect: ImportDialect = 'postgres';
   private focusCol: [string, string] | null = null;
   private openCol: string | null = null;
@@ -2746,6 +2756,7 @@ export class Workbench {
       case 'ExportSqlOracle': this.doExportSql('oracle'); return;
       case 'ImportSqlDdl': this.openImportSqlModal(); return;
       case 'ConnectDatabase': this.openConnectDbModal(); return;
+      case 'ToggleConnectPassword': this.connectDialogOpen()?.togglePassword(); return;
       case 'AddPresetUuidPk': case 'AddPresetBigIntPk': case 'AddPresetTimestamps': case 'AddPresetSoftDelete':
         this.applyColumnPreset(id);
         return;
@@ -2976,14 +2987,18 @@ export class Workbench {
     );
   }
 
-  private modal(inner: string, cls = '', bgCls = ''): HTMLElement {
-    this.closeModal();
+  /** `stacked` abre sobre o modal atual em vez de substituí-lo (a paleta sobre o diálogo de conexão). */
+  private modal(inner: string, cls = '', bgCls = '', stacked = false): HTMLElement {
+    if (!stacked) this.closeModal();
     const bg = document.createElement('div');
     bg.className = 'modal-bg ' + bgCls;
     bg.dataset.modal = '1';
+    if (stacked) bg.dataset.stacked = '1';
     bg.innerHTML = `<div class="modal ${cls}">${inner}</div>`;
     bg.addEventListener('mousedown', (e) => {
-      if (e.target === bg) this.closeModal();
+      if (e.target !== bg) return;
+      if (stacked) this.closePalette();
+      else this.closeModal();
     });
     this.wb.appendChild(bg);
     return bg;
@@ -2997,6 +3012,22 @@ export class Workbench {
     this.whatsNewOpen = false;
   }
 
+  /** O diálogo de conexão, enquanto estiver no DOM e não estiver saindo. */
+  private connectDialogOpen(): { bg: HTMLElement; togglePassword: () => void } | null {
+    const dialog = this.connectDialog;
+    if (dialog && dialog.bg.isConnected && !dialog.bg.classList.contains('out')) return dialog;
+    this.connectDialog = null;
+    return null;
+  }
+
+  /** Fecha a paleta; se ela está sobre o diálogo de conexão, só ela sai e o diálogo continua. */
+  private closePalette(): void {
+    const stacked = this.wb.querySelector<HTMLElement>('[data-stacked]:not(.out)');
+    if (!stacked) { this.closeModal(); return; }
+    this.paletteOpen = false;
+    this.fadeOut(stacked);
+  }
+
   private importConflicts(dbml: string): string[] {
     return dbml ? this.wasm?.import_conflicts?.(this.source, dbml) ?? [] : [];
   }
@@ -3007,31 +3038,55 @@ export class Workbench {
       return;
     }
     const introspect = this.transport.introspect.bind(this.transport);
-    const model = new ConnectDbModel(this.connectEngine);
-    const field = (id: string, label: string, ph: string, type = 'text') =>
+    const parseUrl = this.wasm?.parse_connection_url?.bind(this.wasm);
+    const model = new ConnectDbModel(this.connectEngine, parseUrl);
+    const ids = CONNECT_DIALOG;
+    const input = (id: string, ph: string, extra = '') =>
+      `<input id="db-${id}" type="text" placeholder="${esc(translate(ph))}" autocomplete="off" spellcheck="false" ${extra}>`;
+    const field = (id: string, label: string, ph: string) =>
       `<label data-row="${id}" for="db-${id}">${translate(label)}</label>
-       <input data-row="${id}" id="db-${id}" type="${type}" placeholder="${esc(translate(ph))}" autocomplete="off" spellcheck="false">`;
+       <div class="mpair" data-row="${id}">${input(id, ph)}</div>`;
+    const engineOptions = [
+      ...DB_ENGINES.map((e) => ({ value: e.value as string, label: e.label, disabled: false })),
+      { value: ENGINE_COMING_SOON, label: ENGINE_COMING_SOON_LABEL, disabled: true },
+    ];
 
     const bg = this.modal(`
       <div role="dialog" aria-modal="true" aria-labelledby="db-title" style="display:flex;flex-direction:column;min-height:0;overflow:auto">
         <div class="mhd"><div><div class="tt" id="db-title">${translate("Conectar ao banco")}</div><div class="st">${translate("Faça engenharia reversa de um esquema existente para DBML.")}</div></div><span class="grow"></span>
-          <button class="ib" id="db-x" type="button" title="${t("Fechar")}">${ICON('X', 15)}</button></div>
-        <div style="padding:14px 18px 6px"><div class="seg row acc" id="db-engines">
-          ${DB_ENGINES.map((e) => `<button type="button" data-engine="${e.value}">${e.label}</button>`).join('')}
-          <button type="button" disabled title="${translate("Suporte a Oracle em breve")}">${translate("Oracle (em breve)")}</button>
-        </div></div>
+          <button class="ib" id="db-x" type="button" title="${t("Fechar")}" aria-label="${t("Fechar")}">${ICON('X', 15)}</button></div>
         <div class="mform" id="db-form">
-          ${field('host', 'Host', 'localhost')}
-          ${field('port', 'Porta', 'porta padrão')}
+          <label id="${ids.ENGINE_LABEL_ID}" data-row="${ids.ROW_ENGINE}" for="${ids.ENGINE_TRIGGER_ID}">${translate("Tipo de banco")}</label>
+          <div class="dd mpair" data-row="${ids.ROW_ENGINE}">
+            <button type="button" id="${ids.ENGINE_TRIGGER_ID}" class="dd-trigger" role="combobox" aria-haspopup="listbox" aria-expanded="false"
+              aria-controls="${ids.ENGINE_LIST_ID}" aria-labelledby="${ids.ENGINE_LABEL_ID} ${ids.ENGINE_VALUE_ID}">
+              <span id="${ids.ENGINE_VALUE_ID}"></span>${ICON('ChevronDown', 14)}</button>
+            <div id="${ids.ENGINE_LIST_ID}" class="menu dd-list" role="listbox" aria-labelledby="${ids.ENGINE_LABEL_ID}" hidden>
+              ${engineOptions.map((o) => `<div class="mi" role="option" id="${ids.ENGINE_OPTION_ID_PREFIX}${o.value}" data-value="${o.value}" aria-selected="false"${o.disabled ? ' aria-disabled="true"' : ''}>${esc(o.label)}${o.disabled ? `<span class="k">${translate("em breve")}</span>` : ''}</div>`).join('')}
+            </div>
+          </div>
+          <label data-row="${ids.ROW_URL}" for="${ids.URL_ID}">${translate("Connection string")}</label>
+          <div class="mcell" data-row="${ids.ROW_URL}">
+            <div class="mpair">
+              ${input('url', '', model.canParse ? '' : 'readonly')}
+              <button class="btn sm" id="${ids.URL_COPY_ID}" type="button" title="${esc(translate("Copia a string com a senha mascarada (***)"))}">${ICON('Copy', 13)}<span id="${ids.URL_COPY_LABEL_ID}">${translate("Copiar string")}</span></button>
+            </div>
+            <div class="ferr" id="${ids.URL_ERROR_ID}" aria-live="polite"></div>
+          </div>
+          <label data-row="host" for="db-host">Host</label>
+          <div class="mpair" data-row="host">${input('host', 'localhost')}<label class="inl" for="db-port">${translate("Porta")}</label>${input('port', 'porta padrão', 'inputmode="numeric" class="narrow"')}</div>
           ${field('database', 'Banco', 'nome do banco')}
-          ${field('user', 'Usuário', 'usuário')}
-          ${field('password', 'Senha', 'senha', 'password')}
+          <label data-row="user" for="db-user">${translate("Usuário")}</label>
+          <div class="mpair" data-row="user">${input('user', 'usuário')}<label class="inl" for="${ids.PASSWORD_ID}">${translate("Senha")}</label>
+            <div class="pwd"><input id="${ids.PASSWORD_ID}" type="password" placeholder="${esc(translate('senha'))}" autocomplete="off" spellcheck="false">
+              <button type="button" class="ib" id="${ids.PASSWORD_TOGGLE_ID}" aria-pressed="false" aria-label="${translate("Mostrar senha")}" title="${translate("Mostrar senha")}">${ICON('Eye', 15)}</button></div></div>
           ${field('schemas', 'Schemas', 'todos os schemas (ou: public, sales)')}
           <label data-row="${TLS_ROW_ID}" for="${TLS_SELECT_ID}">${TLS_FIELD_LABEL}</label>
           <select data-row="${TLS_ROW_ID}" id="${TLS_SELECT_ID}" class="fld">
             ${TLS_SELECT_OPTIONS.map((opt) => `<option value="${opt.value}">${translate(opt.labelKey)}</option>`).join('')}
           </select>
-          ${field('path', 'Arquivo', '/caminho/para/banco.sqlite')}
+          <label data-row="path" for="db-path">${translate("Arquivo")}</label>
+          <div class="mpair" data-row="path">${input('path', '/caminho/para/banco.sqlite')}</div>
           <label class="chk" data-row="trust"><input id="db-trust" type="checkbox">${translate("Confiar no certificado do servidor (autoassinado, ex.: Docker)")}</label>
         </div>
         <div class="mnote" id="db-note"><span id="db-ico" style="color:var(--ok);display:flex">${ICON('ShieldCheck', 14)}</span><span id="db-status" aria-live="polite"></span></div>
@@ -3046,7 +3101,6 @@ export class Workbench {
       </div>`, 'w560', 'top76');
 
     const $ = <T extends HTMLElement>(sel: string) => bg.querySelector(sel) as T;
-    const val = (id: string) => $<HTMLInputElement>(`#db-${id}`).value;
     const statusEl = $<HTMLElement>('#db-status');
     const warnsEl = $<HTMLElement>('#db-warns');
     const connectBtn = $<HTMLButtonElement>('#db-connect');
@@ -3055,21 +3109,61 @@ export class Workbench {
     const insertBtn = $<HTMLButtonElement>('#db-insert');
     let cliStatus: 'checking' | 'ready' | 'missing' = this.transport.checkDatabaseSupport ? 'checking' : 'ready';
 
-    const syncView = () => {
+    const urlInput = $<HTMLInputElement>(`#${ids.URL_ID}`);
+    const urlErrorEl = $<HTMLElement>(`#${ids.URL_ERROR_ID}`);
+    const copyBtn = $<HTMLButtonElement>(`#${ids.URL_COPY_ID}`);
+    const pwdInput = $<HTMLInputElement>(`#${ids.PASSWORD_ID}`);
+    const pwdToggle = $<HTMLButtonElement>(`#${ids.PASSWORD_TOGGLE_ID}`);
+    const trigger = $<HTMLButtonElement>(`#${ids.ENGINE_TRIGGER_ID}`);
+    const list = $<HTMLElement>(`#${ids.ENGINE_LIST_ID}`);
+    const optionEls = [...list.querySelectorAll<HTMLElement>('[role="option"]')];
+    const FIELD_NAMES = ['host', 'port', 'database', 'user', 'password', 'path', 'schemas'] as const;
+    let urlTimer: number | undefined;
+    let copyTimer: number | undefined;
+
+    const setHidden = (sel: string, hidden: boolean, shown = '') =>
+      bg.querySelectorAll<HTMLElement>(sel).forEach((n) => (n.style.display = hidden ? 'none' : shown));
+
+    /** Campos, string, dropdown, senha e erro: tudo que depende só do model. */
+    const syncForm = () => {
       const isFile = model.engine === 'sqlite';
       const connecting = model.status === 'connecting';
-      for (const id of CONNECT_NETWORK_ROW_IDS) {
-        bg.querySelectorAll<HTMLElement>(`[data-row="${id}"]`).forEach((n) => (n.style.display = isFile ? 'none' : ''));
+      for (const id of CONNECT_NETWORK_ROW_IDS) setHidden(`[data-row="${id}"]`, isFile);
+      setHidden('[data-row="path"]', !isFile);
+      setHidden('[data-row="trust"]', model.engine !== 'sqlserver', 'flex');
+      for (const name of FIELD_NAMES) {
+        const el = $<HTMLInputElement>(`#db-${name}`);
+        if (el.value !== model.fields[name]) el.value = model.fields[name];
       }
-      bg.querySelectorAll<HTMLElement>('[data-row="path"]').forEach((n) => (n.style.display = isFile ? '' : 'none'));
-      bg.querySelector<HTMLElement>('[data-row="trust"]')!.style.display =
-        model.engine === 'sqlserver' ? 'flex' : 'none';
-      bg.querySelectorAll<HTMLButtonElement>('[data-engine]').forEach((b) => {
-        b.classList.toggle('on', b.dataset.engine === model.engine);
-        b.disabled = connecting;
-      });
+      $<HTMLSelectElement>(`#${TLS_SELECT_ID}`).value = model.tls;
+      $<HTMLInputElement>('#db-trust').checked = model.trustCert;
       const port = DB_ENGINES.find((e) => e.value === model.engine)?.port;
       $<HTMLInputElement>('#db-port').placeholder = port ? String(port) : translate("porta padrão");
+      // com um parse pendente o campo é do usuário: não o sobrescrever no meio da digitação
+      if (urlTimer === undefined && urlInput.value !== model.urlText) urlInput.value = model.urlText;
+      urlInput.placeholder = model.urlPlaceholder;
+      const invalid = model.urlError !== null;
+      urlInput.setAttribute('aria-invalid', String(invalid));
+      if (invalid) urlInput.setAttribute('aria-describedby', ids.URL_ERROR_ID);
+      else urlInput.removeAttribute('aria-describedby');
+      urlErrorEl.textContent = model.urlError ? urlErrorMessage(model.urlError) : '';
+      copyBtn.disabled = connecting;
+      copyBtn.title = model.passwordRevealed
+        ? translate("Copia a string completa, com a senha")
+        : translate("Copia a string com a senha mascarada (***)");
+      const revealed = model.passwordRevealed;
+      pwdInput.type = revealed ? 'text' : 'password';
+      pwdToggle.setAttribute('aria-pressed', String(revealed));
+      pwdToggle.title = translate(revealed ? "Ocultar senha" : "Mostrar senha");
+      pwdToggle.innerHTML = ICON(revealed ? 'EyeOff' : 'Eye', 15);
+      $<HTMLElement>(`#${ids.ENGINE_VALUE_ID}`).textContent = DB_ENGINES.find((e) => e.value === model.engine)?.label ?? '';
+      trigger.disabled = connecting;
+      optionEls.forEach((o) => o.setAttribute('aria-selected', String(o.dataset.value === model.engine)));
+    };
+
+    const syncView = () => {
+      syncForm();
+      const connecting = model.status === 'connecting';
       const ready = model.canApply();
       const conflicts = ready ? this.importConflicts(model.dbml) : [];
       replaceBtn.disabled = !ready;
@@ -3100,35 +3194,133 @@ export class Workbench {
       warnsEl.innerHTML = warnings.map((w) => `<div>${esc(w)}</div>`).join('');
     };
 
-    bg.querySelectorAll<HTMLButtonElement>('[data-engine]').forEach((b) =>
-      b.addEventListener('click', () => {
-        this.connectEngine = b.dataset.engine as DbEngine;
-        model.setEngine(this.connectEngine);
-        syncView();
-      })
-    );
-    $<HTMLInputElement>('#db-trust').addEventListener('change', (e) => {
-      model.trustCert = (e.target as HTMLInputElement).checked;
+    // ── dropdown do banco (combobox select-only: o foco fica no botão) ──
+    let listOpen = false;
+    let activeOption = 0;
+    const setActive = (index: number) => {
+      activeOption = index;
+      optionEls.forEach((o, i) => o.classList.toggle('on', i === index));
+      trigger.setAttribute('aria-activedescendant', optionEls[index].id);
+    };
+    const openList = () => {
+      if (trigger.disabled) return;
+      listOpen = true;
+      list.hidden = false;
+      trigger.setAttribute('aria-expanded', 'true');
+      setActive(Math.max(0, DB_ENGINES.findIndex((e) => e.value === model.engine)));
+    };
+    const closeList = (refocus = true) => {
+      listOpen = false;
+      list.hidden = true;
+      trigger.setAttribute('aria-expanded', 'false');
+      trigger.removeAttribute('aria-activedescendant');
+      if (refocus) trigger.focus();
+    };
+    const chooseOption = (index: number) => {
+      const option = optionEls[index];
+      if (!option || option.getAttribute('aria-disabled') === 'true') return;
+      flushUrl();
+      this.connectEngine = option.dataset.value as DbEngine;
+      model.setEngine(this.connectEngine);
+      closeList();
+      syncView();
+    };
+    const optionsState = () => optionEls.map((o) => ({ disabled: o.getAttribute('aria-disabled') === 'true' }));
+    trigger.addEventListener('click', () => (listOpen ? closeList() : openList()));
+    // Enter/Espaço abrem pelo teclado sem disparar o clique nativo do botão
+    trigger.addEventListener('keyup', (e) => {
+      if (e.key === ' ') e.preventDefault();
     });
-    $<HTMLSelectElement>(`#${TLS_SELECT_ID}`).addEventListener('change', (e) => {
-      model.tls = (e.target as HTMLSelectElement).value as import('./types').TlsMode;
+    trigger.addEventListener('keydown', (e) => {
+      const stop = () => { e.preventDefault(); e.stopPropagation(); };
+      if (!listOpen) {
+        if (['Enter', ' ', 'ArrowDown', 'ArrowUp'].includes(e.key)) { stop(); openList(); }
+        return;
+      }
+      switch (e.key) {
+        case 'ArrowDown': stop(); setActive(nextEnabledOption(optionsState(), activeOption, 1)); break;
+        case 'ArrowUp': stop(); setActive(nextEnabledOption(optionsState(), activeOption, -1)); break;
+        case 'Home': stop(); setActive(nextEnabledOption(optionsState(), activeOption, 'first')); break;
+        case 'End': stop(); setActive(nextEnabledOption(optionsState(), activeOption, 'last')); break;
+        case 'Enter': case ' ': stop(); chooseOption(activeOption); break;
+        case 'Escape': stop(); closeList(); break;
+        case 'Tab': closeList(false); break;
+      }
+    });
+    trigger.addEventListener('blur', () => { if (listOpen) closeList(false); });
+    optionEls.forEach((o, i) => {
+      o.addEventListener('mousedown', (e) => e.preventDefault()); // não tirar o foco do botão
+      o.addEventListener('mousemove', () => { if (o.getAttribute('aria-disabled') !== 'true') setActive(i); });
+      o.addEventListener('click', () => chooseOption(i));
     });
 
-    const readRequest = () =>
-      buildRequest(
-        model.engine,
-        {
-          host: val('host'),
-          port: val('port'),
-          database: val('database'),
-          user: val('user'),
-          password: val('password'),
-          path: val('path'),
-          schemas: val('schemas'),
-        },
-        model.trustCert,
-        model.tls
-      );
+    // ── campos, string e senha ──
+    for (const name of FIELD_NAMES) {
+      $<HTMLInputElement>(`#db-${name}`).addEventListener('input', (e) => {
+        flushUrl();
+        model.setField(name, (e.target as HTMLInputElement).value);
+        syncForm();
+      });
+    }
+    $<HTMLInputElement>('#db-trust').addEventListener('change', (e) => {
+      flushUrl();
+      model.setTrustCert((e.target as HTMLInputElement).checked);
+      syncForm();
+    });
+    $<HTMLSelectElement>(`#${TLS_SELECT_ID}`).addEventListener('change', (e) => {
+      flushUrl();
+      model.setTls((e.target as HTMLSelectElement).value as TlsMode);
+      syncForm();
+    });
+
+    /** Aplica agora o texto da string, sem esperar o debounce. */
+    function flushUrl(): void {
+      if (urlTimer === undefined) return;
+      window.clearTimeout(urlTimer);
+      urlTimer = undefined;
+      model.setUrl(urlInput.value);
+    }
+    const applyUrl = (commit: boolean) => {
+      flushUrl();
+      if (commit) model.commitUrl();
+      this.connectEngine = model.engine;
+      syncForm();
+    };
+    // `urlTimer` definido = há texto digitado ainda não interpretado; o syncForm não o sobrescreve
+    const scheduleUrl = (delay: number, commit: boolean) => {
+      window.clearTimeout(urlTimer);
+      urlTimer = window.setTimeout(() => applyUrl(commit), delay);
+    };
+    urlInput.addEventListener('input', () => scheduleUrl(URL_PARSE_DEBOUNCE_MS, false));
+    // o texto colado só entra no campo depois do evento `paste`
+    urlInput.addEventListener('paste', () => scheduleUrl(URL_PASTE_SETTLE_MS, true));
+    urlInput.addEventListener('change', () => applyUrl(true));
+
+    const togglePassword = () => {
+      flushUrl();
+      model.togglePassword();
+      syncForm();
+    };
+    pwdToggle.addEventListener('click', togglePassword);
+    // a paleta fecha ao executar: o foco volta para o botão do olho
+    this.connectDialog = { bg, togglePassword: () => { togglePassword(); pwdToggle.focus(); } };
+
+    copyBtn.addEventListener('click', () => {
+      flushUrl();
+      void copyText(model.urlForCopy()).then((ok) => {
+        if (!bg.isConnected) return;
+        if (!ok) { this.toast(translate("Não foi possível copiar a string.")); return; }
+        const label = $<HTMLElement>(`#${ids.URL_COPY_LABEL_ID}`);
+        label.textContent = translate("Copiado");
+        window.clearTimeout(copyTimer);
+        copyTimer = window.setTimeout(() => { label.textContent = translate("Copiar string"); }, COPY_FEEDBACK_MS);
+      });
+    });
+
+    const readRequest = () => {
+      flushUrl();
+      return model.buildRequest();
+    };
 
     let guard: IntrospectGuard | null = null;
     /** Chamada de rede com prazo e cancelamento; o modal pode ter sido fechado no meio. */
@@ -3163,12 +3355,14 @@ export class Workbench {
 
     const connect = () => {
       const req = readRequest();
+      model.hidePassword();
       return run(req.dialect, (signal) => introspect(req, signal), (r) => model.finish(r));
     };
 
     /** Durante a conexão, Cancelar/Esc/X só abortam a chamada; fora dela, fecham o modal. */
     const dismiss = () => {
       if (guard) { guard.cancel(); return; }
+      model.close();
       this.closeModal();
     };
 
@@ -3180,6 +3374,7 @@ export class Workbench {
         return;
       }
       const next = model.buildMergedSource(this.source, mode);
+      model.close();
       this.closeModal();
       this.applyPatch(this.fullReplace(next));
       if (mode === 'replace') {
@@ -3210,7 +3405,7 @@ export class Workbench {
       }
     });
     syncView();
-    ($<HTMLInputElement>(model.engine === 'sqlite' ? '#db-path' : '#db-host')).focus();
+    urlInput.focus();
     void this.transport.checkDatabaseSupport?.().then(
       () => { cliStatus = 'ready'; if (bg.isConnected) syncView(); },
       () => { cliStatus = 'missing'; if (bg.isConnected) syncView(); },
@@ -3414,7 +3609,8 @@ export class Workbench {
     const bg = this.modal(
       `<div class="mbar">${ICON('Search', 15)}<input id="pal-q" placeholder="${translate('Buscar tabelas, colunas, comandos…')}" autocomplete="off"><span class="esc">Esc</span></div>
        <div class="list" id="pal-list"></div>
-       <div class="mfoot"><span>${translate("↑↓ navegar")}</span><span>${translate("↵ executar")}</span><span>${translate("Esc fechar")}</span><span class="grow"></span><span id="pal-n"></span></div>`
+       <div class="mfoot"><span>${translate("↑↓ navegar")}</span><span>${translate("↵ executar")}</span><span>${translate("Esc fechar")}</span><span class="grow"></span><span id="pal-n"></span></div>`,
+      '', '', !!this.connectDialogOpen()
     );
     this.paletteOpen = true; // depois de modal(), que zera os flags
     const q = bg.querySelector('#pal-q') as HTMLInputElement;
@@ -3437,8 +3633,8 @@ export class Workbench {
       const items = this.paletteItems();
       if (e.key === 'ArrowDown') { this.paletteIdx = Math.min(this.paletteIdx + 1, items.length - 1); draw(); e.preventDefault(); }
       else if (e.key === 'ArrowUp') { this.paletteIdx = Math.max(this.paletteIdx - 1, 0); draw(); e.preventDefault(); }
-      else if (e.key === 'Enter') { const a = items[this.paletteIdx]; this.closeModal(); if (a) this.runPaletteItem(a); e.preventDefault(); }
-      else if (e.key === 'Escape') this.closeModal();
+      else if (e.key === 'Enter') { const a = items[this.paletteIdx]; this.closePalette(); if (a) this.runPaletteItem(a); e.preventDefault(); }
+      else if (e.key === 'Escape') { this.closePalette(); e.stopPropagation(); }
     });
     draw();
     q.focus();
@@ -3451,7 +3647,7 @@ export class Workbench {
       for (const ch of s.toLowerCase()) if (ch === q[i]) i++;
       return i >= q.length;
     };
-    const commands = catalog().filter((a) => (this.selectedRef || (a.id !== 'ToggleEdgeStraight' && a.id !== 'ResetEdgeCurve')) && a.id !== 'OpenPalette' && (!q || fuzzy(a.label) || fuzzy(a.group)));
+    const commands = catalog().filter((a) => (this.selectedRef || (a.id !== 'ToggleEdgeStraight' && a.id !== 'ResetEdgeCurve')) && a.id !== 'OpenPalette' && (a.id !== 'ToggleConnectPassword' || !!this.connectDialogOpen()) && (!q || fuzzy(a.label) || fuzzy(a.group)));
     const tables = q ? this.schema.tables.flatMap((table) => {
       const name = qualifiedTableName(table);
       const items = [{ label: name, group: translate('Tabelas'), table: name },
@@ -3972,7 +4168,7 @@ export class Workbench {
         ta.scrollTop = Math.max(0, (g.range.start.line - 3) * 22);
         return;
       }
-      case 'palette-run': { const item = this.paletteItems()[Number(d.index)]; this.closeModal(); if (item) this.runPaletteItem(item); return; }
+      case 'palette-run': { const item = this.paletteItems()[Number(d.index)]; this.closePalette(); if (item) this.runPaletteItem(item); return; }
       case 'quick-search-run': { const item = this.quickSearchItems()[Number(d.index)]; this.closeModal(); if (item) this.runQuickSearchItem(item); return; }
       case 'set-color':
         this.dispatch({ action: 'set_table_color', payload: { table: d.table!, color: d.color || null } });

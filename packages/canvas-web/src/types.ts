@@ -497,6 +497,8 @@ export interface WasmApi {
   search_schema?(source: string, query: string): unknown;
   import_sql_ddl?(sql: string, dialect: string): unknown;
   import_conflicts?(source: string, dbml: string): string[];
+  /** Lê uma connection string; lança `ConnectionUrlError`. Ausente em bundles antigos. */
+  parse_connection_url?(url: string): ParsedConnectionUrl;
   /** Diff estrutural base vs. head; lança string `base|head has DBML errors: ...` se um lado for inválido. */
   diff_dbml?(base_source: string, head_source: string): DiffResult;
   /** Sugere nome único de tabela associativa para um relacionamento N:N. */

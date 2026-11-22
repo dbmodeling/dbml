@@ -2,7 +2,7 @@
  * Constantes compartilhadas do canvas-web (sem strings/números mágicos em TS ou HTML).
  */
 
-import type { TlsMode } from './types';
+import type { ConnectionUrlErrorCode, TlsMode } from './types';
 
 export const APP_ROOT_ID = 'app';
 export const LOCAL_SESSION_PREFIX = 'dbmodeling.session:';
@@ -27,15 +27,82 @@ export const TLS_SELECT_OPTIONS: ReadonlyArray<{ value: TlsMode; labelKey: strin
   { value: TLS_MODE.DISABLE, labelKey: 'Desativar TLS (texto claro)' },
 ];
 
+/** Linhas (rótulo + controle) que só valem para bancos de rede; Host+Porta e Usuário+Senha dividem uma linha. */
 export const CONNECT_NETWORK_ROW_IDS = [
   'host',
-  'port',
   'database',
   'user',
-  'password',
   'schemas',
   TLS_ROW_ID,
 ] as const;
+
+/** Banco ainda sem introspector: aparece desabilitado no dropdown. */
+export const ENGINE_COMING_SOON = 'oracle';
+export const ENGINE_COMING_SOON_LABEL = 'Oracle';
+
+/** Marcador que substitui a senha na connection string exibida (mesma convenção de `mask_url`). */
+export const PASSWORD_MASK = '***';
+
+/** Espera após a última tecla no campo Connection string antes de reinterpretá-la. */
+export const URL_PARSE_DEBOUNCE_MS = 150;
+/** O texto colado só chega ao campo depois do evento `paste`; esta espera deixa o navegador inseri-lo. */
+export const URL_PASTE_SETTLE_MS = 0;
+/** Tempo em que o botão Copiar mostra "Copiado". */
+export const COPY_FEEDBACK_MS = 1600;
+
+/** Quem editou por último: decide o sentido da sincronia e evita laço entre campos e string. */
+export const EDIT_ORIGIN = {
+  FIELD: 'field',
+  STRING: 'string',
+} as const;
+
+export const CONNECT_URL_ERROR = {
+  EMPTY: 'empty',
+  UNKNOWN_SCHEME: 'unknown_scheme',
+  UNSUPPORTED_ENGINE: 'unsupported_engine',
+  MALFORMED: 'malformed',
+  MISSING_HOST: 'missing_host',
+  INVALID_PORT: 'invalid_port',
+} as const satisfies Record<string, ConnectionUrlErrorCode>;
+
+/** Esquema escrito na connection string montada para cada banco (SQLite usa o caminho puro). */
+export const ENGINE_SCHEME = {
+  postgres: 'postgres',
+  mysql: 'mysql',
+  sqlserver: 'sqlserver',
+} as const;
+
+/**
+ * Query de TLS por banco e modo, igual a `ConnectionParams::tls_query` (crates/db-introspect).
+ * Modo `auto` não escreve nada, salvo o SQL Server com "confiar no certificado".
+ */
+export const TLS_QUERY = {
+  postgres: { verify: 'sslmode=verify-full', require: 'sslmode=require', disable: 'sslmode=disable' },
+  mysql: { verify: 'ssl-mode=VERIFY_IDENTITY', require: 'ssl-mode=REQUIRED', disable: 'ssl-mode=DISABLED' },
+  sqlserver: {
+    verify: 'encrypt=true',
+    require: 'encrypt=true&trustServerCertificate=true',
+    disable: 'encrypt=false',
+  },
+} as const;
+export const SQLSERVER_TRUST_QUERY = 'trustServerCertificate=true';
+
+/** IDs e atributos dos controles novos do diálogo "Conectar ao banco". */
+export const CONNECT_DIALOG = {
+  ENGINE_TRIGGER_ID: 'db-engine',
+  ENGINE_LABEL_ID: 'db-engine-label',
+  ENGINE_VALUE_ID: 'db-engine-value',
+  URL_COPY_LABEL_ID: 'db-url-copy-label',
+  ENGINE_LIST_ID: 'db-engine-list',
+  ENGINE_OPTION_ID_PREFIX: 'db-engine-opt-',
+  URL_ID: 'db-url',
+  URL_ERROR_ID: 'db-url-error',
+  URL_COPY_ID: 'db-url-copy',
+  PASSWORD_ID: 'db-password',
+  PASSWORD_TOGGLE_ID: 'db-password-toggle',
+  ROW_URL: 'url',
+  ROW_ENGINE: 'engine',
+} as const;
 
 export const TRANSPORT_EVENT = {
   INIT: 'init',
