@@ -6,7 +6,7 @@
 
 use crate::constants::{
     GIT_BASE_ERR_GIT_UNAVAILABLE, GIT_BASE_ERR_NO_COMMITS, GIT_BASE_ERR_NOT_A_REPO,
-    GIT_BASE_ERR_NOT_UTF8, GIT_BASE_ERR_UNTRACKED, GIT_PROGRAM,
+    GIT_BASE_ERR_NOT_UTF8, GIT_BASE_ERR_UNTRACKED, GIT_PROGRAM, GIT_REPO_ENV_VARS,
 };
 use std::path::Path;
 use std::process::{Command, Stdio};
@@ -55,10 +55,18 @@ impl std::fmt::Display for GitBaseError {
 impl std::error::Error for GitBaseError {}
 
 /// Roda `git -C <dir> <args>`; `Err(GitUnavailable)` se o executável não existe.
+/// `git -C <dir>` isolado de variáveis de repositório herdadas (ex.: de hooks do git).
+fn git_command(dir: &Path) -> Command {
+    let mut cmd = Command::new(GIT_PROGRAM);
+    for var in GIT_REPO_ENV_VARS {
+        cmd.env_remove(var);
+    }
+    cmd.arg("-C").arg(dir);
+    cmd
+}
+
 fn git(dir: &Path, args: &[&str]) -> Result<std::process::Output, GitBaseError> {
-    Command::new(GIT_PROGRAM)
-        .arg("-C")
-        .arg(dir)
+    git_command(dir)
         .args(args)
         .stdin(Stdio::null())
         .output()
@@ -122,9 +130,7 @@ mod tests {
     }
 
     fn run(dir: &Path, args: &[&str]) {
-        let status = Command::new("git")
-            .arg("-C")
-            .arg(dir)
+        let status = git_command(dir)
             .args(["-c", "user.name=t", "-c", "user.email=t@t", "-c"])
             .arg("commit.gpgsign=false")
             .args(args)
@@ -143,9 +149,7 @@ mod tests {
         let t = TempDir::new("norepo");
         let file = t.0.join("a.dbml");
         std::fs::write(&file, "Table a { id int }\n").unwrap();
-        let out = Command::new("git")
-            .arg("-C")
-            .arg(&t.0)
+        let out = git_command(&t.0)
             .args(["rev-parse", "--is-inside-work-tree"])
             .output()
             .unwrap();

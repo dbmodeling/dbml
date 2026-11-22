@@ -540,7 +540,11 @@ async fn ask_git_base_for(ws: &mut Ws, expected_file: &str, id: u32) -> serde_js
 }
 
 fn git_in(dir: &std::path::Path, args: &[&str]) {
-    let status = std::process::Command::new("git")
+    let mut cmd = std::process::Command::new(dbml_cli::constants::GIT_PROGRAM);
+    for var in dbml_cli::constants::GIT_REPO_ENV_VARS {
+        cmd.env_remove(var);
+    }
+    let status = cmd
         .arg("-C")
         .arg(dir)
         .args(["-c", "user.name=t", "-c", "user.email=t@t"])

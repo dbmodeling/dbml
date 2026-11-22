@@ -4,7 +4,7 @@
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
-use crate::constants::{GIT_BIN, GIT_HEAD_SPEC_PREFIX};
+use crate::constants::{GIT_BIN, GIT_HEAD_SPEC_PREFIX, GIT_REPO_ENV_VARS};
 
 /// Por que não há base para comparar.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -45,9 +45,19 @@ pub fn head_spec(path: &Path) -> Option<(PathBuf, String)> {
     Some((dir, format!("{GIT_HEAD_SPEC_PREFIX}{name}")))
 }
 
-fn git(dir: &Path, args: &[&str]) -> Result<Output, HeadError> {
+/// `git -C <dir>` isolado de variáveis de repositório herdadas do ambiente.
+fn git_command(dir: &Path) -> Command {
     let mut cmd = Command::new(GIT_BIN);
-    cmd.arg("-C").arg(dir).args(args);
+    for var in GIT_REPO_ENV_VARS {
+        cmd.env_remove(var);
+    }
+    cmd.arg("-C").arg(dir);
+    cmd
+}
+
+fn git(dir: &Path, args: &[&str]) -> Result<Output, HeadError> {
+    let mut cmd = git_command(dir);
+    cmd.args(args);
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt as _;
@@ -95,9 +105,7 @@ mod tests {
     }
 
     fn run(dir: &Path, args: &[&str]) {
-        let ok = Command::new(GIT_BIN)
-            .arg("-C")
-            .arg(dir)
+        let ok = git_command(dir)
             .args([
                 "-c",
                 "user.name=t",

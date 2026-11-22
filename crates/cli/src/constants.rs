@@ -37,6 +37,14 @@ pub const TLS_MODE_DISABLE: &str = "disable";
 
 /// Executável chamado pelo modo Comparar para ler a versão do arquivo no `HEAD`.
 pub const GIT_PROGRAM: &str = "git";
+/// Variáveis herdadas (ex.: de hooks do git) que redirecionariam o `git` para outro repositório.
+pub const GIT_REPO_ENV_VARS: [&str; 5] = [
+    "GIT_DIR",
+    "GIT_WORK_TREE",
+    "GIT_INDEX_FILE",
+    "GIT_OBJECT_DIRECTORY",
+    "GIT_COMMON_DIR",
+];
 
 /// Resposta do servidor ao pedido `git_base` do cliente (versão base no git `HEAD`): `source` (sucesso) ou `error` + `error_code`.
 pub const WS_MSG_GIT_BASE_RESULT: &str = "git_base_result";

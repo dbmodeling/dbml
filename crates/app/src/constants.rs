@@ -65,6 +65,14 @@ pub const WHATS_NEW_DIALOG_MAX_H_PX: f32 = 560.0;
 /// Base do modo Comparar (#18): `git show HEAD:./<arquivo>`.
 pub const GIT_BIN: &str = "git";
 pub const GIT_HEAD_SPEC_PREFIX: &str = "HEAD:./";
+/// Variáveis herdadas (ex.: de hooks do git) que redirecionariam o `git` para outro repositório.
+pub const GIT_REPO_ENV_VARS: [&str; 5] = [
+    "GIT_DIR",
+    "GIT_WORK_TREE",
+    "GIT_INDEX_FILE",
+    "GIT_OBJECT_DIRECTORY",
+    "GIT_COMMON_DIR",
+];
 /// `CREATE_NO_WINDOW`: o `git` não abre console no Windows.
 #[cfg(windows)]
 pub const WIN_CREATE_NO_WINDOW: u32 = 0x0800_0000;
