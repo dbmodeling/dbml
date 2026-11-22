@@ -1,6 +1,6 @@
 //! Connection target parsing and secret masking.
 
-use crate::Error;
+use crate::{Error, constants::PASSWORD_MASK};
 use std::fmt::Write as _;
 
 /// Database engine behind a connection target.
@@ -57,7 +57,7 @@ pub fn mask_url(target: &str) -> String {
     } else {
         "/"
     };
-    format!("{scheme}://{user}:***@{host}{sep}{tail}")
+    format!("{scheme}://{user}:{PASSWORD_MASK}@{host}{sep}{tail}")
 }
 
 /// Adds `password` to a URL that has a user but no password (`scheme://user@host/db`), so the

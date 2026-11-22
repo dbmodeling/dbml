@@ -1627,6 +1627,7 @@ dependencies = [
 name = "dbml-wasm"
 version = "0.3.3"
 dependencies = [
+ "db-introspect",
  "dbml-analysis",
  "dbml-edit",
  "dbml-syntax",
