@@ -20,6 +20,8 @@ dbml-syntax.workspace = true
 dbml-analysis.workspace = true
 dbml-edit.workspace = true
 sql-import.workspace = true
+# Sem os drivers de banco (não compilam para wasm32): só URL, parâmetros e política de TLS.
+db-introspect = { path = "../db-introspect", default-features = false }
 layout.workspace = true
 diagram-export = { path = "../diagram-export", default-features = false }
 rowan.workspace = true

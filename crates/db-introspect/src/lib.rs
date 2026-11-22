@@ -4,21 +4,30 @@
 //!
 //! Only catalog queries are issued and connections are opened read-only. Network and driver
 //! dependencies live in this crate so the pure core (`schema`, `dbml-*`) stays free of them.
+//!
+//! The `drivers` feature (on by default) enables the actual connections. Without it the crate only
+//! offers the pure parts (connection URL, form parameters, TLS policy, DBML rendering) and builds
+//! for `wasm32-unknown-unknown`.
 
 mod constants;
 mod dbml;
 mod model;
+#[cfg(feature = "drivers")]
 mod mysql;
 mod params;
+#[cfg(feature = "drivers")]
 mod postgres;
+#[cfg(feature = "drivers")]
 mod sqlite;
+#[cfg(feature = "drivers")]
 mod sqlserver;
 mod tls;
 mod url;
 
+pub use constants::PASSWORD_MASK;
 pub use dbml::to_dbml;
 pub use model::{Column, EnumType, ForeignKey, Index, Introspected, Table};
-pub use params::ConnectionParams;
+pub use params::{ConnectionParams, ParseUrlError, ParsedUrl, UrlErrorCode};
 pub use tls::{
     TlsMode, apply_default as with_default_tls, apply_mode as with_tls_mode, is_loopback_host,
     weak_tls_warning,
@@ -107,6 +116,7 @@ pub struct Outcome {
 ///
 /// Returns [`Error`] when the target is invalid, the engine is not supported yet, the connection
 /// fails or a catalog query fails.
+#[cfg(feature = "drivers")]
 pub async fn introspect(target: &str) -> Result<Outcome, Error> {
     introspect_with(target, &Options::default()).await
 }
@@ -116,6 +126,7 @@ pub async fn introspect(target: &str) -> Result<Outcome, Error> {
 /// # Errors
 ///
 /// Same as [`introspect`].
+#[cfg(feature = "drivers")]
 pub async fn introspect_with(target: &str, options: &Options) -> Result<Outcome, Error> {
     let db = read_catalog_with(target, options).await?;
     Ok(Outcome {
@@ -129,6 +140,7 @@ pub async fn introspect_with(target: &str, options: &Options) -> Result<Outcome,
 /// # Errors
 ///
 /// Same as [`introspect`].
+#[cfg(feature = "drivers")]
 pub async fn read_catalog(target: &str) -> Result<Introspected, Error> {
     read_catalog_with(target, &Options::default()).await
 }
@@ -138,6 +150,7 @@ pub async fn read_catalog(target: &str) -> Result<Introspected, Error> {
 /// # Errors
 ///
 /// Same as [`introspect`].
+#[cfg(feature = "drivers")]
 pub async fn read_catalog_with(target: &str, options: &Options) -> Result<Introspected, Error> {
     let target = with_default_tls(target);
     let target = &*target;
@@ -161,6 +174,7 @@ pub async fn read_catalog_with(target: &str, options: &Options) -> Result<Intros
 ///
 /// Returns [`Error::Connect`] / [`Error::Query`] on failure (never containing the password) and
 /// [`Error::Unsupported`] for engines without an introspector.
+#[cfg(feature = "drivers")]
 pub async fn test_connection(target: &str, options: &Options) -> Result<TestOutcome, Error> {
     let target = with_default_tls(target);
     let target = &*target;
@@ -174,6 +188,7 @@ pub async fn test_connection(target: &str, options: &Options) -> Result<TestOutc
 }
 
 /// Removes anything that looks like the target (and so a password) from a driver message.
+#[cfg(feature = "drivers")]
 pub(crate) fn sanitize(msg: &str, target: &str) -> String {
     msg.replace(target, &mask_url(target))
 }
