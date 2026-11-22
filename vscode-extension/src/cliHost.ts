@@ -1,3 +1,4 @@
+import type { GitHeadResult } from './gitBase.js';
 import type { IntrospectRequest, IntrospectResult, TestConnectionResult } from './introspect.js';
 
 /**
@@ -11,4 +12,6 @@ export interface CliHost {
   checkCli(cliPath: string): Promise<string>;
   testConnection(cliPath: string, req: IntrospectRequest): Promise<TestConnectionResult>;
   introspect(cliPath: string, req: IntrospectRequest): Promise<IntrospectResult>;
+  /** Modo Comparar: conteúdo do arquivo local no `HEAD` do git (somente leitura). */
+  readGitHead(fsPath: string): Promise<GitHeadResult>;
 }

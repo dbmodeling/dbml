@@ -1,0 +1,53 @@
+# VCS & CI
+.git
+.gitignore
+.github
+
+# Rust & build artifacts
+target/
+dist/
+dist-*/
+crates/cli/web/
+
+# Node.js & frontend build outputs
+node_modules/
+**/node_modules/
+packages/*/dist/
+packages/*/dist-app/
+packages/canvas-web/src/wasm/
+vscode-extension/
+*.vsix
+*.tsbuildinfo
+.vite/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+.npm/
+
+# Local tooling, AI caches, scratch & docs
+.scratch/
+.claude/
+.agent/
+.agents/
+.remember/
+.cortex/
+openspec/
+skills/
+docs/
+fuzz/
+tools/
+screenshots/
+coverage/
+.vitest/
+
+# Editors, OS & test artifacts
+.idea/
+.vscode/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+*.snap.new
+*.pending-snap
+*.profraw

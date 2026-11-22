@@ -1,4 +1,5 @@
 use crate::assets::static_handler;
+use crate::constants::{CONTENT_TYPE_JSON, HEALTH_BODY_OK, HEALTH_ROUTE};
 use crate::state::{AppState, StaleVersion};
 use axum::{
     Router,
@@ -42,6 +43,9 @@ enum ClientMessage {
     },
     #[serde(rename = "open_file")]
     OpenFile(String),
+    /// Modo Comparar: pede o conteúdo do arquivo ativo no `HEAD` do git. Somente leitura.
+    #[serde(rename = "git_base")]
+    GitBase { expected_file: String },
 }
 
 /// Tamanho máximo de uma mensagem/frame WebSocket (aplicado pelo protocolo, antes da alocação).
@@ -161,6 +165,15 @@ async fn guard(
     }
 }
 
+async fn health_handler() -> Response {
+    (
+        StatusCode::OK,
+        [(header::CONTENT_TYPE, CONTENT_TYPE_JSON)],
+        HEALTH_BODY_OK,
+    )
+        .into_response()
+}
+
 pub fn create_router(state: AppState, allowed: Vec<String>) -> Router {
     let protected = Router::new()
         .route("/ws", get(ws_handler))
@@ -174,14 +187,17 @@ pub fn create_router(state: AppState, allowed: Vec<String>) -> Router {
                 .layer(DefaultBodyLimit::max(MAX_API_BODY_BYTES)),
         )
         .route_layer(middleware::from_fn_with_state(state.clone(), require_token));
-    Router::new()
+    let app = Router::new()
         .merge(protected)
         .fallback(static_handler)
         .layer(middleware::from_fn_with_state(
             std::sync::Arc::new(allowed),
             guard,
         ))
-        .with_state(state)
+        .with_state(state);
+    Router::new()
+        .route(HEALTH_ROUTE, get(health_handler))
+        .merge(app)
 }
 
 /// Máximo de conexões WebSocket simultâneas; além disso o upgrade é recusado com `503`.
@@ -276,6 +292,11 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
                     continue;
                 }
             };
+            // Pedido de leitura com resposta própria (`git_base_result`), sem `result`/versão.
+            if let ClientMessage::GitBase { expected_file } = &client_msg {
+                let _ = reply_tx.send(state.git_base_message(&id, expected_file).await);
+                continue;
+            }
             let result = handle_client_message(&state, client_msg).await;
             // Versão velha: primeiro o estado atual (só para quem errou), depois o erro do pedido.
             if let Some(stale) = result
@@ -351,6 +372,8 @@ async fn handle_client_message(
             state.switch_file(std::path::PathBuf::from(path)).await?;
             Ok(None)
         }
+        // Tratado antes, em `handle_socket` (resposta própria).
+        ClientMessage::GitBase { .. } => Ok(None),
     }
 }
 

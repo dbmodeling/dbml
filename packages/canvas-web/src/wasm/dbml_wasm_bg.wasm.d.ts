@@ -20,6 +20,7 @@ export const session_analyze: (a: number, b: number, c: number) => [number, numb
 export const session_compute_scene: (a: number, b: number, c: number, d: any) => [number, number, number];
 export const session_new: () => number;
 export const session_route_edges: (a: number, b: any) => [number, number, number];
+export const suggest_junction_name: (a: number, b: number, c: number, d: number, e: number, f: number) => [number, number];
 export const swap_dbml_lines: (a: number, b: number, c: number, d: number) => [number, number, number];
 export const __wbindgen_malloc: (a: number, b: number) => number;
 export const __wbindgen_realloc: (a: number, b: number, c: number, d: number) => number;

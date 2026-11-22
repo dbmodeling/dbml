@@ -156,6 +156,11 @@ export function parse_and_analyze(source: string): any;
 export function search_schema(source: string, query: string): any;
 
 /**
+ * Sugere um nome único de tabela associativa para um relacionamento N:N entre duas tabelas.
+ */
+export function suggest_junction_name(source: string, left_table: string, right_table: string): string;
+
+/**
  * Move uma linha para cima ou para baixo (`Alt+Up` / `Alt+Down`) preservando terminadores CRLF/LF.
  *
  * # Errors
@@ -187,6 +192,7 @@ export interface InitOutput {
     readonly session_compute_scene: (a: number, b: number, c: number, d: any) => [number, number, number];
     readonly session_new: () => number;
     readonly session_route_edges: (a: number, b: any) => [number, number, number];
+    readonly suggest_junction_name: (a: number, b: number, c: number, d: number, e: number, f: number) => [number, number];
     readonly swap_dbml_lines: (a: number, b: number, c: number, d: number) => [number, number, number];
     readonly __wbindgen_malloc: (a: number, b: number) => number;
     readonly __wbindgen_realloc: (a: number, b: number, c: number, d: number) => number;
