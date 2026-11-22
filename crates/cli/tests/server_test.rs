@@ -523,3 +523,21 @@ async fn version_grows_on_external_change_and_file_switch() {
     let update = next_of(&mut ws, "update").await;
     assert!(update["version"].as_u64().unwrap() > before, "{update}");
 }
+
+#[tokio::test]
+async fn health_endpoint_is_public_and_returns_ok_json() {
+    let h = spawn("health").await;
+    let local_req = format!(
+        "GET /health HTTP/1.1\r\nHost: {}\r\nConnection: close\r\n\r\n",
+        h.addr
+    );
+    let (status, body) = http(h.addr, &local_req).await;
+    assert_eq!(status, 200);
+    assert_eq!(body, dbml_cli::constants::HEALTH_BODY_OK);
+
+    // Probes de orquestradores (Docker/K8s) podem enviar Host diferente do loopback.
+    let probe_req = "GET /health HTTP/1.1\r\nHost: 10.0.0.12:3000\r\nConnection: close\r\n\r\n";
+    let (status, body) = http(h.addr, probe_req).await;
+    assert_eq!(status, 200);
+    assert_eq!(body, dbml_cli::constants::HEALTH_BODY_OK);
+}

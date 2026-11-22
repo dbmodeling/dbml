@@ -34,3 +34,10 @@ pub const TLS_MODE_AUTO: &str = "auto";
 pub const TLS_MODE_VERIFY: &str = "verify";
 pub const TLS_MODE_REQUIRE: &str = "require";
 pub const TLS_MODE_DISABLE: &str = "disable";
+
+/// Rota pública de verificação de integridade (Docker `HEALTHCHECK` / probes).
+pub const HEALTH_ROUTE: &str = "/health";
+/// Content-Type para respostas JSON simples.
+pub const CONTENT_TYPE_JSON: &str = "application/json";
+/// Corpo JSON retornado por `GET /health`.
+pub const HEALTH_BODY_OK: &str = r#"{"status":"ok"}"#;

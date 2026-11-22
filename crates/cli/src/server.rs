@@ -1,4 +1,5 @@
 use crate::assets::static_handler;
+use crate::constants::{CONTENT_TYPE_JSON, HEALTH_BODY_OK, HEALTH_ROUTE};
 use crate::state::{AppState, StaleVersion};
 use axum::{
     Router,
@@ -161,6 +162,15 @@ async fn guard(
     }
 }
 
+async fn health_handler() -> Response {
+    (
+        StatusCode::OK,
+        [(header::CONTENT_TYPE, CONTENT_TYPE_JSON)],
+        HEALTH_BODY_OK,
+    )
+        .into_response()
+}
+
 pub fn create_router(state: AppState, allowed: Vec<String>) -> Router {
     let protected = Router::new()
         .route("/ws", get(ws_handler))
@@ -174,14 +184,17 @@ pub fn create_router(state: AppState, allowed: Vec<String>) -> Router {
                 .layer(DefaultBodyLimit::max(MAX_API_BODY_BYTES)),
         )
         .route_layer(middleware::from_fn_with_state(state.clone(), require_token));
-    Router::new()
+    let app = Router::new()
         .merge(protected)
         .fallback(static_handler)
         .layer(middleware::from_fn_with_state(
             std::sync::Arc::new(allowed),
             guard,
         ))
-        .with_state(state)
+        .with_state(state);
+    Router::new()
+        .route(HEALTH_ROUTE, get(health_handler))
+        .merge(app)
 }
 
 /// Máximo de conexões WebSocket simultâneas; além disso o upgrade é recusado com `503`.
