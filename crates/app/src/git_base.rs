@@ -34,6 +34,39 @@ impl HeadError {
     }
 }
 
+/// Estado da base do modo Comparar: lida em segundo plano (`Loading` guarda o ticket do pedido).
+#[derive(Debug, Clone, PartialEq)]
+pub enum BaseState<T> {
+    /// `git show` em andamento; só o resultado com este ticket é aceito.
+    Loading(u64),
+    /// Base lida e analisada.
+    Ready(T),
+    /// Sem base: chave pt-BR do motivo (traduzida por `i18n::t`).
+    Failed(&'static str),
+}
+
+impl<T> BaseState<T> {
+    pub const fn ready(&self) -> Option<&T> {
+        match self {
+            Self::Ready(base) => Some(base),
+            _ => None,
+        }
+    }
+
+    /// Aplica o resultado do pedido `ticket`. Descarta (`false`) resultado obsoleto: ticket de
+    /// outro pedido ou base já resolvida.
+    pub fn resolve(&mut self, ticket: u64, result: Result<T, &'static str>) -> bool {
+        if !matches!(self, Self::Loading(t) if *t == ticket) {
+            return false;
+        }
+        *self = match result {
+            Ok(base) => Self::Ready(base),
+            Err(msg) => Self::Failed(msg),
+        };
+        true
+    }
+}
+
 /// Pasta onde rodar o git e o `rev:path` relativo a ela (`HEAD:./schema.dbml`).
 /// `None` quando o caminho não tem nome de arquivo.
 pub fn head_spec(path: &Path) -> Option<(PathBuf, String)> {
@@ -130,6 +163,23 @@ mod tests {
         let (dir, _) = head_spec(Path::new("x.dbml")).unwrap();
         assert_eq!(dir, PathBuf::from("."));
         assert!(head_spec(Path::new("/")).is_none());
+    }
+
+    #[test]
+    fn base_state_applies_only_the_current_ticket_once() {
+        let mut s: BaseState<u8> = BaseState::Loading(2);
+        assert_eq!(s.ready(), None);
+        // resultado de um pedido anterior (modo desligado e religado): descartado
+        assert!(!s.resolve(1, Ok(9)));
+        assert_eq!(s, BaseState::Loading(2));
+        assert!(s.resolve(2, Err("x")));
+        assert_eq!(s, BaseState::Failed("x"));
+        // já resolvido: um segundo resultado com o mesmo ticket não sobrescreve
+        assert!(!s.resolve(2, Ok(1)));
+        assert_eq!(s, BaseState::Failed("x"));
+        let mut s: BaseState<u8> = BaseState::Loading(3);
+        assert!(s.resolve(3, Ok(7)));
+        assert_eq!(s.ready(), Some(&7));
     }
 
     #[test]

@@ -3559,11 +3559,59 @@ impl Shell {
             return;
         }
         let Some(doc) = self.doc() else { return };
-        let base = crate::git_base::head_source(doc.path.as_deref())
-            .map(|src| dbml_analysis::analyze(&src))
-            .map_err(crate::git_base::HeadError::message);
-        self.with_diagram(cx, |d| d.enter_diff(base));
+        let (diagram, path) = (doc.diagram.clone(), doc.path.clone());
+        let ticket = diagram.update(cx, |d, cx| {
+            cx.notify();
+            d.begin_diff()
+        });
+        Self::load_diff_base(diagram, path, ticket, cx);
         cx.notify();
+    }
+
+    /// Lê a base do modo Comparar (`git show` + análise) em segundo plano e a entrega ao canvas.
+    /// Resultado obsoleto é descartado: modo desligado/religado (ticket), aba fechada ou arquivo
+    /// salvo em outro caminho durante a leitura (aí relê do caminho novo).
+    fn load_diff_base(
+        diagram: Entity<Diagram>,
+        path: Option<std::path::PathBuf>,
+        ticket: u64,
+        cx: &mut Context<Self>,
+    ) {
+        let bg = cx.background_executor().clone();
+        cx.spawn(async move |this, cx| {
+            let from = path.clone();
+            let base = bg
+                .spawn(async move {
+                    crate::git_base::head_source(from.as_deref())
+                        .map(|src| dbml_analysis::analyze(&src))
+                        .map_err(crate::git_base::HeadError::message)
+                })
+                .await;
+            this.update(cx, |this, cx| {
+                let Some(current) = this
+                    .docs
+                    .iter()
+                    .find(|d| d.diagram == diagram)
+                    .map(|d| d.path.clone())
+                else {
+                    return;
+                };
+                if current != path {
+                    if diagram.read(cx).diff_waiting_for(ticket) {
+                        let ticket = diagram.update(cx, |d, _| d.begin_diff());
+                        Self::load_diff_base(diagram, current, ticket, cx);
+                    }
+                    return;
+                }
+                diagram.update(cx, |d, cx| {
+                    if d.finish_diff(ticket, base) {
+                        cx.notify();
+                    }
+                });
+            })
+            .ok();
+        })
+        .detach();
     }
 
     fn next_diff_change(&mut self, _: &NextDiffChange, _: &mut Window, cx: &mut Context<Self>) {

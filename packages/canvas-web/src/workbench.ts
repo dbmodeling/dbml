@@ -8,6 +8,7 @@ import {
   CONNECT_NETWORK_ROW_IDS,
   DIFF_ACT,
   DIFF_EDGE_WIDTH,
+  MINIMAP_GHOST_DASH,
   DIFF_PANE_ID,
   DIFF_STATUS_COLOR_VAR,
   GUIDE_STORAGE_KEY,
@@ -70,7 +71,7 @@ import { APP_VERSION, GuideState, PRODUCT_GUIDE, TourTarget, decideStartupGuide,
 import { TourController } from './tour';
 import { DIFF_OFF, diffErrorMessageKey, loadDiff, refreshDiff, type DiffState } from './diff/state';
 import { cameraFor, focusRect, type FocusContext } from './diff/focus';
-import { occupiedRects, placeGhosts, removedEdges, diffCardHeight, type Rect } from './diff/layout';
+import { extendBounds, ghostRects, occupiedRects, placeGhosts, removedEdges, diffCardHeight, type Rect } from './diff/layout';
 import type { DiffView } from './diff/model';
 import {
   columnDiffTitle,
@@ -1033,6 +1034,7 @@ export class Workbench {
       x1 = Math.max(x1, p.x + e.w); y1 = Math.max(y1, p.y + e.h);
     }
     if (!Number.isFinite(x0)) return;
+    ({ minX: x0, minY: y0, maxX: x1, maxY: y1 } = extendBounds({ minX: x0, minY: y0, maxX: x1, maxY: y1 }, this.diffGhostRects()));
     const w = x1 - x0, h = y1 - y0;
     // a ilha de ferramentas flutua à esquerda (cresce com a escala da UI): o diagrama fica à direita dela
     const tr = this.els['tools']?.getBoundingClientRect();
@@ -1185,6 +1187,12 @@ export class Workbench {
     }
     this.diffGhostPositions = placeGhosts(occupied, ghostSlots(view));
     return this.diffGhostPositions;
+  }
+
+  /** Retângulos dos cartões fantasma enquanto o modo Comparar está pronto (fit e minimapa os incluem). */
+  private diffGhostRects(): Rect[] {
+    if (this.diff.status !== 'ready') return [];
+    return ghostRects(ghostSlots(this.diff.view), this.ghostLayout(this.diff.view));
   }
 
   /** Clique no resumo: seleciona (quando existe no head) e leva a câmera até o item. */
@@ -1796,6 +1804,7 @@ export class Workbench {
       <div class="sep"></div>
       ${tb('Relayout', 'LayoutGrid', 'Auto-layout · Ctrl+L')}
       ${tb('ToggleFocusMode', 'Scan', 'Modo Foco (vizinhança FK) · F', this.focusMode && this.selection.length > 0 ? 'acc' : '')}
+      <button class="tb ${this.diff.status !== 'off' ? 'acc' : ''}" data-act="ToggleDiff" aria-pressed="${this.diff.status !== 'off'}" aria-label="${esc(t('Comparar com o git HEAD'))}" title="${esc(t('Comparar com o git HEAD · D'))}">${ICON('GitCompare', 16)}</button>
       ${tb('ToggleEditor', 'Braces', 'Editor DBML · Ctrl+E', this.editorOpen ? 'acc' : '')}`;
     const existingFocusBar = this.wb.querySelector('#focus-mode-bar');
     if (this.focusMode && this.selection.length > 0) {
@@ -1863,6 +1872,8 @@ export class Workbench {
       maxX = Math.max(maxX, p.x + ev.w);
       maxY = Math.max(maxY, p.y + ev.h);
     }
+    const ghosts = this.diffGhostRects();
+    ({ minX, minY, maxX, maxY } = extendBounds({ minX, minY, maxX, maxY }, ghosts));
     const margin = 40;
     const xf = computeMinimapTransform(minX - margin, minY - margin, maxX + margin, maxY + margin, MINIMAP_W, MINIMAP_H, MINIMAP_PAD);
     this.minimapXform = xf;
@@ -1878,6 +1889,11 @@ export class Workbench {
       const a = worldToMap(xf, p.x, p.y);
       const b = worldToMap(xf, p.x + ev.w, p.y + ev.h);
       svg += `<rect x="${a.x.toFixed(1)}" y="${a.y.toFixed(1)}" width="${Math.max(3, b.x - a.x).toFixed(1)}" height="${Math.max(3, b.y - a.y).toFixed(1)}" rx="2" fill="${g.textFaint}" fill-opacity="0.45"/>`;
+    }
+    for (const r of ghosts) {
+      const a = worldToMap(xf, r.x, r.y);
+      const b = worldToMap(xf, r.x + r.w, r.y + r.h);
+      svg += `<rect class="minimap-ghost" x="${a.x.toFixed(1)}" y="${a.y.toFixed(1)}" width="${Math.max(3, b.x - a.x).toFixed(1)}" height="${Math.max(3, b.y - a.y).toFixed(1)}" rx="2" fill="none" stroke="${DIFF_STATUS_COLOR_VAR.removed}" stroke-width="1" stroke-dasharray="${MINIMAP_GHOST_DASH}"/>`;
     }
     for (const tv of this.scene.tables) {
       const p = this.positions[tv.name];

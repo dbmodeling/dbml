@@ -92,6 +92,8 @@ export const DIFF_GHOST_OPACITY = 0.55;
 export const DIFF_EDGE_WIDTH = 2.2;
 /** Traço tracejado das arestas removidas (`stroke-dasharray`). */
 export const DIFF_GHOST_DASH = '6 4';
+/** Traço tracejado (`stroke-dasharray`, px do minimapa) do contorno dos cartões fantasma no minimapa. */
+export const MINIMAP_GHOST_DASH = '3 2';
 /** Espessura (px de mundo) da aresta removida. */
 export const DIFF_GHOST_EDGE_WIDTH = 1.6;
 /** Largura (px) e altura estimada de um cartão de enum (espelha `.card.enum-card` no CSS). */

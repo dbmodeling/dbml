@@ -944,6 +944,10 @@ const TRANSLATIONS: &[(&str, &str)] = &[
     ("Comparar: mudança anterior", "Compare: previous change"),
     ("Sair do modo Comparar", "Exit Compare mode"),
     (
+        "Lendo o arquivo no HEAD do git…",
+        "Reading the file at git HEAD…",
+    ),
+    (
         "Sem diferenças em relação ao HEAD",
         "No differences from HEAD",
     ),

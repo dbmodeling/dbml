@@ -5,11 +5,13 @@ use crate::actions::{self, *};
 use crate::constants::{
     CARD_ROWS_TOP_PAD, DIFF_DASH_GAP_PX, DIFF_DASH_PX, DIFF_EDGE_W_PX, DIFF_FOCUS_MIN_ZOOM,
     DIFF_GHOST_GAP, DIFF_GHOST_OPACITY, DIFF_GHOST_PER_ROW, DIFF_HALO_ALPHA, DIFF_HALO_SPREAD_PX,
-    DIFF_ITEM_H_PX, DIFF_MARK_W_PX, DIFF_PANEL_MARGIN_PX, DIFF_PANEL_MAX_H_PX, DIFF_PANEL_PAD_PX,
-    DIFF_PANEL_W_PX, DIFF_ROW_TINT, DIFF_UNCHANGED_OPACITY, ID_DIFF_EXIT, ID_DIFF_GHOST_PREFIX,
-    ID_DIFF_ITEM_PREFIX, ID_DIFF_LIST, ID_DIFF_PANEL,
+    DIFF_ITEM_H_PX, DIFF_MARK_W_PX, DIFF_MINIMAP_GHOST_ALPHA, DIFF_PANEL_MARGIN_PX,
+    DIFF_PANEL_MAX_H_PX, DIFF_PANEL_PAD_PX, DIFF_PANEL_W_PX, DIFF_ROW_TINT, DIFF_UNCHANGED_OPACITY,
+    ID_DIFF_EXIT, ID_DIFF_GHOST_PREFIX, ID_DIFF_ITEM_PREFIX, ID_DIFF_LIST, ID_DIFF_PANEL,
+    ID_TOOL_DIFF, TOOL_ISLAND_OFFSET_Y_PX,
 };
 use crate::diff_view::{DiffGroup, DiffStatus, DiffTarget, DiffView};
+use crate::git_base::BaseState;
 use crate::glass::{
     FONT_MONO, Glass, Mode, TABLE_COLORS, TEXT_SM, TEXT_XS, card_shadow, elevation, hex,
 };
@@ -141,14 +143,39 @@ struct DiffSaved {
 
 /// Modo Comparar (#18): canvas somente leitura com o diff contra o `HEAD` do git.
 struct DiffSession {
-    /// Esquema da base, ou a chave pt-BR do erro que impediu lê-la.
-    base: Result<Schema, &'static str>,
+    /// Esquema da base: carregando (git em segundo plano), lido, ou a chave pt-BR do erro.
+    base: BaseState<Schema>,
     view: Rc<DiffView>,
     ghost_tables: HashMap<String, (f32, f32)>,
     ghost_enums: HashMap<String, (f32, f32)>,
     /// Item do resumo em foco (navegação por teclado).
     cursor: Option<usize>,
     saved: DiffSaved,
+}
+
+impl DiffSession {
+    /// Retângulos de mundo dos cartões fantasma (tabelas e enums removidos desde o `HEAD`).
+    fn ghost_rects(&self) -> Vec<layout::Rect> {
+        let tables = self.view.removed_tables.iter().filter_map(|t| {
+            let &(x, y) = self.ghost_tables.get(&t.qualified_name())?;
+            Some(layout::Rect {
+                x,
+                y,
+                w: CARD_W,
+                h: card_h(t.columns.len()),
+            })
+        });
+        let enums = self.view.removed_enums.iter().filter_map(|e| {
+            let &(x, y) = self.ghost_enums.get(&e.name)?;
+            Some(layout::Rect {
+                x,
+                y,
+                w: ENUM_W,
+                h: enum_h(e),
+            })
+        });
+        tables.chain(enums).collect()
+    }
 }
 
 /// Cor do status no modo Comparar: verde = adicionado, âmbar = modificado, vermelho = removido.
@@ -223,6 +250,8 @@ pub struct Diagram {
     pub tour_bounds: Option<crate::shell::guide_ui::TourBoundsMap>,
     /// Modo Comparar ativo (somente leitura).
     diff: Option<DiffSession>,
+    /// Ticket do último pedido de base do modo Comparar (descarta resultados obsoletos).
+    diff_ticket: u64,
 }
 
 impl Diagram {
@@ -266,6 +295,7 @@ impl Diagram {
             highlighted_column: None,
             tour_bounds: None,
             diff: None,
+            diff_ticket: 0,
         };
         d.set_schema(schema);
         d
@@ -320,9 +350,36 @@ impl Diagram {
         self.diff.is_some()
     }
 
-    /// Entra no modo Comparar contra `base` (ou mostra o erro que impediu lê-la). Guarda vista e
-    /// seleção para restaurar na saída; não altera texto, posições nem histórico.
-    pub fn enter_diff(&mut self, base: Result<Schema, &'static str>) {
+    /// Entra no modo Comparar com a base ainda carregando; devolve o ticket que
+    /// [`Self::finish_diff`] exige. Guarda vista e seleção para restaurar na saída; não altera
+    /// texto, posições nem histórico.
+    pub fn begin_diff(&mut self) -> u64 {
+        self.diff_ticket += 1;
+        self.enter_diff(BaseState::Loading(self.diff_ticket));
+        self.diff_ticket
+    }
+
+    /// `true` se o modo Comparar ainda espera a base do pedido `ticket`.
+    pub fn diff_waiting_for(&self, ticket: u64) -> bool {
+        self.diff
+            .as_ref()
+            .is_some_and(|s| matches!(s.base, BaseState::Loading(t) if t == ticket))
+    }
+
+    /// Aplica a base lida em segundo plano. Descarta (`false`) se o modo foi desligado ou
+    /// religado (outro ticket) desde o pedido.
+    pub fn finish_diff(&mut self, ticket: u64, base: Result<Schema, &'static str>) -> bool {
+        let Some(session) = &mut self.diff else {
+            return false;
+        };
+        if !session.base.resolve(ticket, base) {
+            return false;
+        }
+        self.refresh_diff();
+        true
+    }
+
+    fn enter_diff(&mut self, base: BaseState<Schema>) {
         let saved = self.diff.take().map_or_else(
             || DiffSaved {
                 pan: self.pan,
@@ -382,7 +439,9 @@ impl Diagram {
     /// Recalcula o diff e os cartões fantasma (o head é o esquema atual do canvas).
     fn refresh_diff(&mut self) {
         let Some(session) = &self.diff else { return };
-        let Ok(base) = &session.base else { return };
+        let Some(base) = session.base.ready() else {
+            return;
+        };
         let view = crate::diff_view::build_diff_view(&schema::diff_schemas(base, &self.schema));
         let pos = self.positions();
         let mut occupied: Vec<layout::Rect> = Vec::new();
@@ -741,10 +800,19 @@ impl Diagram {
         }
     }
 
+    /// O minimapa tem o que mostrar: tabelas do esquema ou fantasmas do modo Comparar.
+    fn minimap_has_cards(&self) -> bool {
+        !self.schema.tables.is_empty()
+            || self
+                .diff
+                .as_ref()
+                .is_some_and(|s| !s.ghost_tables.is_empty() || !s.ghost_enums.is_empty())
+    }
+
     fn minimap_transform(
         &self,
     ) -> Option<(crate::canvas_geom::MinimapTransform, (f32, f32, f32, f32))> {
-        if self.schema.tables.is_empty() {
+        if !self.minimap_has_cards() {
             return None;
         }
         let (vw, vh) = (
@@ -755,25 +823,15 @@ impl Diagram {
         let vp_y = -self.pan.1 / self.zoom;
         let vp_w = vw / self.zoom;
         let vp_h = vh / self.zoom;
-        let (mut min_x, mut min_y, mut max_x, mut max_y) = (vp_x, vp_y, vp_x + vp_w, vp_y + vp_h);
-        for t in &self.schema.tables {
-            let q = t.qualified_name();
-            if let Some(&(x, y)) = self.pos.get(&q) {
-                min_x = min_x.min(x);
-                min_y = min_y.min(y);
-                max_x = max_x.max(x + CARD_W);
-                max_y = max_y.max(y + card_h(t.columns.len()));
-            }
-        }
-        for en in &self.schema.enums {
-            let key = enum_key(en);
-            if let Some(&(x, y)) = self.pos.get(&key) {
-                min_x = min_x.min(x);
-                min_y = min_y.min(y);
-                max_x = max_x.max(x + ENUM_W);
-                max_y = max_y.max(y + enum_h(en));
-            }
-        }
+        let viewport = layout::Rect {
+            x: vp_x,
+            y: vp_y,
+            w: vp_w,
+            h: vp_h,
+        };
+        let (min_x, min_y, max_x, max_y) = crate::canvas_geom::world_bounds(
+            std::iter::once(viewport).chain(self.content_rects(&self.pos)),
+        )?;
         let margin = 40.0;
         let xf = crate::canvas_geom::MinimapTransform::compute(
             min_x - margin,
@@ -907,37 +965,50 @@ impl Diagram {
         self.animate_viewport(to);
     }
 
+    /// Retângulos de mundo de todos os cartões desenhados: tabelas e enums do esquema (em `pos`)
+    /// e, no modo Comparar, os fantasmas (removidos desde o `HEAD`).
+    fn content_rects(&self, pos: &HashMap<String, (f32, f32)>) -> Vec<layout::Rect> {
+        let rows = |t: &schema::Table| {
+            self.diff.as_ref().map_or(t.columns.len(), |s| {
+                crate::diff_view::diff_row_count(t, &s.view)
+            })
+        };
+        let tables = self.schema.tables.iter().filter_map(|t| {
+            let &(x, y) = pos.get(&t.qualified_name())?;
+            Some(layout::Rect {
+                x,
+                y,
+                w: CARD_W,
+                h: card_h(rows(t)),
+            })
+        });
+        let enums = self.schema.enums.iter().filter_map(|en| {
+            let &(x, y) = pos.get(&enum_key(en))?;
+            Some(layout::Rect {
+                x,
+                y,
+                w: ENUM_W,
+                h: enum_h(en),
+            })
+        });
+        let ghosts = self
+            .diff
+            .as_ref()
+            .map(DiffSession::ghost_rects)
+            .unwrap_or_default();
+        tables.chain(enums).chain(ghosts).collect()
+    }
+
     fn do_fit(&mut self) {
         let (w, h) = (f32::from(self.size.width), f32::from(self.size.height));
-        if (self.schema.tables.is_empty() && self.schema.enums.is_empty()) || w < 1. || h < 1. {
+        if w < 1. || h < 1. {
             return;
         }
-        let (mut x0, mut y0, mut x1, mut y1) = (
-            f32::INFINITY,
-            f32::INFINITY,
-            f32::NEG_INFINITY,
-            f32::NEG_INFINITY,
-        );
-        for t in &self.schema.tables {
-            let Some(&(x, y)) = self.positions().get(&t.qualified_name()) else {
-                continue;
-            };
-            x0 = x0.min(x);
-            y0 = y0.min(y);
-            x1 = x1.max(x + CARD_W);
-            y1 = y1.max(y + card_h(t.columns.len()));
-        }
-        for en in &self.schema.enums {
-            if let Some(&(x, y)) = self.positions().get(&enum_key(en)) {
-                x0 = x0.min(x);
-                y0 = y0.min(y);
-                x1 = x1.max(x + ENUM_W);
-                y1 = y1.max(y + enum_h(en));
-            }
-        }
-        if !x0.is_finite() {
+        let Some((x0, y0, x1, y1)) =
+            crate::canvas_geom::world_bounds(self.content_rects(self.positions()))
+        else {
             return;
-        }
+        };
         let pad = 48.;
         // a ilha de ferramentas fica à esquerda (12 + 40 × escala base 1,3) e o grupo desenha 24 além
         let pad_x = 12. + 40. * crate::glass::UI_BASE + 24. + 12.;
@@ -2973,7 +3044,7 @@ impl Diagram {
                     .text_color(g.text)
                     .child(t("Comparar com HEAD")),
             )
-            .when(d.base.is_ok(), |h| {
+            .when(d.base.ready().is_some(), |h| {
                 h.children(counts.map(|(st, n)| {
                     div()
                         .font_family(FONT_MONO)
@@ -3011,11 +3082,14 @@ impl Diagram {
                 .child(t(text))
         };
         let body = match &d.base {
-            Err(msg) => message(msg, g.danger).into_any_element(),
-            Ok(_) if d.view.is_empty() => {
+            BaseState::Loading(_) => {
+                message("Lendo o arquivo no HEAD do git…", g.text_muted).into_any_element()
+            }
+            BaseState::Failed(msg) => message(msg, g.danger).into_any_element(),
+            BaseState::Ready(_) if d.view.is_empty() => {
                 message("Sem diferenças em relação ao HEAD", g.text_muted).into_any_element()
             }
-            Ok(_) => {
+            BaseState::Ready(_) => {
                 let mut list = div()
                     .id(ID_DIFF_LIST)
                     .flex()
@@ -3308,6 +3382,7 @@ impl Diagram {
                 "tool-select" => self.tool == Tool::Select,
                 "tool-hand" => self.tool == Tool::Hand,
                 "tool-focus" => self.focus_mode(),
+                ID_TOOL_DIFF => self.diff_active(),
                 "tool-editor" => g.editor_open,
                 _ => false,
             };
@@ -3325,7 +3400,7 @@ impl Diagram {
                 .absolute()
                 .left(px(12.))
                 .top(relative(0.5))
-                .mt(px(-130.))
+                .mt(px(TOOL_ISLAND_OFFSET_Y_PX))
                 .child(tools)
                 .when_some(self.tour_bounds.clone(), |d, map| {
                     d.child(crate::shell::guide_ui::track_tour_anchor(
@@ -3456,8 +3531,8 @@ impl Diagram {
                             IconName::Frame,
                             crate::i18n::t("Minimapa"),
                             Box::new(ToggleMinimap),
-                            self.minimap_open && !self.schema.tables.is_empty(),
-                            !self.schema.tables.is_empty(),
+                            self.minimap_open && self.minimap_has_cards(),
+                            self.minimap_has_cards(),
                             30.,
                         ))
                         .child(tool_btn(
@@ -3473,7 +3548,7 @@ impl Diagram {
                 .into_any_element(),
         );
 
-        let minimap_visible = self.minimap_open && !self.schema.tables.is_empty();
+        let minimap_visible = self.minimap_open && self.minimap_has_cards();
         if minimap_visible && let Some((xf, vp_world)) = self.minimap_transform() {
             self.minimap_xform.set(Some(xf));
             let map_w = crate::canvas_geom::MINIMAP_W;
@@ -3544,6 +3619,19 @@ impl Diagram {
                     mm_enums.push((mx0, my0, (mx1 - mx0).max(3.), (my1 - my0).max(3.)));
                 }
             }
+            let mm_ghosts: Vec<(f32, f32, f32, f32)> = self
+                .diff
+                .as_ref()
+                .map(DiffSession::ghost_rects)
+                .unwrap_or_default()
+                .into_iter()
+                .map(|r| {
+                    let (mx0, my0) = xf.world_to_map(r.x, r.y);
+                    let (mx1, my1) = xf.world_to_map(r.x + r.w, r.y + r.h);
+                    (mx0, my0, (mx1 - mx0).max(3.), (my1 - my0).max(3.))
+                })
+                .collect();
+            let ghost_color = diff_color(g, DiffStatus::Removed);
             let (vp_left, vp_top) = xf.world_to_map(vp_world.0, vp_world.1);
             let (vp_right, vp_bottom) =
                 xf.world_to_map(vp_world.0 + vp_world.2, vp_world.1 + vp_world.3);
@@ -3646,6 +3734,18 @@ impl Diagram {
                                                 size(px(w), px(h)),
                                             ),
                                             if sel { accent } else { c.opacity(0.75) },
+                                        )
+                                        .corner_radii(px(2.)),
+                                    );
+                                }
+                                for &(x, y, w, h) in &mm_ghosts {
+                                    window.paint_quad(
+                                        fill(
+                                            Bounds::new(
+                                                bounds.origin + point(px(x), px(y)),
+                                                size(px(w), px(h)),
+                                            ),
+                                            ghost_color.opacity(DIFF_MINIMAP_GHOST_ALPHA),
                                         )
                                         .corner_radii(px(2.)),
                                     );
@@ -4011,6 +4111,13 @@ fn tool_items() -> Vec<ToolItem> {
             false,
         ),
         (
+            ID_TOOL_DIFF,
+            IconName::GitCompare,
+            crate::i18n::t("Comparar com HEAD (git)"),
+            Box::new(ToggleDiffMode),
+            false,
+        ),
+        (
             "tool-editor",
             IconName::Braces,
             "Editor DBML",
@@ -4207,6 +4314,27 @@ mod tests {
                     d.pos.get_mut("c").unwrap().0 += 10.;
                     d.validate_routes();
                     assert!(!Rc::ptr_eq(&first, &d.ref_geom(0).unwrap()));
+                    // modo Comparar: base lida em segundo plano; só o último pedido é aceito
+                    let stale = d.begin_diff();
+                    let ticket = d.begin_diff();
+                    assert!(d.diff_waiting_for(ticket) && !d.diff_waiting_for(stale));
+                    assert!(!d.finish_diff(stale, Ok(Schema::default())));
+                    let base = dbml_analysis::analyze(
+                        "Table a {\n id int\n}\nTable b {\n id int\n}\nTable c {\n id int\n}\nTable old {\n id int\n}",
+                    );
+                    assert!(d.finish_diff(ticket, Ok(base)));
+                    assert!(!d.diff_waiting_for(ticket));
+                    // o cartão fantasma (abaixo do diagrama) cabe no "ajustar à tela"
+                    let ghost = d.diff.as_ref().unwrap().ghost_rects()[0];
+                    d.do_fit();
+                    let (vw, vh) = (f32::from(d.size.width), f32::from(d.size.height));
+                    let (gx0, gy0) = (ghost.x * d.zoom + d.pan.0, ghost.y * d.zoom + d.pan.1);
+                    let (gx1, gy1) = (gx0 + ghost.w * d.zoom, gy0 + ghost.h * d.zoom);
+                    assert!(gx0 >= 0. && gy0 >= 0. && gx1 <= vw && gy1 <= vh, "{ghost:?}");
+                    assert!(d.minimap_has_cards());
+                    d.exit_diff();
+                    assert!(!d.finish_diff(ticket, Ok(Schema::default())));
+                    assert!(!d.diff_active());
                     cx.notify();
                 });
                 draw(cx);
@@ -4299,7 +4427,7 @@ mod tests {
     /// Ações e divisores da ilha de ferramentas.
     #[::core::prelude::v1::test]
     fn tool_island_order_and_separators() {
-        let want: [(&str, &dyn Action, bool); 8] = [
+        let want: [(&str, &dyn Action, bool); 9] = [
             ("tool-select", &ToolSelect, false),
             ("tool-hand", &ToolHand, false),
             ("tool-table", &NewTable, true),
@@ -4307,6 +4435,7 @@ mod tests {
             ("tool-group", &GroupSelection, false),
             ("tool-layout", &Relayout, true),
             ("tool-focus", &ToggleFocusMode, false),
+            (ID_TOOL_DIFF, &ToggleDiffMode, false),
             ("tool-editor", &ToggleEditor, false),
         ];
         let got = tool_items();
@@ -4315,6 +4444,70 @@ mod tests {
             assert_eq!((*id, *sep), (wid, wsep));
             assert!(a.partial_eq(wa), "{id}: ação errada");
         }
+    }
+
+    fn diff_session(base: &str, head: &Schema) -> DiffSession {
+        let base = dbml_analysis::analyze(base);
+        let view = crate::diff_view::build_diff_view(&schema::diff_schemas(&base, head));
+        DiffSession {
+            base: BaseState::Ready(base),
+            view: Rc::new(view),
+            ghost_tables: HashMap::from([("old".to_string(), (0., 900.))]),
+            ghost_enums: HashMap::from([("gone".to_string(), (400., 900.))]),
+            cursor: None,
+            saved: DiffSaved {
+                pan: (0., 0.),
+                zoom: 1.,
+                selected: None,
+                selected_enum: None,
+                multi: Vec::new(),
+                selected_ref: None,
+                focus_mode: false,
+                highlighted_column: None,
+            },
+        }
+    }
+
+    /// Cartões fantasma (removidos) entram nos limites do "ajustar à tela" e do minimapa.
+    #[::core::prelude::v1::test]
+    fn ghost_cards_extend_the_diagram_bounds() {
+        let head = dbml_analysis::analyze("Table a {\n id int\n}\n");
+        let s = diff_session(
+            "Table a {\n id int\n}\nTable old {\n id int\n x int\n}\nEnum gone {\n  v\n}\n",
+            &head,
+        );
+        let ghosts = s.ghost_rects();
+        let old_h = card_h(2);
+        assert_eq!(ghosts.len(), 2);
+        assert!(ghosts.contains(&layout::Rect {
+            x: 0.,
+            y: 900.,
+            w: CARD_W,
+            h: old_h
+        }));
+        let gone = &dbml_analysis::analyze("Enum gone {\n  v\n}\n").enums[0];
+        assert!(ghosts.contains(&layout::Rect {
+            x: 400.,
+            y: 900.,
+            w: ENUM_W,
+            h: enum_h(gone)
+        }));
+        let head_card = layout::Rect {
+            x: 0.,
+            y: 0.,
+            w: CARD_W,
+            h: card_h(1),
+        };
+        let b = crate::canvas_geom::world_bounds(std::iter::once(head_card).chain(ghosts));
+        assert_eq!(
+            b,
+            Some((0., 0., 400. + ENUM_W, 900. + old_h.max(enum_h(gone))))
+        );
+        // base ainda carregando: nenhum fantasma
+        let mut loading = diff_session("Table old {}\n", &head);
+        loading.base = BaseState::Loading(1);
+        loading.view = Rc::default();
+        assert_eq!(loading.ghost_rects(), Vec::new());
     }
 
     /// Enum v4: cabeçalho + linhas de 26px + 6px de respiro em cima e embaixo.

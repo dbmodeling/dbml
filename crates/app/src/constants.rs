@@ -112,3 +112,10 @@ pub const ID_DIFF_LIST: &str = "canvas-diff-list";
 pub const ID_DIFF_EXIT: &str = "canvas-diff-exit";
 pub const ID_DIFF_ITEM_PREFIX: &str = "canvas-diff-item";
 pub const ID_DIFF_GHOST_PREFIX: &str = "canvas-diff-ghost";
+/// Botão do modo Comparar na ilha de ferramentas do canvas.
+pub const ID_TOOL_DIFF: &str = "tool-diff";
+/// Deslocamento vertical da ilha de ferramentas a partir do meio do canvas (px de tela; ≈ metade
+/// da altura da ilha, para centralizá-la).
+pub const TOOL_ISLAND_OFFSET_Y_PX: f32 = -146.0;
+/// Opacidade dos cartões fantasma no minimapa.
+pub const DIFF_MINIMAP_GHOST_ALPHA: f32 = 0.5;

@@ -65,6 +65,35 @@ export function placeGhosts(occupied: readonly Rect[], slots: readonly GhostSlot
   return out;
 }
 
+export interface Bounds {
+  minX: number;
+  minY: number;
+  maxX: number;
+  maxY: number;
+}
+
+/** Retângulos dos cartões fantasma já posicionados (slots sem posição são ignorados). */
+export function ghostRects(slots: readonly GhostSlot[], positions: Record<string, Pt>): Rect[] {
+  const out: Rect[] = [];
+  for (const s of slots) {
+    const p = positions[s.key];
+    if (p) out.push({ x: p.x, y: p.y, w: s.w, h: s.h });
+  }
+  return out;
+}
+
+/** Estende `bounds` para conter `rects` (usado por "ajustar à tela" e minimapa no modo Comparar). */
+export function extendBounds(bounds: Bounds, rects: readonly Rect[]): Bounds {
+  let { minX, minY, maxX, maxY } = bounds;
+  for (const r of rects) {
+    minX = Math.min(minX, r.x);
+    minY = Math.min(minY, r.y);
+    maxX = Math.max(maxX, r.x + r.w);
+    maxY = Math.max(maxY, r.y + r.h);
+  }
+  return { minX, minY, maxX, maxY };
+}
+
 /** Y (mundo) do centro da linha `row` de um cartão posicionado em `pos`. */
 export const rowCenterY = (pos: Pt, row: number): number => pos.y + HEADER_H + 4 + ROW_H * (row + 0.5);
 

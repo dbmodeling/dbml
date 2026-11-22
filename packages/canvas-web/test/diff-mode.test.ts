@@ -55,6 +55,7 @@ beforeEach(() => {
 afterEach(() => {
   setLanguage('pt-BR');
   vi.unstubAllGlobals();
+  vi.restoreAllMocks();
 });
 
 describe('modo Comparar no workbench', () => {
@@ -183,5 +184,58 @@ describe('modo Comparar no workbench', () => {
     press('Escape', { code: 'Escape' });
     await frame();
     expect(root.querySelectorAll('.diff-ghost')).toHaveLength(0);
+  });
+  it('botão na ilha de ferramentas do canvas: título i18n, aria-pressed e clique alterna o modo', async () => {
+    const { root } = setup();
+    await frame();
+    const btn = () => root.querySelector('#tools [data-act="ToggleDiff"]') as HTMLButtonElement;
+    expect(btn()).not.toBeNull();
+    expect(btn().tagName).toBe('BUTTON');
+    expect(btn().title).toBe('Comparar com o git HEAD · D');
+    expect(btn().getAttribute('aria-label')).toBe('Comparar com o git HEAD');
+    expect(btn().getAttribute('aria-pressed')).toBe('false');
+    btn().click();
+    await frame();
+    expect(btn().getAttribute('aria-pressed')).toBe('true');
+    expect(btn().classList.contains('acc')).toBe(true);
+    expect(root.querySelectorAll('.card.diff-ghost')).toHaveLength(1);
+    btn().click();
+    await frame();
+    expect(btn().getAttribute('aria-pressed')).toBe('false');
+  });
+
+  it('minimapa desenha o cartão fantasma só enquanto o modo está ativo', async () => {
+    const { root } = setup();
+    await frame();
+    expect(root.querySelectorAll('#minimap .minimap-ghost')).toHaveLength(0);
+    press('d');
+    await frame();
+    expect(root.querySelectorAll('#minimap .minimap-ghost')).toHaveLength(1);
+    press('d');
+    await frame();
+    expect(root.querySelectorAll('#minimap .minimap-ghost')).toHaveLength(0);
+  });
+
+  it('ajustar à tela enquadra também o cartão fantasma', async () => {
+    const SURFACE_W = 1200;
+    const SURFACE_H = 800;
+    const zero = { x: 0, y: 0, left: 0, top: 0, right: 0, bottom: 0, width: 0, height: 0, toJSON: () => ({}) };
+    vi.spyOn(Element.prototype, 'getBoundingClientRect').mockImplementation(function (this: Element) {
+      return this.id === 'surface' ? { ...zero, right: SURFACE_W, bottom: SURFACE_H, width: SURFACE_W, height: SURFACE_H } : zero;
+    });
+    const { workbench } = setup();
+    await frame();
+    const wb = workbench as unknown as { pan: { x: number; y: number }; fit(): void; diffGhostRects(): { y: number; h: number }[] };
+    press('d');
+    await frame();
+    const ghosts = wb.diffGhostRects();
+    expect(ghosts).toHaveLength(1);
+    wb.fit();
+    const withGhost = { ...wb.pan };
+    press('d');
+    await frame();
+    wb.fit();
+    // com o fantasma abaixo do diagrama o conteúdo é mais alto, logo o enquadramento (pan) difere
+    expect(withGhost.y).not.toBe(wb.pan.y);
   });
 });
