@@ -20,6 +20,60 @@ pub const TLS_BTN_HEIGHT_PX: f32 = 28.0;
 pub const TLS_LABEL_WIDTH_PX: f32 = 96.0;
 pub const TLS_LABEL_FONT_PX: f32 = 12.5;
 
+/// Connection string do modal "Conectar ao banco": separador do esquema e usuário/senha
+/// provisórios usados só para montar a string sem usuário ou sem expor a senha (nunca enviados).
+pub const CONN_SCHEME_SEP: &str = "://";
+pub const CONN_USER_STUB: &str = "u";
+pub const CONN_PASSWORD_STUB: &str = "p";
+/// Espera após a última tecla na connection string antes de lê-la (ms).
+pub const CONN_STRING_DEBOUNCE_MS: u64 = 250;
+
+/// IDs dos controles do modal "Conectar ao banco".
+pub const ID_DB_ENGINE: &str = "db-engine";
+pub const ID_DB_ENGINE_MENU: &str = "db-engine-menu";
+pub const ID_DB_CONN_COPY: &str = "db-conn-copy";
+pub const ID_DB_PASSWORD_REVEAL: &str = "db-password-reveal";
+pub const ID_DB_PICK_FILE: &str = "db-pick-file";
+pub const ID_DB_STATUS: &str = "db-status";
+pub const ID_DB_WARNINGS: &str = "db-warn";
+pub const ID_DB_TRUST: &str = "db-trust";
+pub const ID_DB_TEST: &str = "db-test";
+pub const ID_DB_CONNECT: &str = "db-connect";
+pub const ID_DB_CANCEL: &str = "db-cancel";
+pub const ID_DB_REPLACE: &str = "db-replace";
+pub const ID_DB_INSERT: &str = "db-insert";
+
+/// Tecla que também abre o dropdown de banco (além de Enter/Espaço do botão).
+pub const KEY_ARROW_DOWN: &str = "down";
+
+/// Geometria do modal "Conectar ao banco" (em pixels).
+pub const DB_DIALOG_W_PX: f32 = 600.0;
+pub const DB_DIALOG_TOP_PX: f32 = 64.0;
+pub const DB_FORM_PAD_X_PX: f32 = 18.0;
+pub const DB_FORM_PAD_Y_PX: f32 = 10.0;
+pub const DB_FORM_GAP_PX: f32 = 8.0;
+pub const DB_FIELD_GAP_PX: f32 = 12.0;
+pub const DB_FIELD_LABEL_W_PX: f32 = 96.0;
+/// Rótulo da segunda coluna (Porta, Senha) nas linhas duplas.
+pub const DB_FIELD_LABEL2_W_PX: f32 = 48.0;
+pub const DB_FIELD_LABEL_FONT_PX: f32 = 12.5;
+pub const DB_FIELD_H_PX: f32 = 32.0;
+pub const DB_FIELD_PAD_X_PX: f32 = 10.0;
+pub const DB_FIELD_RADIUS_PX: f32 = 7.0;
+pub const DB_PORT_FIELD_W_PX: f32 = 88.0;
+pub const DB_CONN_FONT_PX: f32 = 12.0;
+pub const DB_ERROR_FONT_PX: f32 = 12.0;
+pub const DB_ENGINE_TRIGGER_W_PX: f32 = 200.0;
+pub const DB_ENGINE_MENU_W_PX: f32 = 200.0;
+pub const DB_STATUS_MAX_H_PX: f32 = 72.0;
+pub const DB_STATUS_MARGIN_TOP_PX: f32 = 4.0;
+pub const DB_STATUS_PAD_X_PX: f32 = 12.0;
+pub const DB_STATUS_PAD_Y_PX: f32 = 10.0;
+pub const DB_STATUS_RADIUS_PX: f32 = 8.0;
+pub const DB_STATUS_ICON_PX: f32 = 14.0;
+pub const DB_WARNINGS_MAX_H_PX: f32 = 64.0;
+pub const DB_FOOTER_PAD_Y_PX: f32 = 16.0;
+
 /// Configuração do runtime tokio reutilizado pela introspecção de banco.
 pub const INTROSPECT_WORKER_THREADS: usize = 1;
 pub const INTROSPECT_TIMEOUT_SECS: u64 = 10;
