@@ -524,6 +524,23 @@ export const WORKBENCH_CSS = `${FONT_FACE_CSS}
 .wb .toast { animation: fxToastIn .18s var(--ease) backwards; }
 .wb .toast.out { animation: fxToastOut .18s var(--ease) forwards; }
 
+/* Modo Comparar (diff com o git HEAD): verde = adicionado, âmbar = modificado, vermelho = removido */
+.wb .card.diff-added { border-color: var(--ok); box-shadow: 0 0 0 1px var(--ok), var(--card-shadow); }
+.wb .card.diff-modified { border-color: var(--warning); box-shadow: 0 0 0 1px var(--warning), var(--card-shadow); }
+.wb .card.diff-ghost { pointer-events: none; background: color-mix(in srgb, var(--danger) 6%, var(--card)); box-shadow: none; }
+.wb .card.diff-ghost .head .nm { text-decoration: line-through; }
+.wb .row.diff-added, .wb .card.enum-card .ev.diff-added { background: color-mix(in srgb, var(--ok) 14%, transparent); }
+.wb .row.diff-modified, .wb .card.enum-card .ev.diff-modified { background: color-mix(in srgb, var(--warning) 16%, transparent); }
+.wb .row.diff-removed, .wb .card.enum-card .ev.diff-removed { background: color-mix(in srgb, var(--danger) 12%, transparent); }
+.wb .diff-ghost-row .cn, .wb .card.enum-card .ev.diff-ghost-row { text-decoration: line-through; opacity: .85; }
+.wb .dmark { font: 700 12px var(--mono); width: 14px; text-align: center; flex: none; display: inline-block; }
+.wb .diff-summary { display: flex; flex-wrap: wrap; gap: 6px; padding: 10px 12px 6px; }
+.wb .dchip { font: 600 11px var(--mono); padding: 2px 8px; border-radius: 9px; background: var(--input); white-space: nowrap; }
+.wb .diff-row .dmark { margin-right: 2px; }
+.wb .diff-note { align-items: flex-start; gap: 8px; padding: 14px 16px; }
+.wb .diff-detail { margin-top: 4px; font: 11px var(--mono); color: var(--faint); word-break: break-word; }
+.wb .diff-row.fx-press { transform: none; }
+
 @media (prefers-reduced-motion: reduce) {
   .wb, .wb *, .wb *::before, .wb *::after { transition: none !important; animation: none !important; }
 }

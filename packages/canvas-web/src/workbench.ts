@@ -6,6 +6,10 @@
 
 import {
   CONNECT_NETWORK_ROW_IDS,
+  DIFF_ACT,
+  DIFF_EDGE_WIDTH,
+  DIFF_PANE_ID,
+  DIFF_STATUS_COLOR_VAR,
   GUIDE_STORAGE_KEY,
   LOCAL_SESSION_PREFIX,
   MAX_LOCAL_SESSIONS,
@@ -64,9 +68,26 @@ import { ConnectDbModel, DB_ENGINES, DbEngine, INTROSPECT_TIMEOUT_MS, Introspect
 import { IMPORT_DIALECTS, ImportDialect, ImportSqlModel, ImportSqlResult } from './import-sql';
 import { APP_VERSION, GuideState, PRODUCT_GUIDE, TourTarget, decideStartupGuide, pickText } from './guide';
 import { TourController } from './tour';
+import { DIFF_OFF, diffErrorMessageKey, loadDiff, refreshDiff, type DiffState } from './diff/state';
+import { cameraFor, focusRect, type FocusContext } from './diff/focus';
+import { occupiedRects, placeGhosts, removedEdges, diffCardHeight, type Rect } from './diff/layout';
+import type { DiffView } from './diff/model';
+import {
+  columnDiffTitle,
+  diffMark,
+  diffStatusClass,
+  diffStatusLabel,
+  ghostSlots,
+  renderDiffPanel,
+  renderEnumGhostValues,
+  renderGhostEdges,
+  renderGhostEnum,
+  renderGhostRows,
+  renderGhostTable,
+} from './diff/render';
 
 type Pt = { x: number; y: number };
-type Pane = 'files' | 'schema' | 'problems';
+type Pane = 'files' | 'schema' | 'problems' | typeof DIFF_PANE_ID;
 type Drag =
   | { kind: 'edge'; last: Pt; snapshot: ReturnType<Workbench['captureSnapshot']>; moved: boolean }
   | { kind: 'pan'; lx: number; ly: number }
@@ -109,7 +130,7 @@ const ACTION_ICON: Partial<Record<ActionId, IconName>> = {
   ExportSqlPostgres: 'Database', ExportSqlMysql: 'Database', ExportSqlSqlite: 'Database', ExportSqlSqlServer: 'Database',
   ExportSqlOracle: 'Database', ExportMermaid: 'GitFork', ExportDocsHtml: 'FileCode', ExportDocsMarkdown: 'FileCode',
   ExportPng: 'Image', ExportJpeg: 'Image', ExportSvg: 'PenTool',
-  OpenPalette: 'Command', QuickSearch: 'Search', ToggleFocusMode: 'Scan', CycleFocusDepth: 'Layers',
+  OpenPalette: 'Command', QuickSearch: 'Search', ToggleFocusMode: 'Scan', ToggleDiff: 'GitCompare', CycleFocusDepth: 'Layers',
   ShowShortcuts: 'Keyboard', ShowTour: 'Info', ShowWhatsNew: 'WandSparkles', AddPresetUuidPk: 'Fingerprint', AddPresetBigIntPk: 'KeyRound',
   AddPresetTimestamps: 'Clock', AddPresetSoftDelete: 'Archive',
 };
@@ -118,7 +139,7 @@ const ACTION_ICON: Partial<Record<ActionId, IconName>> = {
 const MAIN_MENU: ReadonlyArray<readonly [string, IconName, ActionId[]]> = [
   ['Arquivo', 'File', ['NewFile', 'SaveFile', 'ExportDbml', 'ImportSqlDdl', 'ConnectDatabase']],
   ['Editar', 'Pencil', ['Undo', 'Redo', 'FormatDocument']],
-  ['Exibir', 'PanelsTopLeft', ['ShowFiles', 'ShowSchema', 'ShowProblems', 'ToggleTheme', 'ToggleEditor', 'ToggleSidebar', 'ToggleInspector', 'ToggleLegend']],
+  ['Exibir', 'PanelsTopLeft', ['ShowFiles', 'ShowSchema', 'ShowProblems', 'ToggleDiff', 'ToggleTheme', 'ToggleEditor', 'ToggleSidebar', 'ToggleInspector', 'ToggleLegend']],
   ['Canvas', 'Frame', ['ToolSelect', 'ToolHand', 'FitView', 'Relayout', 'ZoomIn', 'ZoomOut', 'Deselect']],
   ['Tabelas', 'Table2', ['NewTable', 'NewEnum', 'DeleteSelection', 'RenameSelected', 'GroupSelection', 'UngroupSelection']],
 ];
@@ -261,6 +282,14 @@ export class Workbench {
   private quickSearchIdx = 0;
   private focusMode = false;
   private focusDepth: 1 | 2 = 1;
+  /** Modo Comparar (somente leitura): base = git HEAD do arquivo aberto; nunca toca o buffer nem o histórico. */
+  private diff: DiffState = DIFF_OFF;
+  /** Texto do documento contra o qual `diff` foi calculado. */
+  private diffHead = '';
+  /** Descarta respostas atrasadas de um pedido de base já substituído ou cancelado. */
+  private diffSeq = 0;
+  private diffPrevPane: Exclude<Pane, typeof DIFF_PANE_ID> = 'schema';
+  private diffGhostPositions: Record<string, Pt> = {};
   private highlightedColumn: [string, string] | null = null;
   private minimapXform: MinimapTransform | null = null;
   private minimapVpRect: { x: number; y: number; w: number; h: number } | null = null;
@@ -439,7 +468,8 @@ export class Workbench {
 
   private saveDocSession(): void {
     const snap: SessionSnapshot = {
-      pane: this.pane,
+      // o modo Comparar não é persistido: a sessão guarda o painel que ele substituiu
+      pane: this.pane === DIFF_PANE_ID ? this.diffPrevPane : this.pane,
       editorOpen: this.editorOpen,
       zoom: this.zoom,
       pan: { x: this.pan.x, y: this.pan.y },
@@ -586,6 +616,8 @@ export class Workbench {
     this.source = source;
     this.syncEditorValue();
     this.reanalyze();
+    // outro arquivo: a base do git é a do arquivo novo
+    if (documentChanged && this.diff.status !== 'off') this.startDiff();
     this.renderAll();
     this.maybeStartGuide(meta?.guideState);
   }
@@ -647,6 +679,7 @@ export class Workbench {
     }
     this.selection = this.selection.filter((n) => this.schema.tables.some((t) => qualifiedTableName(t) === n));
     this.computeScene();
+    this.syncDiff();
   }
 
   /** Sessão Wasm (criada sob demanda); `null` se o host não a exporta ou já foi liberada. */
@@ -1098,6 +1131,97 @@ export class Workbench {
     return { tables: visited, edges };
   }
 
+
+  // ───────────────────────── modo Comparar (diff com o git HEAD) ─────────────────────────
+
+  private toggleDiff(): void {
+    if (this.diff.status === 'off') this.startDiff();
+    else this.exitDiff();
+  }
+
+  /** Liga o modo: abre o painel de resumo, pede a base ao host e calcula o diff (somente leitura). */
+  private startDiff(): void {
+    if (this.pane !== DIFF_PANE_ID) this.diffPrevPane = this.pane;
+    this.pane = DIFF_PANE_ID;
+    this.prefs.sidebar = true;
+    this.editorOpen = false;
+    this.diff = { status: 'loading' };
+    const seq = ++this.diffSeq;
+    this.diffHead = this.source;
+    this.renderAll();
+    void loadDiff(this.transport, this.wasm, this.source, this.documentId).then((state) => {
+      if (this.destroyed || seq !== this.diffSeq || this.diff.status === 'off') return;
+      this.diff = state;
+      this.diffHead = this.source;
+      // o texto pode ter mudado enquanto a base chegava
+      this.syncDiff();
+      this.announce(state.status === 'error' ? t(diffErrorMessageKey(state.code)) : t('Comparar com o git HEAD'));
+      this.renderAll();
+    });
+  }
+
+  private exitDiff(): void {
+    if (this.diff.status === 'off') return;
+    this.diffSeq++;
+    this.diff = DIFF_OFF;
+    this.diffGhostPositions = {};
+    if (this.pane === DIFF_PANE_ID) this.pane = this.diffPrevPane;
+    this.renderAll();
+  }
+
+  /** Recalcula o diff contra a base guardada quando o texto mudou (sem nova consulta ao git). */
+  private syncDiff(): void {
+    if (this.diff.status !== 'ready' || this.diffHead === this.source) return;
+    this.diffHead = this.source;
+    this.diff = refreshDiff(this.diff, this.wasm, this.source);
+  }
+
+  /** Posições dos cartões fantasma: espaço livre fora dos cartões e enums do head. */
+  private ghostLayout(view: DiffView): Record<string, Pt> {
+    const occupied: Rect[] = occupiedRects(this.schema.tables, this.positions, view);
+    for (const ev of this.scene?.enums ?? []) {
+      const p = this.positions[`enum:${ev.name}`] || { x: ev.x, y: ev.y };
+      occupied.push({ x: p.x, y: p.y, w: ev.w, h: ev.h });
+    }
+    this.diffGhostPositions = placeGhosts(occupied, ghostSlots(view));
+    return this.diffGhostPositions;
+  }
+
+  /** Clique no resumo: seleciona (quando existe no head) e leva a câmera até o item. */
+  private focusDiffItem(id: string): void {
+    if (this.diff.status !== 'ready') return;
+    const view = this.diff.view;
+    const item = view.items.find((i) => i.id === id);
+    if (!item) return;
+    const enumRects = new Map<string, Rect>();
+    for (const ev of this.scene?.enums ?? []) {
+      const p = this.positions[`enum:${ev.name}`] || { x: ev.x, y: ev.y };
+      enumRects.set(ev.name, { x: p.x, y: p.y, w: ev.w, h: ev.h });
+    }
+    const ctx: FocusContext = {
+      view,
+      tables: this.schema.tables,
+      positions: this.positions,
+      ghostPositions: this.ghostLayout(view),
+      enumRects,
+    };
+    const rect = focusRect(item, ctx);
+    if (!rect) return;
+    const target = item.target;
+    this.selection = target.kind === 'table' && !target.removed ? [target.name] : [];
+    this.selectedEnum = target.kind === 'enum' && !target.removed ? target.name : null;
+    this.selectedRef = null;
+    this.highlightedColumn = null;
+    if (this.selection.length) this.top = this.selection[0];
+    this.renderAll();
+    const r = this.els['surface'].getBoundingClientRect();
+    const cam = cameraFor(rect, { x: r.width, y: r.height }, this.zoom);
+    this.glide(() => {
+      this.zoom = cam.zoom;
+      this.pan = cam.pan;
+    });
+  }
+
   // ───────────────────────── movimento ─────────────────────────
 
   private fxStart(sel: string, cls: string, dur: number = MOTION.base): void {
@@ -1386,6 +1510,8 @@ export class Workbench {
     const sel = new Set(this.selection);
     const focusSub = this.focusSubgraph();
     const FOCUS_DIM = 0.18;
+    const dv = this.diff.status === 'ready' ? this.diff.view : null;
+    const ghostPos = dv ? this.ghostLayout(dv) : {};
     let svg = '';
     for (const e of sc.edges) {
       const ek = edgeKey(e);
@@ -1397,7 +1523,8 @@ export class Workbench {
         this.selectedRef.to_col === e.to_col;
       const lit = isSelRef || sel.has(e.from_table) || sel.has(e.to_table);
       const dim = focusSub && !focusSub.edges.has(ek) ? FOCUS_DIM : 1;
-      const col = lit ? g.accent : g.relStroke;
+      const refDiff = dv?.refs.get(ek);
+      const col = refDiff && refDiff.status !== 'removed' ? DIFF_STATUS_COLOR_VAR[refDiff.status] : lit ? g.accent : g.relStroke;
       const a = this.positions[e.from_table], b = this.positions[e.to_table];
       if (!a || !b) continue;
       const style = this.edges[ek];
@@ -1407,7 +1534,7 @@ export class Workbench {
       const lab = lit ? g.accent : g.textFaint;
       if (dim < 1) svg += `<g opacity="${dim}">`;
       if (lit) svg += `<path class="halo" d="${d}" fill="none" stroke="${g.accent}" stroke-opacity="0.16" stroke-width="8" stroke-linecap="round" stroke-linejoin="round"/>`;
-      svg += `<path class="edge" data-ek="${esc(ek)}" d="${d}" fill="none" stroke="${col}" stroke-width="${lit ? 1.8 : 1.4}" stroke-linejoin="round"/>`;
+      svg += `<path class="edge" data-ek="${esc(ek)}" d="${d}" fill="none" stroke="${col}" stroke-width="${refDiff ? DIFF_EDGE_WIDTH : lit ? 1.8 : 1.4}" stroke-linejoin="round"/>`;
       svg += `<path class="edge-hit" d="${d}" fill="none" stroke="transparent" stroke-width="${12 / this.zoom}" data-edge="1" data-from-table="${esc(e.from_table)}" data-from-col="${esc(e.from_col)}" data-to-table="${esc(e.to_table)}" data-to-col="${esc(e.to_col)}"/>`;
       if (isSelRef) svg += `<circle class="edge-handle" data-edge-handle="1" cx="${drawn.midpoint.x}" cy="${drawn.midpoint.y}" r="${4 / this.zoom}" fill="${g.accent}" stroke="${g.card}" stroke-width="${1 / this.zoom}"/>`;
       svg += `<circle cx="${curve.x1}" cy="${e.ay}" r="3" fill="${col}"/><circle cx="${curve.x2}" cy="${e.by}" r="3.5" fill="${g.card}" stroke="${col}" stroke-width="1.5"/>`;
@@ -1426,6 +1553,7 @@ export class Workbench {
         svg += `<path d="M ${p.x + CARD_W} ${ay} L ${d.now.x} ${d.now.y}" stroke="${g.accent}" stroke-width="2" stroke-dasharray="6 4" fill="none"/><circle cx="${d.now.x}" cy="${d.now.y}" r="5" fill="${g.accent}"/>`;
       }
     }
+    if (dv) svg = renderGhostEdges(removedEdges(dv, this.schema.tables, this.positions, ghostPos)) + svg;
     let html = `<svg class="edges" aria-hidden="true">${svg}</svg>`;
     // molduras de grupo
     for (const gr of canvasGroups(sc.groups, this.schema, this.positions)) {
@@ -1444,6 +1572,7 @@ export class Workbench {
       const tint = tv.tint;
       const tDim = focusSub && !focusSub.tables.has(qname) ? `opacity:${FOCUS_DIM};` : '';
       const fk = new Set(tv.fk_columns);
+      const tDiff = dv?.tables.get(qname);
       const idxCols = new Set<string>();
       for (const ix of t.indexes || []) {
         for (const ic of ix.columns || []) {
@@ -1470,8 +1599,12 @@ export class Workbench {
             c.unique ? '<span class="badge">UQ</span>' : '',
           ].join('');
           const rowLabel = [`${c.name}: ${c.ty}`, c.pk ? translate('chave primária') : '', isFk ? translate('chave estrangeira') : '', c.not_null ? translate('obrigatória') : '', c.unique ? translate('única') : ''].filter(Boolean).join(', ');
-          return `<div class="row" role="listitem" aria-label="${esc(rowLabel)}" data-col="${esc(c.name)}" data-table="${esc(qname)}"${isHi ? ' style="background:color-mix(in srgb, var(--accent) 14%, transparent)"' : ''}><div class="rail14">${ic}</div>
-            <div class="cn ${c.pk ? 'pk' : ''}">${esc(c.name)}</div>${noteBadge}${badges}<div class="ty">${esc(c.ty)}</div>
+          const cDiff = tDiff?.columns.get(c.name);
+          const diffCls = cDiff ? ` ${diffStatusClass(cDiff.status)}` : '';
+          const diffTitle = cDiff && columnDiffTitle(cDiff) ? ` title="${esc(columnDiffTitle(cDiff))}"` : '';
+          const diffLabel = cDiff ? `, ${diffStatusLabel(cDiff.status)}` : '';
+          return `<div class="row${diffCls}" role="listitem" aria-label="${esc(rowLabel + diffLabel)}"${diffTitle} data-col="${esc(c.name)}" data-table="${esc(qname)}"${isHi ? ' style="background:color-mix(in srgb, var(--accent) 14%, transparent)"' : ''}><div class="rail14">${ic}</div>
+            <div class="cn ${c.pk ? 'pk' : ''}">${esc(c.name)}</div>${cDiff ? diffMark(cDiff.status) : ''}${noteBadge}${badges}<div class="ty">${esc(c.ty)}</div>
             <div class="port" data-port="1" data-table="${esc(qname)}" data-col="${esc(c.name)}"></div></div>`;
         })
         .join('');
@@ -1480,11 +1613,11 @@ export class Workbench {
       const tblNoteBadge = tblNote
         ? `<span class="note-ic" style="color:var(--muted);display:flex;flex:none;cursor:help" title="${esc(tblNote)}">${ICON('Info', 12)}</span>`
         : '';
-      const cardLabel = translate(t.columns.length === 1 ? 'Tabela {}, 1 coluna' : 'Tabela {}, {} colunas', qname, t.columns.length) + (sel.has(qname) ? `, ${translate('selecionada')}` : '');
-      html += `<div class="card ${sel.has(qname) ? 'sel' : ''}" role="group" tabindex="0" aria-label="${esc(cardLabel)}" data-table="${esc(qname)}" style="${tDim}left:${p.x}px;top:${p.y}px;height:${cardH(t.columns.length)}px">
+      const cardLabel = translate(t.columns.length === 1 ? 'Tabela {}, 1 coluna' : 'Tabela {}, {} colunas', qname, t.columns.length) + (tDiff ? `, ${diffStatusLabel(tDiff.status)}` : '') + (sel.has(qname) ? `, ${translate('selecionada')}` : '');
+      html += `<div class="card ${sel.has(qname) ? 'sel' : ''}${tDiff ? ` ${diffStatusClass(tDiff.status)}` : ''}" role="group" tabindex="0" aria-label="${esc(cardLabel)}" data-table="${esc(qname)}" style="${tDim}left:${p.x}px;top:${p.y}px;height:${dv ? diffCardHeight(t, dv) : cardH(t.columns.length)}px">
         <div class="head"><span style="color:${tint || g.accent};display:flex">${ICON('Table2', 14)}</span>
         <div class="nm">${esc(t.name)}</div>${schemaBadge}${tblNoteBadge}<div class="cnt">${t.columns.length}</div></div>
-        <div class="rows" role="list">${rows}</div>
+        <div class="rows" role="list">${rows}${tDiff ? renderGhostRows(tDiff) : ''}</div>
         <div class="plus" data-addcol="${esc(qname)}" title="${translate("Adicionar coluna")}">${ICON('Plus', 14)}</div></div>`;
     }
     // enums
@@ -1493,14 +1626,28 @@ export class Workbench {
       const on = this.selectedEnum === ev.name;
       const referencedBySelected = !on && ev.referenced_by.some((tb) => sel.has(tb));
       const eDim = focusSub && !ev.referenced_by.some((tb) => focusSub.tables.has(tb)) ? `opacity:${FOCUS_DIM};` : '';
-      const valRows = ev.values.length
-        ? ev.values.map((v) => `<div class="ev" role="listitem"><span class="ev-ic">${ICON('Dot', 12)}</span>${esc(v)}</div>`).join('')
-        : `<div class="ev" role="listitem" style="color:var(--faint)">${translate("(vazio)")}</div>`;
+      const eDiff = dv?.enums.get(ev.name);
+      const valRows = (ev.values.length
+        ? ev.values.map((v) => {
+            const vs = eDiff?.values.get(v);
+            return `<div class="ev${vs ? ` ${diffStatusClass(vs)}` : ''}" role="listitem"><span class="ev-ic">${vs ? diffMark(vs) : ICON('Dot', 12)}</span>${esc(v)}</div>`;
+          }).join('')
+        : `<div class="ev" role="listitem" style="color:var(--faint)">${translate("(vazio)")}</div>`) + (eDiff ? renderEnumGhostValues(eDiff) : '');
       const enumLabel = translate(ev.values.length === 1 ? 'Enum {}, 1 valor' : 'Enum {}, {} valores', ev.name, ev.values.length) + (on ? `, ${translate('selecionada')}` : '');
-      html += `<div class="card enum-card ${on ? 'sel' : ''}" role="group" tabindex="0" aria-label="${esc(enumLabel)}" data-enum="${esc(ev.name)}" style="${eDim}left:${p.x}px;top:${p.y}px;${referencedBySelected ? 'border-color:var(--accent);' : ''}">
+      html += `<div class="card enum-card ${on ? 'sel' : ''}${eDiff ? ` ${diffStatusClass(eDiff.status)}` : ''}" role="group" tabindex="0" aria-label="${esc(enumLabel)}" data-enum="${esc(ev.name)}" style="${eDim}left:${p.x}px;top:${p.y}px;${referencedBySelected ? 'border-color:var(--accent);' : ''}">
         <div class="head"><span style="color:var(--accent);display:flex">${ICON('List', 14)}</span>
         <div class="nm">${esc(ev.name)}</div><span class="tag">ENUM</span></div>
         <div class="rows" role="list">${valRows}</div></div>`;
+    }
+    if (dv) {
+      for (const tbl of dv.removedTables) {
+        const p = ghostPos[qualifiedTableName(tbl)];
+        if (p) html += renderGhostTable(tbl, p);
+      }
+      for (const en of dv.removedEnums) {
+        const p = ghostPos[`enum:${en.name}`];
+        if (p) html += renderGhostEnum(en, p);
+      }
     }
     const focused = document.activeElement instanceof HTMLElement && w.contains(document.activeElement)
       ? document.activeElement.closest<HTMLElement>('.card')
@@ -1627,6 +1774,7 @@ export class Workbench {
       ${rb('ShowSchema', 'Table2', 'Tabelas · Ctrl+Shift+D', left === 'schema')}
       ${rb('ShowProblems', 'TriangleAlert', 'Problemas · Ctrl+Shift+M', left === 'problems', errs ? `<span class="rbadge">${errs}</span>` : '')}
       ${rb('ToggleEditor', 'Braces', 'Editor DBML · Ctrl+E', left === 'dbml')}
+      ${rb('ToggleDiff', 'GitCompare', 'Comparar com o git HEAD · D', this.diff.status !== 'off')}
       ${rb('ConnectDatabase', 'Database', 'Conectar ao banco')}
       ${rb('ImportSqlDdl', 'FileInput', 'Importar SQL DDL')}
       <div class="grow"></div>
@@ -1779,6 +1927,7 @@ export class Workbench {
     if (d?.kind === 'group') return translate('Movendo grupo {}', d.name);
     if (d?.kind === 'link') return translate('Relação de {}.{}: solte na tabela de destino', d.table, d.col);
     if (d?.kind === 'marquee') return translate("Selecionando: solte para selecionar as tabelas tocadas");
+    if (this.diff.status !== 'off') return translate('Comparando com o git HEAD · somente leitura');
     if (this.selectedEnum) return translate("Enum selecionado · edite os valores no inspetor · Delete exclui o enum · Esc limpa a seleção");
     if (this.selectedRef) return translate("Relação selecionada · Delete remove a linha e a coluna FK · Esc limpa a seleção");
     if (this.selection.length > 1) return translate('{} tabelas selecionadas · Ctrl+G agrupa', this.selection.length);
@@ -1928,6 +2077,8 @@ export class Workbench {
           next?.setSelectionRange(pos, pos);
         });
       }
+    } else if (left === DIFF_PANE_ID) {
+      el.innerHTML = renderDiffPanel(this.diff);
     } else {
       const hasProb = this.errorCount() > 0 || this.diags.length > 0;
       const items = this.diags
@@ -2443,11 +2594,17 @@ export class Workbench {
         this.scheduleRender();
         return;
       }
-      case 'Deselect': this.selection = []; this.selectedRef = null; this.selectedEnum = null; this.focusMode = false; this.highlightedColumn = null; break;
+      case 'Deselect':
+        if (this.diff.status !== 'off' && this.selection.length === 0 && !this.selectedRef && !this.selectedEnum) {
+          this.exitDiff();
+          return;
+        }
+        this.selection = []; this.selectedRef = null; this.selectedEnum = null; this.focusMode = false; this.highlightedColumn = null; break;
       case 'ToggleFocusMode':
         if (this.focusMode) this.focusMode = false;
         else if (this.selection.length > 0) this.focusMode = true;
         break;
+      case 'ToggleDiff': this.toggleDiff(); return;
       case 'CycleFocusDepth':
         this.focusDepth = this.focusDepth === 1 ? 2 : 1;
         if (this.selection.length > 0) this.focusMode = true;
@@ -3690,6 +3847,8 @@ export class Workbench {
           })();
         }
         return;
+      case DIFF_ACT.FOCUS: this.focusDiffItem(d.diffId!); return;
+      case DIFF_ACT.RETRY: this.startDiff(); return;
       case 'focus-table': this.selectedEnum = null; this.focusTable(d.table!); return;
       case 'focus-enum': {
         this.selection = [];
