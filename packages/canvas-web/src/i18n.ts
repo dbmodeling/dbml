@@ -43,6 +43,16 @@ export const translations: ReadonlyArray<readonly [string, string]> = [
   ["O banco recusou a autenticação. Confira o usuário e a senha.", "The database rejected authentication. Check the user and password."],
   ["O banco não respondeu. Confira o host, a porta e se o serviço está rodando.", "The database did not respond. Check the host, port, and whether the service is running."],
   ["Não foi possível ler o esquema. Verifique as permissões de leitura do catálogo.", "Could not read the schema. Check permissions to read the catalog."],
+  ["O certificado TLS do servidor não pôde ser verificado (comum em AWS RDS, GCP Cloud SQL, Azure e Supabase). Mude TLS para Exigir e tente novamente.", "The server's TLS certificate could not be verified (common on AWS RDS, GCP Cloud SQL, Azure, and Supabase). Switch TLS to Require and try again."],
+  ["Detalhes", "Details"],
+  ["Ocultar detalhes", "Hide details"],
+  ["Usar TLS: Exigir", "Use TLS: Require"],
+  ["Usar SSL", "Use SSL"],
+  ["Verificar certificado", "Verify certificate"],
+  ["Auto (TLS verificado em hosts remotos)", "Auto (verified TLS on remote hosts)"],
+  ["Verificar certificado (TLS)", "Verify certificate (TLS)"],
+  ["Exigir TLS (autoassinado)", "Require TLS (self-signed)"],
+  ["Desativar TLS (texto claro)", "Disable TLS (cleartext)"],
   ["Não foi possível abrir o banco SQLite. Confira o caminho e as permissões do arquivo.", "Could not open the SQLite database. Check the file path and permissions."],
   ["Não foi possível conectar. Confira os dados da conexão e tente novamente.", "Could not connect. Check the connection details and try again."],
   ["Arquivo", "File"],
@@ -268,6 +278,23 @@ export const translations: ReadonlyArray<readonly [string, string]> = [
   ["Faça engenharia reversa de um esquema existente para DBML.", "Reverse engineer an existing schema into DBML."],
   ["Suporte a Oracle em breve", "Oracle support coming soon"],
   ["Oracle (em breve)", "Oracle (coming soon)"],
+  ["Tipo de banco", "Database type"],
+  ["em breve", "coming soon"],
+  ["Connection string", "Connection string"],
+  ["Copiar string", "Copy string"],
+  ["Copiado", "Copied"],
+  ["Copia a string com a senha mascarada (***)", "Copies the string with the password masked (***)"],
+  ["Copia a string completa, com a senha", "Copies the full string, including the password"],
+  ["Não foi possível copiar a string.", "Could not copy the string."],
+  ["Mostrar senha", "Show password"],
+  ["Ocultar senha", "Hide password"],
+  ["Mostrar/ocultar senha da conexão", "Show/hide connection password"],
+  ["Informe a connection string.", "Enter a connection string."],
+  ["Esquema desconhecido. Use postgres://, mysql://, sqlserver:// ou um arquivo SQLite.", "Unknown scheme. Use postgres://, mysql://, sqlserver:// or a SQLite file."],
+  ["Este banco ainda não é suportado.", "This database is not supported yet."],
+  ["Informe o host na connection string.", "Enter the host in the connection string."],
+  ["Porta inválida. Use um número de 1 a 65535.", "Invalid port. Use a number from 1 to 65535."],
+  ["Connection string malformada. Formato: esquema://usuário:senha@host:porta/banco.", "Malformed connection string. Format: scheme://user:password@host:port/database."],
   ["Porta", "Port"],
   ["porta padrão", "default port"],
   ["Banco", "Database"],
@@ -440,15 +467,24 @@ export function diagnosticMessage(message: string): string {
   return message;
 }
 
+const TLS_CERT_ERROR_RE = /invalid peer certificate|unknownissuer|unknown issuer|certificate|self[- ]signed|notvalidforname|badcertificate|webpki|tls|ssl|handshake/i;
+
+export function isTlsCertError(message: string): boolean {
+  return TLS_CERT_ERROR_RE.test(message);
+}
+
 export function connectionHint(message: string, sqlite: boolean): string {
   if (/authenticat|login failed|access denied for user|password|28p01|18456/i.test(message)) {
     return t('O banco recusou a autenticação. Confira o usuário e a senha.');
   }
-  if (/timeout|timed? out|connection refused|econnrefused|could not resolve/i.test(message)) {
+  if (/timeout|timed? out|connection refused|econnrefused|could not resolve|network is unreachable|no route to host|name or service not known|failed to lookup|host unreachable/i.test(message)) {
     return t('O banco não respondeu. Confira o host, a porta e se o serviço está rodando.');
   }
   if (/could not read the catalog/i.test(message)) {
     return t('Não foi possível ler o esquema. Verifique as permissões de leitura do catálogo.');
+  }
+  if (!sqlite && isTlsCertError(message)) {
+    return t('O certificado TLS do servidor não pôde ser verificado (comum em AWS RDS, GCP Cloud SQL, Azure e Supabase). Mude TLS para Exigir e tente novamente.');
   }
   return sqlite
     ? t('Não foi possível abrir o banco SQLite. Confira o caminho e as permissões do arquivo.')

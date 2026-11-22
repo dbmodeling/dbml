@@ -645,6 +645,18 @@ const TRANSLATIONS: &[(&str, &str)] = &[
         "Could not read the schema. Check permissions to read the catalog.",
     ),
     (
+        "O certificado TLS do servidor não pôde ser verificado (comum em AWS RDS, GCP Cloud SQL, Azure e Supabase). Mude TLS para Exigir e tente novamente.",
+        "The server's TLS certificate could not be verified (common on AWS RDS, GCP Cloud SQL, Azure, and Supabase). Switch TLS to Require and try again.",
+    ),
+    ("Detalhes", "Details"),
+    ("Ocultar detalhes", "Hide details"),
+    ("Usar TLS: Exigir", "Use TLS: Require"),
+    ("Usar SSL", "Use SSL"),
+    ("Verificar certificado", "Verify certificate"),
+    ("Verificar", "Verify"),
+    ("Exigir", "Require"),
+    ("Desativar", "Disable"),
+    (
         "Não foi possível abrir o banco SQLite. Confira o caminho e as permissões do arquivo.",
         "Could not open the SQLite database. Check the file path and permissions.",
     ),
@@ -977,6 +989,37 @@ const TRANSLATIONS: &[(&str, &str)] = &[
     (
         "não foi possível gravar o layout de {}: {}",
         "could not save layout for {}: {}",
+    ),
+    ("Informe a connection string.", "Enter a connection string."),
+    (
+        "Esquema desconhecido. Use postgres://, mysql://, sqlserver:// ou um arquivo SQLite.",
+        "Unknown scheme. Use postgres://, mysql://, sqlserver:// or a SQLite file.",
+    ),
+    (
+        "Este banco ainda não é suportado.",
+        "This database is not supported yet.",
+    ),
+    (
+        "Connection string malformada. Formato: esquema://usuário:senha@host:porta/banco.",
+        "Malformed connection string. Format: scheme://user:password@host:port/database.",
+    ),
+    (
+        "Informe o host na connection string.",
+        "Enter the host in the connection string.",
+    ),
+    (
+        "Porta inválida. Use um número de 1 a 65535.",
+        "Invalid port. Use a number from 1 to 65535.",
+    ),
+    ("Mostrar senha", "Show password"),
+    ("Ocultar senha", "Hide password"),
+    ("Mostrar/ocultar senha", "Show/hide password"),
+    ("Copiar connection string", "Copy connection string"),
+    ("Tipo de banco", "Database type"),
+    ("Conexão", "Connection"),
+    (
+        "postgres://usuário:senha@host:5432/banco",
+        "postgres://user:password@host:5432/database",
     ),
     ("Criar tabela associativa", "Create junction table"),
     ("TABELA ASSOCIATIVA", "JUNCTION TABLE"),

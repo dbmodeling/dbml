@@ -1,6 +1,20 @@
-import { TLS_MODE } from './constants';
+import {
+  CONNECT_URL_ERROR,
+  EDIT_ORIGIN,
+  ENGINE_SCHEME,
+  PASSWORD_MASK,
+  SQLSERVER_TRUST_QUERY,
+  TLS_MODE,
+  TLS_QUERY,
+} from './constants';
 import { t } from './i18n';
-import type { IntrospectRequest, IntrospectResult, TlsMode } from './types';
+import type {
+  ConnectionUrlErrorCode,
+  IntrospectRequest,
+  IntrospectResult,
+  ParsedConnectionUrl,
+  TlsMode,
+} from './types';
 
 export type DbEngine = IntrospectRequest['dialect'];
 
@@ -108,25 +122,216 @@ export function summarizeTest(server: string, schemas: string[]): string {
     : t('Conectado a {}. Schemas: {}.', server, shown);
 }
 
-/** Estado do modal "Conectar ao banco"; a senha nunca é guardada aqui. */
+export type EditOrigin = (typeof EDIT_ORIGIN)[keyof typeof EDIT_ORIGIN];
+
+/** Lê uma connection string (Wasm `parse_connection_url`); lança `ConnectionUrlError`. */
+export type UrlParser = (url: string) => ParsedConnectionUrl;
+
+const KNOWN_URL_ERRORS: ReadonlySet<string> = new Set(Object.values(CONNECT_URL_ERROR));
+
+/** Mensagem curta, por código, da string inválida (as mesmas chaves do Desktop). */
+export function urlErrorMessage(code: ConnectionUrlErrorCode): string {
+  switch (code) {
+    case CONNECT_URL_ERROR.EMPTY: return t('Informe a connection string.');
+    case CONNECT_URL_ERROR.UNKNOWN_SCHEME: return t('Esquema desconhecido. Use postgres://, mysql://, sqlserver:// ou um arquivo SQLite.');
+    case CONNECT_URL_ERROR.UNSUPPORTED_ENGINE: return t('Este banco ainda não é suportado.');
+    case CONNECT_URL_ERROR.MISSING_HOST: return t('Informe o host na connection string.');
+    case CONNECT_URL_ERROR.INVALID_PORT: return t('Porta inválida. Use um número de 1 a 65535.');
+    case CONNECT_URL_ERROR.MALFORMED: return t('Connection string malformada. Formato: esquema://usuário:senha@host:porta/banco.');
+  }
+}
+
+/** Percent-encode igual ao do núcleo: só `A-Za-z0-9-._~` ficam como estão. */
+function percentEncode(value: string): string {
+  return encodeURIComponent(value).replace(
+    /[!'()*]/g,
+    (c) => `%${c.charCodeAt(0).toString(16).toUpperCase()}`
+  );
+}
+
+function validPort(text: string): number | null {
+  const port = Number.parseInt(text.trim(), 10);
+  return Number.isInteger(port) && port > 0 && port < 65536 ? port : null;
+}
+
+function tlsQuery(engine: Exclude<DbEngine, 'sqlite'>, tls: TlsMode, trustCert: boolean): string | null {
+  if (tls !== TLS_MODE.AUTO) return TLS_QUERY[engine][tls];
+  return engine === 'sqlserver' && trustCert ? SQLSERVER_TRUST_QUERY : null;
+}
+
+/**
+ * Connection string montada a partir dos campos, só para exibição e cópia (o pedido real
+ * usa `buildRequest`). Espelha `ConnectionParams::to_url`: usuário, senha e banco em
+ * percent-encoding, IPv6 entre colchetes, TLS na query. Diferenças deliberadas: a porta só
+ * aparece se foi digitada, e um formulário em branco gera texto vazio.
+ */
+export function buildDisplayUrl(
+  engine: DbEngine,
+  fields: ConnectFields,
+  tls: TlsMode,
+  trustCert: boolean,
+  maskPassword: boolean
+): string {
+  if (engine === 'sqlite') return fields.path.trim();
+  const host = fields.host.trim();
+  const user = fields.user.trim();
+  const database = fields.database.trim();
+  const port = validPort(fields.port);
+  const query = tlsQuery(engine, tls, trustCert);
+  if (!host && !user && !database && !fields.password && port === null && !query) return '';
+  const shownHost = host === '' ? 'localhost' : host.includes(':') && !host.startsWith('[') ? `[${host}]` : host;
+  let url = `${ENGINE_SCHEME[engine]}://`;
+  if (user || fields.password) {
+    url += percentEncode(user);
+    if (fields.password) url += `:${maskPassword ? PASSWORD_MASK : percentEncode(fields.password)}`;
+    url += '@';
+  }
+  url += shownHost;
+  if (port !== null) url += `:${port}`;
+  if (database) url += `/${percentEncode(database)}`;
+  if (query) url += `?${query}`;
+  return url;
+}
+
+/** Próxima opção habilitada do dropdown (`1`/`-1` andam; `first`/`last` saltam). */
+export function nextEnabledOption(
+  options: ReadonlyArray<{ disabled: boolean }>,
+  from: number,
+  step: 1 | -1 | 'first' | 'last'
+): number {
+  const enabled = options.map((o, i) => (o.disabled ? -1 : i)).filter((i) => i >= 0);
+  if (enabled.length === 0) return from;
+  if (step === 'first') return enabled[0];
+  if (step === 'last') return enabled[enabled.length - 1];
+  const next = step === 1 ? enabled.find((i) => i > from) : [...enabled].reverse().find((i) => i < from);
+  return next ?? from;
+}
+
+const emptyFields = (): ConnectFields => ({
+  host: '', port: '', database: '', user: '', password: '', path: '', schemas: '',
+});
+
+/**
+ * Estado do modal "Conectar ao banco". Guarda só em memória os campos, inclusive a senha;
+ * nada aqui é persistido e a revelação da senha vale apenas enquanto o diálogo existir.
+ */
 export class ConnectDbModel {
   engine: DbEngine;
+  fields: ConnectFields = emptyFields();
   trustCert = false;
   tls: TlsMode = TLS_MODE.AUTO;
+  /** Texto do campo Connection string (mascarado, salvo com a senha revelada). */
+  urlText = '';
+  /** Última edição: campo reescreve a string; string reescreve os campos. */
+  origin: EditOrigin = EDIT_ORIGIN.FIELD;
+  urlError: ConnectionUrlErrorCode | null = null;
+  passwordRevealed = false;
   status: ConnectStatus = 'idle';
   dbml = '';
   warnings: string[] = [];
   tables = 0;
   error = '';
+  errorDetail = '';
+  showErrorDetails = false;
   confirmReplace = false;
 
-  constructor(engine: DbEngine = 'postgres') {
+  constructor(engine: DbEngine = 'postgres', private readonly parser?: UrlParser) {
     this.engine = engine;
   }
 
+  get canParse(): boolean {
+    return this.parser !== undefined;
+  }
+
+  /** Dica do campo da string enquanto ele está vazio. */
+  get urlPlaceholder(): string {
+    return this.engine === 'sqlite'
+      ? t('/caminho/para/banco.sqlite')
+      : `${ENGINE_SCHEME[this.engine]}://user:password@host:port/database`;
+  }
+
+  /** Troca o banco no dropdown: mantém os dados digitados e volta a senha a oculto. */
   setEngine(engine: DbEngine): void {
     this.engine = engine;
     this.reset();
+    this.passwordRevealed = false;
+    this.rewriteUrl();
+  }
+
+  setField(name: keyof ConnectFields, value: string): void {
+    this.fields[name] = value;
+    this.rewriteUrl();
+  }
+
+  setTls(tls: TlsMode): void {
+    this.tls = tls;
+    this.rewriteUrl();
+  }
+
+  setTrustCert(trust: boolean): void {
+    this.trustCert = trust;
+    this.rewriteUrl();
+  }
+
+  /** O usuário editou a string: ela vira a fonte e os campos seguem, sem laço. */
+  setUrl(text: string): void {
+    this.urlText = text;
+    this.origin = EDIT_ORIGIN.STRING;
+    if (!this.parser || text.trim() === '') {
+      this.urlError = null;
+      return;
+    }
+    try {
+      this.applyParsed(this.parser(text));
+      this.urlError = null;
+    } catch (e) {
+      const code = (e as { code?: unknown } | null)?.code;
+      this.urlError =
+        typeof code === 'string' && KNOWN_URL_ERRORS.has(code)
+          ? (code as ConnectionUrlErrorCode)
+          : CONNECT_URL_ERROR.MALFORMED;
+    }
+  }
+
+  /** Fim da edição da string: troca uma senha real digitada pelo marcador. */
+  commitUrl(): void {
+    if (this.origin !== EDIT_ORIGIN.STRING || this.urlError || this.passwordRevealed) return;
+    if (this.urlText.trim() === '') return;
+    this.urlText = this.assembled(true);
+  }
+
+  togglePassword(): void {
+    if (this.passwordRevealed) this.hidePassword();
+    else this.revealPassword();
+  }
+
+  revealPassword(): void {
+    this.passwordRevealed = true;
+    this.refreshUrlText();
+  }
+
+  hidePassword(): void {
+    this.passwordRevealed = false;
+    this.refreshUrlText();
+  }
+
+  /** String para o botão Copiar: mascarada, exceto com a senha revelada. */
+  urlForCopy(): string {
+    return this.assembled(!this.passwordRevealed);
+  }
+
+  buildRequest(): IntrospectRequest {
+    return buildRequest(this.engine, this.fields, this.trustCert, this.tls);
+  }
+
+  /** Fechar o diálogo descarta a revelação. */
+  close(): void {
+    this.passwordRevealed = false;
+    this.showErrorDetails = false;
+  }
+
+  toggleErrorDetails(): void {
+    this.showErrorDetails = !this.showErrorDetails;
   }
 
   reset(): void {
@@ -135,6 +340,8 @@ export class ConnectDbModel {
     this.warnings = [];
     this.tables = 0;
     this.error = '';
+    this.errorDetail = '';
+    this.showErrorDetails = false;
     this.confirmReplace = false;
   }
 
@@ -145,6 +352,7 @@ export class ConnectDbModel {
 
   finish(result: IntrospectResult): void {
     this.confirmReplace = false;
+    this.hidePassword();
     if (result.tables === 0 || !result.dbml.trim()) {
       this.fail(t('Conectado, mas nenhuma tabela foi encontrada. Verifique o banco e o schema.'));
       return;
@@ -168,12 +376,14 @@ export class ConnectDbModel {
     this.reset();
   }
 
-  fail(message: string): void {
+  fail(message: string, detail = ''): void {
     this.dbml = '';
     this.warnings = [];
     this.tables = 0;
     this.confirmReplace = false;
     this.error = message;
+    this.errorDetail = detail;
+    this.showErrorDetails = false;
     this.status = 'failed';
   }
 
@@ -184,5 +394,41 @@ export class ConnectDbModel {
   buildMergedSource(existing: string, mode: 'insert' | 'replace'): string {
     if (mode === 'replace' || existing.trim().length === 0) return this.dbml;
     return `${existing.replace(/\s+$/, '')}\n\n${this.dbml}`;
+  }
+
+  private assembled(mask: boolean): string {
+    return buildDisplayUrl(this.engine, this.fields, this.tls, this.trustCert, mask);
+  }
+
+  /** Edição de campo: os campos mandam, então a string é refeita e qualquer erro some. */
+  private rewriteUrl(): void {
+    this.origin = EDIT_ORIGIN.FIELD;
+    this.urlError = null;
+    this.urlText = this.assembled(!this.passwordRevealed);
+  }
+
+  /** Mudou só a máscara: refaz o texto, sem atropelar uma string inválida em edição. */
+  private refreshUrlText(): void {
+    if (this.urlError === null) this.urlText = this.assembled(!this.passwordRevealed);
+  }
+
+  private applyParsed(parsed: ParsedConnectionUrl): void {
+    if (parsed.dialect !== this.engine) {
+      this.engine = parsed.dialect;
+      this.reset();
+    }
+    if (parsed.dialect === 'sqlite') {
+      this.fields.path = parsed.path;
+      return;
+    }
+    const f = this.fields;
+    f.host = parsed.host;
+    f.port = parsed.port === null ? '' : String(parsed.port);
+    f.database = parsed.database;
+    f.user = parsed.user;
+    if (!parsed.password_masked) f.password = parsed.password;
+    if (parsed.schemas.length > 0) f.schemas = parsed.schemas.join(', ');
+    this.trustCert = parsed.trust_server_certificate;
+    this.tls = parsed.tls;
   }
 }

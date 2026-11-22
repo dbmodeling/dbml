@@ -16,12 +16,12 @@ use std::borrow::Cow;
 /// How a network connection must protect its traffic.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum TlsMode {
-    /// Verified TLS for non-loopback hosts; the driver default for loopback hosts.
+    /// Encrypted TLS for non-loopback hosts (works with cloud private CAs); driver default for loopback.
     #[default]
     Auto,
     /// TLS with certificate and host name verification.
     Verify,
-    /// TLS without verifying the server certificate (self-signed servers).
+    /// TLS without verifying the server certificate (self-signed or cloud private CAs).
     Require,
     /// No TLS: the password travels in clear text. Explicit opt-out.
     Disable,
@@ -177,8 +177,10 @@ pub fn apply_mode(target: &str, mode: TlsMode) -> Cow<'_, str> {
 }
 
 /// Applies the default TLS policy to `target`: a non-loopback host without any TLS parameter
-/// gets verified TLS. Explicit settings, loopback hosts, SQLite and unparsable targets are left
-/// untouched.
+/// gets encrypted TLS (`require` / `REQUIRED` / `encrypt=true&trustServerCertificate=true`) so
+/// managed cloud databases with private CAs (AWS RDS, GCP Cloud SQL, Supabase, Azure) connect out
+/// of the box without travelling in clear text. Explicit settings, loopback hosts, SQLite and
+/// unparsable targets are left untouched.
 #[must_use]
 pub fn apply_default(target: &str) -> Cow<'_, str> {
     let Some((dialect, u)) = parse(target) else {
@@ -188,9 +190,9 @@ pub fn apply_default(target: &str) -> Cow<'_, str> {
         return Cow::Borrowed(target);
     }
     let param = match dialect {
-        Dialect::Postgres => "sslmode=verify-full",
-        Dialect::Mysql => "ssl-mode=VERIFY_IDENTITY",
-        _ => "encrypt=true",
+        Dialect::Postgres => "sslmode=require",
+        Dialect::Mysql => "ssl-mode=REQUIRED",
+        _ => "encrypt=true&trustServerCertificate=true",
     };
     let t = target.trim();
     let sep = if t.contains('?') { '&' } else { '?' };
@@ -240,18 +242,18 @@ mod tests {
     }
 
     #[test]
-    fn remote_hosts_get_verified_tls_by_default() {
+    fn remote_hosts_get_encrypted_tls_by_default() {
         assert_eq!(
             apply_default("postgres://u:p@db.example.com:5432/app"),
-            "postgres://u:p@db.example.com:5432/app?sslmode=verify-full"
+            "postgres://u:p@db.example.com:5432/app?sslmode=require"
         );
         assert_eq!(
             apply_default("mysql://u@10.0.0.5/app?charset=utf8"),
-            "mysql://u@10.0.0.5/app?charset=utf8&ssl-mode=VERIFY_IDENTITY"
+            "mysql://u@10.0.0.5/app?charset=utf8&ssl-mode=REQUIRED"
         );
         assert_eq!(
             apply_default("sqlserver://sa:x@db.example.com/app"),
-            "sqlserver://sa:x@db.example.com/app?encrypt=true"
+            "sqlserver://sa:x@db.example.com/app?encrypt=true&trustServerCertificate=true"
         );
     }
 
@@ -311,7 +313,6 @@ mod tests {
     #[test]
     fn secure_and_local_targets_have_no_warning() {
         let w = |t: &str| weak_tls_warning(&apply_default(t));
-        assert_eq!(w("postgres://u@db.example.com/app"), None);
         assert_eq!(
             w("postgres://u@db.example.com/app?sslmode=verify-full"),
             None

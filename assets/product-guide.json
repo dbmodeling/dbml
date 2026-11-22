@@ -81,6 +81,34 @@
   ],
   "releases": [
     {
+      "version": "0.3.4",
+      "date": "2026-11-22",
+      "highlights": [
+        {
+          "kind": "improved",
+          "title": {
+            "pt": "Diálogo Conectar ao banco redesenhado",
+            "en": "Redesigned Connect to database dialog"
+          },
+          "detail": {
+            "pt": "Escolha o banco em dropdown, cole ou copie a connection string sincronizada com os campos, revele a senha sob demanda e conecte com SSL/TLS simplificado para Supabase, AWS RDS, GCP Cloud SQL e Azure.",
+            "en": "Pick engines from a dropdown, paste or copy a synced connection string, reveal passwords on demand, and connect with simplified SSL/TLS defaults for Supabase, AWS RDS, GCP Cloud SQL, and Azure."
+          }
+        },
+        {
+          "kind": "improved",
+          "title": {
+            "pt": "Diagnóstico claro de erros de conexão",
+            "en": "Clearer connection error diagnostics"
+          },
+          "detail": {
+            "pt": "Erros de certificado TLS e rede mostram orientações diretas, ação rápida para ajustar SSL e detalhes técnicos expansíveis sem expor a senha.",
+            "en": "TLS certificate and network errors show actionable hints, a quick SSL toggle action, and expandable technical details without exposing passwords."
+          }
+        }
+      ]
+    },
+    {
       "version": "0.3.3",
       "date": "2026-11-21",
       "highlights": [

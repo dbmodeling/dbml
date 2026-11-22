@@ -233,7 +233,7 @@ checksum = "330a5ed07fa54e4702c9d6c4174f74427fc0ef6e214bbd677ae50a5099946470"
 
 [[package]]
 name = "app"
-version = "0.3.3"
+version = "0.3.4"
 dependencies = [
  "anyhow",
  "atomic-write",
@@ -525,7 +525,7 @@ checksum = "1505bd5d3d116872e7271a6d4e16d81d0c8570876c8de68093a09ac269d8aac0"
 
 [[package]]
 name = "atomic-write"
-version = "0.3.3"
+version = "0.3.4"
 
 [[package]]
 name = "atspi"
@@ -1543,7 +1543,7 @@ checksum = "be1e0bca6c3637f992fc1cc7cbc52a78c1ef6db076dbf1059c4323d6a2048376"
 
 [[package]]
 name = "db-introspect"
-version = "0.3.3"
+version = "0.3.4"
 dependencies = [
  "dbml-analysis",
  "percent-encoding",
@@ -1560,7 +1560,7 @@ dependencies = [
 
 [[package]]
 name = "dbml-analysis"
-version = "0.3.3"
+version = "0.3.4"
 dependencies = [
  "dbml-syntax",
  "insta",
@@ -1572,7 +1572,7 @@ dependencies = [
 
 [[package]]
 name = "dbml-cli"
-version = "0.3.3"
+version = "0.3.4"
 dependencies = [
  "anyhow",
  "atomic-write",
@@ -1603,7 +1603,7 @@ dependencies = [
 
 [[package]]
 name = "dbml-edit"
-version = "0.3.3"
+version = "0.3.4"
 dependencies = [
  "dbml-analysis",
  "dbml-syntax",
@@ -1615,7 +1615,7 @@ dependencies = [
 
 [[package]]
 name = "dbml-syntax"
-version = "0.3.3"
+version = "0.3.4"
 dependencies = [
  "insta",
  "logos",
@@ -1625,8 +1625,9 @@ dependencies = [
 
 [[package]]
 name = "dbml-wasm"
-version = "0.3.3"
+version = "0.3.4"
 dependencies = [
+ "db-introspect",
  "dbml-analysis",
  "dbml-edit",
  "dbml-syntax",
@@ -1685,7 +1686,7 @@ dependencies = [
 
 [[package]]
 name = "diagram-export"
-version = "0.3.3"
+version = "0.3.4"
 dependencies = [
  "jpeg-encoder",
  "layout",
@@ -3969,7 +3970,7 @@ dependencies = [
 
 [[package]]
 name = "layout"
-version = "0.3.3"
+version = "0.3.4"
 
 [[package]]
 name = "lazy_static"
@@ -6289,7 +6290,7 @@ dependencies = [
 
 [[package]]
 name = "schema"
-version = "0.3.3"
+version = "0.3.4"
 dependencies = [
  "serde",
  "serde_json",
@@ -6786,7 +6787,7 @@ dependencies = [
 
 [[package]]
 name = "sql-import"
-version = "0.3.3"
+version = "0.3.4"
 dependencies = [
  "dbml-analysis",
  "insta",
