@@ -450,14 +450,32 @@ impl Shell {
                         crate::i18n::t("Substituir").to_string()
                     };
 
+                    let is_failed = matches!(st.status, Status::Failed(_));
+                    let failed_raw = match &st.status {
+                        Status::Failed(msg) => Some(msg.clone()),
+                        _ => None,
+                    };
+                    let failed_hint = failed_raw
+                        .as_deref()
+                        .map(|msg| crate::i18n::t(connection_hint(msg, is_file)));
+                    let show_details_toggle = failed_raw
+                        .as_deref()
+                        .zip(failed_hint)
+                        .is_some_and(|(raw, hint)| !raw.trim().is_empty() && raw.trim() != hint);
+                    let offer_tls_require = !is_file
+                        && st.tls != db_introspect::TlsMode::Require
+                        && failed_raw
+                            .as_deref()
+                            .is_some_and(is_tls_cert_error);
+
                     let status_line = match &st.status {
                         Status::Idle => {
                             div().child(crate::i18n::t("Somente leitura: apenas o catálogo é lido, nunca os seus dados."))
                         }
                         Status::Connecting => div().child(crate::i18n::t("Conectando e lendo o esquema…")),
-                        Status::Failed(msg) => div()
+                        Status::Failed(_) => div()
                             .text_color(rgb(crate::glass::DIAG_ERROR))
-                            .child(crate::i18n::t(connection_hint(msg, is_file))),
+                            .child(failed_hint.unwrap_or_default()),
                         Status::Tested(msg) => div().child(msg.clone()),
                         Status::Ready => div().child(crate::i18n::t(if st.tables == 1 { "{} tabela encontrada. Substitua o documento ou insira-a." } else { "{} tabelas encontradas. Substitua o documento ou insira-as." }).replace("{}", &st.tables.to_string())),
                     };
@@ -646,37 +664,73 @@ impl Shell {
                             )
                             .child(row("Schemas", &w.schemas));
                         {
-                            let tls_modes = [
-                                (k::ID_TLS_AUTO, "Auto", db_introspect::TlsMode::Auto),
-                                (
-                                    k::ID_TLS_VERIFY,
-                                    crate::i18n::t("Verificar"),
-                                    db_introspect::TlsMode::Verify,
-                                ),
-                                (
-                                    k::ID_TLS_REQUIRE,
-                                    crate::i18n::t("Exigir"),
-                                    db_introspect::TlsMode::Require,
-                                ),
-                                (
-                                    k::ID_TLS_DISABLE,
-                                    crate::i18n::t("Desativar"),
-                                    db_introspect::TlsMode::Disable,
-                                ),
-                            ];
+                            let ssl_on = st.tls != db_introspect::TlsMode::Disable;
+                            let verify_cert = st.tls == db_introspect::TlsMode::Verify;
+                            let w_toggle = w.clone();
+                            let switch_track = div()
+                                .w(px(k::TLS_SWITCH_W_PX))
+                                .h(px(k::TLS_SWITCH_H_PX))
+                                .p(px(k::TLS_SWITCH_PAD_PX))
+                                .rounded(px(k::TLS_SWITCH_RADIUS_PX))
+                                .bg(if ssl_on { g.accent } else { g.edge_strong })
+                                .flex()
+                                .items_center()
+                                .when(ssl_on, Styled::justify_end)
+                                .child(
+                                    div()
+                                        .w(px(k::TLS_SWITCH_THUMB_PX))
+                                        .h(px(k::TLS_SWITCH_THUMB_PX))
+                                        .rounded(px(k::TLS_SWITCH_RADIUS_PX))
+                                        .bg(gpui::white()),
+                                );
+                            let ssl_toggle = div()
+                                .id(k::ID_TLS_TOGGLE)
+                                .flex()
+                                .items_center()
+                                .gap(px(k::DB_FORM_GAP_PX))
+                                .when(!connecting, |d| {
+                                    d.cursor_pointer().on_click(move |_, window, cx| {
+                                        w_toggle.model.update(cx, |m, _| {
+                                            m.tls = if ssl_on {
+                                                db_introspect::TlsMode::Disable
+                                            } else {
+                                                db_introspect::TlsMode::Require
+                                            };
+                                            m.trust_cert = false;
+                                        });
+                                        w_toggle.refresh(window, cx);
+                                    })
+                                })
+                                .child(switch_track)
+                                .child(
+                                    div()
+                                        .text_size(px(k::TLS_LABEL_FONT_PX))
+                                        .text_color(g.text)
+                                        .child(crate::i18n::t("Usar SSL")),
+                                );
                             let mut tls_row = div()
                                 .flex()
                                 .items_center()
-                                .gap(px(k::TLS_BTN_GAP_PX));
-                            for (id, label, mode) in tls_modes {
-                                let w = w.clone();
-                                let active = st.tls == mode;
+                                .gap(px(k::TLS_CTRL_GAP_PX))
+                                .child(ssl_toggle);
+                            if ssl_on {
+                                let w_verify = w.clone();
                                 tls_row = tls_row.child(
-                                    dialog_btn(&g, id, label, None, active, !active, !connecting)
-                                        .h(px(k::TLS_BTN_HEIGHT_PX))
-                                        .on_click(move |_, window, cx| {
-                                            w.model.update(cx, |m, _| m.tls = mode);
-                                            w.refresh(window, cx);
+                                    Checkbox::new(k::ID_TLS_VERIFY_CERT)
+                                        .label(crate::i18n::t("Verificar certificado"))
+                                        .checked(verify_cert)
+                                        .disabled(connecting)
+                                        .on_click(move |checked, window, cx| {
+                                            let checked = *checked;
+                                            w_verify.model.update(cx, |m, _| {
+                                                m.tls = if checked {
+                                                    db_introspect::TlsMode::Verify
+                                                } else {
+                                                    db_introspect::TlsMode::Require
+                                                };
+                                                m.trust_cert = false;
+                                            });
+                                            w_verify.refresh(window, cx);
                                         }),
                                 );
                             }
@@ -694,19 +748,6 @@ impl Shell {
                                             .child(k::TLS_FIELD_LABEL),
                                     )
                                     .child(tls_row),
-                            );
-                        }
-                        if st.dialect == Dialect::SqlServer {
-                            let w = w.clone();
-                            form = form.child(
-                                Checkbox::new(k::ID_DB_TRUST)
-                                    .label(crate::i18n::t("Confiar no certificado do servidor (autoassinado, ex.: Docker)"))
-                                    .checked(st.trust_cert)
-                                    .on_click(move |checked, window, cx| {
-                                        let checked = *checked;
-                                        w.model.update(cx, |m, _| m.trust_cert = checked);
-                                        w.refresh(window, cx);
-                                    }),
                             );
                         }
                     }
@@ -739,18 +780,109 @@ impl Shell {
                                     .rounded(px(k::DB_STATUS_RADIUS_PX))
                                     .bg(g.input)
                                     .flex()
-                                    .items_center()
+                                    .items_start()
                                     .gap(px(k::DB_FORM_GAP_PX))
                                     .text_size(px(k::DB_FIELD_LABEL_FONT_PX))
                                     .text_color(g.text_muted)
                                     .child(
-                                        Icon::new(IconName::ShieldCheck)
+                                        Icon::new(if is_failed {
+                                            IconName::TriangleAlert
+                                        } else {
+                                            IconName::ShieldCheck
+                                        })
                                             .size(px(k::DB_STATUS_ICON_PX))
+                                            .mt(px(2.0))
                                             .flex_none()
-                                            .text_color(g.ok),
+                                            .text_color(if is_failed {
+                                                rgb(crate::glass::DIAG_ERROR).into()
+                                            } else {
+                                                g.ok
+                                            }),
                                     )
-                                    .child(status_line),
+                                    .child(div().flex_1().min_w_0().child(status_line)),
                             )
+                            .when(show_details_toggle || offer_tls_require, |d| {
+                                let w_tls = w.clone();
+                                let w_det = w.clone();
+                                let details_label = crate::i18n::t(if st.show_error_details {
+                                    "Ocultar detalhes"
+                                } else {
+                                    "Detalhes"
+                                });
+                                d.child(
+                                    div()
+                                        .flex()
+                                        .items_center()
+                                        .gap(px(k::DB_FORM_GAP_PX))
+                                        .px(px(k::DB_FORM_PAD_X_PX))
+                                        .pt(px(k::DB_FORM_GAP_PX))
+                                        .when(offer_tls_require, |row| {
+                                            row.child(
+                                                dialog_btn(
+                                                    &g,
+                                                    k::ID_DB_USE_TLS_REQUIRE,
+                                                    crate::i18n::t("Usar TLS: Exigir"),
+                                                    None,
+                                                    false,
+                                                    true,
+                                                    !connecting,
+                                                )
+                                                .h(px(k::TLS_BTN_HEIGHT_PX))
+                                                .on_click(move |_, window, cx| {
+                                                    w_tls.model.update(cx, |m, _| {
+                                                        m.tls = db_introspect::TlsMode::Require;
+                                                        m.reset_result();
+                                                    });
+                                                    w_tls.refresh(window, cx);
+                                                }),
+                                            )
+                                        })
+                                        .when(show_details_toggle, |row| {
+                                            row.child(
+                                                dialog_btn(
+                                                    &g,
+                                                    k::ID_DB_ERROR_DETAILS_TOGGLE,
+                                                    details_label,
+                                                    None,
+                                                    false,
+                                                    false,
+                                                    true,
+                                                )
+                                                .h(px(k::TLS_BTN_HEIGHT_PX))
+                                                .on_click(move |_, _, cx| {
+                                                    w_det.model.update(cx, |m, cx| {
+                                                        m.toggle_error_details();
+                                                        cx.notify();
+                                                    });
+                                                }),
+                                            )
+                                        }),
+                                )
+                            })
+                            .when(st.show_error_details, |d| {
+                                if let Some(raw) = failed_raw.clone() {
+                                    d.child(
+                                        div()
+                                            .id(k::ID_DB_ERROR_DETAILS)
+                                            .max_h(px(k::DB_ERROR_DETAILS_MAX_H_PX))
+                                            .overflow_y_scroll()
+                                            .mx(px(k::DB_FORM_PAD_X_PX))
+                                            .mt(px(k::DB_FORM_GAP_PX))
+                                            .px(px(k::DB_ERROR_DETAILS_PAD_X_PX))
+                                            .py(px(k::DB_ERROR_DETAILS_PAD_Y_PX))
+                                            .rounded(px(k::DB_STATUS_RADIUS_PX))
+                                            .bg(g.input)
+                                            .border_1()
+                                            .border_color(g.edge)
+                                            .font_family(FONT_MONO)
+                                            .text_size(px(k::DB_ERROR_DETAILS_FONT_PX))
+                                            .text_color(g.text_muted)
+                                            .child(raw),
+                                    )
+                                } else {
+                                    d
+                                }
+                            })
                             .when(!conflicts.is_empty(), |d| {
                                 d.child(div().px(px(k::DB_FORM_PAD_X_PX)).text_size(TEXT_XS)
                                     .text_color(rgb(crate::glass::DIAG_WARNING))

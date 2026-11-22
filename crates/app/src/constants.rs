@@ -6,19 +6,22 @@ pub const MAX_VIEWPORTS: usize = 64;
 /// Posição padrão de fallback quando uma tabela não está no mapa de posições do canvas.
 pub const DEFAULT_CARD_POS: (f32, f32) = (0.0, 0.0);
 
-/// Rótulo e IDs dos controles de TLS no modal "Conectar ao banco".
-pub const TLS_FIELD_LABEL: &str = "TLS";
-pub const ID_TLS_AUTO: &str = "db-tls-auto";
-pub const ID_TLS_VERIFY: &str = "db-tls-verify";
-pub const ID_TLS_REQUIRE: &str = "db-tls-require";
-pub const ID_TLS_DISABLE: &str = "db-tls-disable";
+/// Rótulo e IDs dos controles de SSL / TLS no modal "Conectar ao banco".
+pub const TLS_FIELD_LABEL: &str = "SSL / TLS";
+pub const ID_TLS_TOGGLE: &str = "db-tls-toggle";
+pub const ID_TLS_VERIFY_CERT: &str = "db-tls-verify-cert";
 
-/// Dimensões do seletor de TLS no formulário de conexão (em pixels).
+/// Dimensões do controle de SSL / TLS no formulário de conexão (em pixels).
 pub const TLS_ROW_GAP_PX: f32 = 12.0;
-pub const TLS_BTN_GAP_PX: f32 = 6.0;
+pub const TLS_CTRL_GAP_PX: f32 = 14.0;
 pub const TLS_BTN_HEIGHT_PX: f32 = 28.0;
 pub const TLS_LABEL_WIDTH_PX: f32 = 96.0;
 pub const TLS_LABEL_FONT_PX: f32 = 12.5;
+pub const TLS_SWITCH_W_PX: f32 = 34.0;
+pub const TLS_SWITCH_H_PX: f32 = 18.0;
+pub const TLS_SWITCH_THUMB_PX: f32 = 14.0;
+pub const TLS_SWITCH_PAD_PX: f32 = 2.0;
+pub const TLS_SWITCH_RADIUS_PX: f32 = 9.0;
 
 /// Connection string do modal "Conectar ao banco": separador do esquema e usuário/senha
 /// provisórios usados só para montar a string sem usuário ou sem expor a senha (nunca enviados).
@@ -35,8 +38,10 @@ pub const ID_DB_CONN_COPY: &str = "db-conn-copy";
 pub const ID_DB_PASSWORD_REVEAL: &str = "db-password-reveal";
 pub const ID_DB_PICK_FILE: &str = "db-pick-file";
 pub const ID_DB_STATUS: &str = "db-status";
+pub const ID_DB_ERROR_DETAILS_TOGGLE: &str = "db-error-details-toggle";
+pub const ID_DB_ERROR_DETAILS: &str = "db-error-details";
+pub const ID_DB_USE_TLS_REQUIRE: &str = "db-use-tls-require";
 pub const ID_DB_WARNINGS: &str = "db-warn";
-pub const ID_DB_TRUST: &str = "db-trust";
 pub const ID_DB_TEST: &str = "db-test";
 pub const ID_DB_CONNECT: &str = "db-connect";
 pub const ID_DB_CANCEL: &str = "db-cancel";
@@ -55,7 +60,7 @@ pub const DB_FORM_GAP_PX: f32 = 8.0;
 pub const DB_FIELD_GAP_PX: f32 = 12.0;
 pub const DB_FIELD_LABEL_W_PX: f32 = 96.0;
 /// Rótulo da segunda coluna (Porta, Senha) nas linhas duplas.
-pub const DB_FIELD_LABEL2_W_PX: f32 = 48.0;
+pub const DB_FIELD_LABEL2_W_PX: f32 = 62.0;
 pub const DB_FIELD_LABEL_FONT_PX: f32 = 12.5;
 pub const DB_FIELD_H_PX: f32 = 32.0;
 pub const DB_FIELD_PAD_X_PX: f32 = 10.0;
@@ -65,12 +70,16 @@ pub const DB_CONN_FONT_PX: f32 = 12.0;
 pub const DB_ERROR_FONT_PX: f32 = 12.0;
 pub const DB_ENGINE_TRIGGER_W_PX: f32 = 200.0;
 pub const DB_ENGINE_MENU_W_PX: f32 = 200.0;
-pub const DB_STATUS_MAX_H_PX: f32 = 72.0;
+pub const DB_STATUS_MAX_H_PX: f32 = 96.0;
 pub const DB_STATUS_MARGIN_TOP_PX: f32 = 4.0;
 pub const DB_STATUS_PAD_X_PX: f32 = 12.0;
 pub const DB_STATUS_PAD_Y_PX: f32 = 10.0;
 pub const DB_STATUS_RADIUS_PX: f32 = 8.0;
 pub const DB_STATUS_ICON_PX: f32 = 14.0;
+pub const DB_ERROR_DETAILS_MAX_H_PX: f32 = 88.0;
+pub const DB_ERROR_DETAILS_PAD_X_PX: f32 = 10.0;
+pub const DB_ERROR_DETAILS_PAD_Y_PX: f32 = 8.0;
+pub const DB_ERROR_DETAILS_FONT_PX: f32 = 11.5;
 pub const DB_WARNINGS_MAX_H_PX: f32 = 64.0;
 pub const DB_FOOTER_PAD_Y_PX: f32 = 16.0;
 

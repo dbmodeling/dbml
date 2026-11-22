@@ -645,6 +645,18 @@ const TRANSLATIONS: &[(&str, &str)] = &[
         "Could not read the schema. Check permissions to read the catalog.",
     ),
     (
+        "O certificado TLS do servidor não pôde ser verificado (comum em AWS RDS, GCP Cloud SQL, Azure e Supabase). Mude TLS para Exigir e tente novamente.",
+        "The server's TLS certificate could not be verified (common on AWS RDS, GCP Cloud SQL, Azure, and Supabase). Switch TLS to Require and try again.",
+    ),
+    ("Detalhes", "Details"),
+    ("Ocultar detalhes", "Hide details"),
+    ("Usar TLS: Exigir", "Use TLS: Require"),
+    ("Usar SSL", "Use SSL"),
+    ("Verificar certificado", "Verify certificate"),
+    ("Verificar", "Verify"),
+    ("Exigir", "Require"),
+    ("Desativar", "Disable"),
+    (
         "Não foi possível abrir o banco SQLite. Confira o caminho e as permissões do arquivo.",
         "Could not open the SQLite database. Check the file path and permissions.",
     ),

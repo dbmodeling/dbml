@@ -433,7 +433,20 @@ export const WORKBENCH_CSS = `${FONT_FACE_CSS}
 .wb .menu.dd-list .mi[aria-disabled="true"] { cursor: default; color: var(--faint); }
 .wb .menu.dd-list .mi[aria-disabled="true"]:hover { background: none; }
 .wb .mform .chk { grid-column: 1 / -1; display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--muted); }
-.wb .mnote { display: flex; align-items: center; gap: 8px; margin: 4px 18px 0; padding: 10px 12px; border-radius: 8px; background: var(--input); font-size: 12.5px; color: var(--muted); }
+.wb .mform .tls-row { display: flex; align-items: center; gap: 16px; flex-wrap: wrap; min-height: 28px; }
+.wb .mform .sw-wrap, .wb .mform .chk-inl { display: inline-flex; align-items: center; gap: 8px; font-size: 12.5px; color: var(--text); cursor: pointer; user-select: none; }
+.wb .mform .chk-inl { color: var(--muted); }
+.wb .mform input.sw { appearance: none; -webkit-appearance: none; position: relative; width: 34px; height: 18px; margin: 0; border-radius: 9px; background: var(--edge-strong); border: 0; cursor: pointer; transition: background .15s var(--ease); flex: none; }
+.wb .mform input.sw::after { content: ''; position: absolute; top: 2px; left: 2px; width: 14px; height: 14px; border-radius: 50%; background: #fff; transition: transform .15s var(--ease); }
+.wb .mform input.sw:checked { background: var(--accent); }
+.wb .mform input.sw:checked::after { transform: translateX(16px); }
+.wb .mform input.sw:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.wb .mform input.sw:disabled { opacity: .5; cursor: default; }
+.wb .mnote { display: flex; align-items: flex-start; gap: 8px; margin: 4px 18px 0; padding: 10px 12px; border-radius: 8px; background: var(--input); font-size: 12.5px; color: var(--muted); }
+.wb .mnote #db-ico { flex: none; margin-top: 2px; }
+.wb .merr-extra { display: flex; flex-direction: column; gap: 8px; margin: 8px 18px 0; }
+.wb .merr-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.wb .merr-detail { margin: 0; padding: 8px 10px; max-height: 88px; overflow: auto; border-radius: 8px; background: var(--input); border: 1px solid var(--edge-strong); font: 11.5px/1.45 var(--mono); color: var(--muted); white-space: pre-wrap; word-break: break-word; user-select: text; -webkit-user-select: text; }
 .wb .suggest { position: fixed; z-index: 65; width: 220px; padding: 4px; border-radius: 9px; background: var(--pop); border: 1px solid var(--edge-strong); box-shadow: var(--pop-shadow);
   backdrop-filter: blur(24px); -webkit-backdrop-filter: blur(24px); }
 .wb .suggest .hh { display: flex; justify-content: space-between; align-items: center; height: 22px; padding: 0 6px; font-size: 10.5px; color: var(--faint); }

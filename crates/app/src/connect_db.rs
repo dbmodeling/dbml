@@ -167,6 +167,8 @@ pub struct ConnectModel {
     /// Bumped on every keystroke in the string field; a debounced parse runs only if it is
     /// still the latest one.
     pub string_edit_seq: u64,
+    /// Technical driver error details expanded in the dialog.
+    pub show_error_details: bool,
 }
 
 impl ConnectModel {
@@ -195,6 +197,7 @@ impl ConnectModel {
             revealed: false,
             engine_menu_open: false,
             string_edit_seq: 0,
+            show_error_details: false,
         }
     }
 
@@ -211,6 +214,11 @@ impl ConnectModel {
     pub fn close(&mut self) {
         self.revealed = false;
         self.engine_menu_open = false;
+        self.show_error_details = false;
+    }
+
+    pub fn toggle_error_details(&mut self) {
+        self.show_error_details = !self.show_error_details;
     }
 
     pub fn toggle_reveal(&mut self) {
@@ -334,6 +342,7 @@ impl ConnectModel {
         self.warnings.clear();
         self.tables = 0;
         self.confirm_replace = false;
+        self.show_error_details = false;
     }
 
     /// Result of "Testar conexão": no DBML is produced, so nothing can be applied.
@@ -342,6 +351,7 @@ impl ConnectModel {
         self.warnings.clear();
         self.tables = 0;
         self.confirm_replace = false;
+        self.show_error_details = false;
         self.status = match result {
             Ok(msg) => Status::Tested(msg),
             Err(msg) => Status::Failed(msg),
@@ -350,6 +360,7 @@ impl ConnectModel {
 
     pub fn finish(&mut self, result: Result<Generated, String>) {
         self.confirm_replace = false;
+        self.show_error_details = false;
         match result {
             Ok(g) => {
                 self.revealed = false;
@@ -519,6 +530,11 @@ mod tests {
         assert!(!m.can_apply());
         m.finish_test(Err("nope".into()));
         assert_eq!(m.status, Status::Failed("nope".into()));
+        assert!(!m.show_error_details);
+        m.toggle_error_details();
+        assert!(m.show_error_details);
+        m.reset_result();
+        assert!(!m.show_error_details);
     }
 
     #[test]

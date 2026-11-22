@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import { summarizeTest } from '../src/connect-db';
-import { connectionHint, diagnosticMessage, setLanguage, systemLanguage, t, translations } from '../src/i18n';
+import { connectionHint, diagnosticMessage, isTlsCertError, setLanguage, systemLanguage, t, translations } from '../src/i18n';
 
 afterEach(() => setLanguage('pt-BR'));
 
@@ -39,8 +39,14 @@ describe('i18n', () => {
     setLanguage('pt-BR');
     expect(connectionHint('error 28P01', false)).toContain('Confira o usuário e a senha');
     expect(connectionHint('connection refused', false)).toContain('Confira o host, a porta');
+    expect(connectionHint('network is unreachable', false)).toContain('Confira o host, a porta');
     expect(connectionHint('unable to open database file', true)).toContain('caminho e as permissões');
     expect(connectionHint('could not read the catalog: driver detail', false)).toContain('permissões de leitura');
+    expect(connectionHint('could not connect: invalid peer certificate: UnknownIssuer', false)).toContain('TLS para Exigir');
+    expect(isTlsCertError('invalid peer certificate: UnknownIssuer')).toBe(true);
+    expect(isTlsCertError('connection refused')).toBe(false);
+    setLanguage('en');
+    expect(connectionHint('invalid peer certificate: UnknownIssuer', false)).toContain('Switch TLS to Require');
   });
 
   it('chooses Portuguese for Portuguese system locales', () => {

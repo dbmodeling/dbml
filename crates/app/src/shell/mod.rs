@@ -4230,12 +4230,32 @@ impl Shell {
     }
 }
 
+pub(super) fn is_tls_cert_error(message: &str) -> bool {
+    let lower = message.to_ascii_lowercase();
+    [
+        "invalid peer certificate",
+        "unknownissuer",
+        "unknown issuer",
+        "certificate",
+        "self-signed",
+        "self signed",
+        "notvalidforname",
+        "badcertificate",
+        "webpki",
+        "tls",
+        "ssl",
+        "handshake",
+    ]
+    .iter()
+    .any(|reason| lower.contains(reason))
+}
+
 fn connection_hint(message: &str, sqlite: bool) -> &'static str {
     let empty = "Conectado, mas nenhuma tabela foi encontrada. Verifique o banco e o schema.";
     if message == crate::i18n::t(empty) {
         return empty;
     }
-    let message = message.to_ascii_lowercase();
+    let lower = message.to_ascii_lowercase();
     if [
         "authenticat",
         "login failed",
@@ -4245,7 +4265,7 @@ fn connection_hint(message: &str, sqlite: bool) -> &'static str {
         "18456",
     ]
     .iter()
-    .any(|reason| message.contains(reason))
+    .any(|reason| lower.contains(reason))
     {
         "O banco recusou a autenticação. Confira o usuário e a senha."
     } else if [
@@ -4254,13 +4274,20 @@ fn connection_hint(message: &str, sqlite: bool) -> &'static str {
         "time out",
         "connection refused",
         "could not resolve",
+        "network is unreachable",
+        "no route to host",
+        "name or service not known",
+        "failed to lookup",
+        "host unreachable",
     ]
     .iter()
-    .any(|reason| message.contains(reason))
+    .any(|reason| lower.contains(reason))
     {
         "O banco não respondeu. Confira o host, a porta e se o serviço está rodando."
-    } else if message.contains("could not read the catalog") {
+    } else if lower.contains("could not read the catalog") {
         "Não foi possível ler o esquema. Verifique as permissões de leitura do catálogo."
+    } else if !sqlite && is_tls_cert_error(message) {
+        "O certificado TLS do servidor não pôde ser verificado (comum em AWS RDS, GCP Cloud SQL, Azure e Supabase). Mude TLS para Exigir e tente novamente."
     } else if sqlite {
         "Não foi possível abrir o banco SQLite. Confira o caminho e as permissões do arquivo."
     } else {
@@ -4938,5 +4965,28 @@ mod tests {
         };
         assert_eq!(count(crate::actions::GROUP_EXPORT_CODE), 8); // 5 bancos + Mermaid + HTML/MD docs
         assert_eq!(count(crate::actions::GROUP_EXPORT_IMAGE), 3); // PNG, JPEG, SVG
+    }
+
+    #[test]
+    fn connection_hint_classifies_tls_and_cloud_errors() {
+        assert!(super::is_tls_cert_error(
+            "could not connect: error communicating with database: invalid peer certificate: UnknownIssuer"
+        ));
+        assert!(!super::is_tls_cert_error("connection refused (os error 111)"));
+        assert!(
+            super::connection_hint("invalid peer certificate: UnknownIssuer", false)
+                .contains("TLS para Exigir")
+        );
+        assert!(
+            super::connection_hint("network is unreachable (os error 101)", false)
+                .contains("Confira o host, a porta")
+        );
+        assert!(
+            super::connection_hint("password authentication failed for user", false)
+                .contains("Confira o usuário e a senha")
+        );
+        assert!(
+            super::connection_hint("unable to open database file", true).contains("SQLite")
+        );
     }
 }

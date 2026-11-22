@@ -231,6 +231,8 @@ export class ConnectDbModel {
   warnings: string[] = [];
   tables = 0;
   error = '';
+  errorDetail = '';
+  showErrorDetails = false;
   confirmReplace = false;
 
   constructor(engine: DbEngine = 'postgres', private readonly parser?: UrlParser) {
@@ -325,6 +327,11 @@ export class ConnectDbModel {
   /** Fechar o diálogo descarta a revelação. */
   close(): void {
     this.passwordRevealed = false;
+    this.showErrorDetails = false;
+  }
+
+  toggleErrorDetails(): void {
+    this.showErrorDetails = !this.showErrorDetails;
   }
 
   reset(): void {
@@ -333,6 +340,8 @@ export class ConnectDbModel {
     this.warnings = [];
     this.tables = 0;
     this.error = '';
+    this.errorDetail = '';
+    this.showErrorDetails = false;
     this.confirmReplace = false;
   }
 
@@ -367,12 +376,14 @@ export class ConnectDbModel {
     this.reset();
   }
 
-  fail(message: string): void {
+  fail(message: string, detail = ''): void {
     this.dbml = '';
     this.warnings = [];
     this.tables = 0;
     this.confirmReplace = false;
     this.error = message;
+    this.errorDetail = detail;
+    this.showErrorDetails = false;
     this.status = 'failed';
   }
 

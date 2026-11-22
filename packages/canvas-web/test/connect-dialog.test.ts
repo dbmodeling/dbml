@@ -7,7 +7,8 @@ import {
   CONNECT_URL_ERROR,
   COPY_FEEDBACK_MS,
   ENGINE_COMING_SOON,
-  TLS_SELECT_ID,
+  TLS_TOGGLE_ID,
+  TLS_VERIFY_ID,
   URL_PARSE_DEBOUNCE_MS,
   URL_PASTE_SETTLE_MS,
 } from '../src/constants';
@@ -153,7 +154,8 @@ describe('connection string', () => {
     expect($<HTMLInputElement>('#db-database').value).toBe('db');
     expect($<HTMLInputElement>('#db-user').value).toBe('u');
     expect($<HTMLInputElement>(`#${ids.PASSWORD_ID}`).value).toBe('p@ss');
-    expect($<HTMLSelectElement>(`#${TLS_SELECT_ID}`).value).toBe('require');
+    expect($<HTMLInputElement>(`#${TLS_TOGGLE_ID}`).checked).toBe(true);
+    expect($<HTMLInputElement>(`#${TLS_VERIFY_ID}`).checked).toBe(false);
     expect($(`#${ids.ENGINE_TRIGGER_ID}`).textContent).toContain('MySQL');
   });
 

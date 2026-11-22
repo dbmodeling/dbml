@@ -17,15 +17,10 @@ export const TLS_MODE = {
 } as const satisfies Record<string, TlsMode>;
 
 export const TLS_ROW_ID = 'tls';
-export const TLS_SELECT_ID = 'db-tls';
-export const TLS_FIELD_LABEL = 'TLS';
-
-export const TLS_SELECT_OPTIONS: ReadonlyArray<{ value: TlsMode; labelKey: string }> = [
-  { value: TLS_MODE.AUTO, labelKey: 'Auto (TLS verificado em hosts remotos)' },
-  { value: TLS_MODE.VERIFY, labelKey: 'Verificar certificado (TLS)' },
-  { value: TLS_MODE.REQUIRE, labelKey: 'Exigir TLS (autoassinado)' },
-  { value: TLS_MODE.DISABLE, labelKey: 'Desativar TLS (texto claro)' },
-];
+export const TLS_TOGGLE_ID = 'db-tls-toggle';
+export const TLS_VERIFY_ID = 'db-tls-verify';
+export const TLS_VERIFY_WRAP_ID = 'db-tls-verify-wrap';
+export const TLS_FIELD_LABEL = 'SSL / TLS';
 
 /** Linhas (rótulo + controle) que só valem para bancos de rede; Host+Porta e Usuário+Senha dividem uma linha. */
 export const CONNECT_NETWORK_ROW_IDS = [
@@ -100,6 +95,10 @@ export const CONNECT_DIALOG = {
   URL_COPY_ID: 'db-url-copy',
   PASSWORD_ID: 'db-password',
   PASSWORD_TOGGLE_ID: 'db-password-toggle',
+  ERROR_EXTRA_ID: 'db-error-extra',
+  ERROR_DETAILS_TOGGLE_ID: 'db-error-details-toggle',
+  ERROR_DETAILS_ID: 'db-error-details',
+  USE_TLS_REQUIRE_ID: 'db-use-tls-require',
   ROW_URL: 'url',
   ROW_ENGINE: 'engine',
 } as const;

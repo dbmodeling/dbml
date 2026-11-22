@@ -22,9 +22,11 @@ import {
   MAX_LOCAL_SESSIONS,
   MAX_WASM_RECOVERY_ATTEMPTS,
   TLS_FIELD_LABEL,
+  TLS_MODE,
   TLS_ROW_ID,
-  TLS_SELECT_ID,
-  TLS_SELECT_OPTIONS,
+  TLS_TOGGLE_ID,
+  TLS_VERIFY_ID,
+  TLS_VERIFY_WRAP_ID,
   URL_PARSE_DEBOUNCE_MS,
   URL_PASTE_SETTLE_MS,
 } from './constants';
@@ -38,7 +40,6 @@ import {
   SidecarLayout,
   ConnectionState,
   IntrospectRequest,
-  TlsMode,
   WasmApi,
   WasmSession,
   EdgeStyle,
@@ -67,7 +68,7 @@ import {
 import { iconSvg, IconName } from './icons';
 import { ActionId, COLUMN_PRESET_ACTIONS, GROUP_EXPORT_CODE, GROUP_EXPORT_IMAGE, catalog } from './actions';
 import { MINIMAP_H, MINIMAP_PAD, MINIMAP_W, MinimapTransform, computeMinimapTransform, panForMapPoint, worldToMap } from './minimap';
-import { Language, connectionHint, diagnosticMessage, setLanguage, systemLanguage, t, t as translate } from './i18n';
+import { Language, connectionHint, diagnosticMessage, isTlsCertError, setLanguage, systemLanguage, t, t as translate } from './i18n';
 import { WORKBENCH_CSS } from './workbench-css';
 import { tokenizeLine, tableLineRange } from './dbml-highlight';
 import { curvedEdge, edgeDrawing } from './edge-path';
@@ -3081,15 +3082,28 @@ export class Workbench {
             <div class="pwd"><input id="${ids.PASSWORD_ID}" type="password" placeholder="${esc(translate('senha'))}" autocomplete="off" spellcheck="false">
               <button type="button" class="ib" id="${ids.PASSWORD_TOGGLE_ID}" aria-pressed="false" aria-label="${translate("Mostrar senha")}" title="${translate("Mostrar senha")}">${ICON('Eye', 15)}</button></div></div>
           ${field('schemas', 'Schemas', 'todos os schemas (ou: public, sales)')}
-          <label data-row="${TLS_ROW_ID}" for="${TLS_SELECT_ID}">${TLS_FIELD_LABEL}</label>
-          <select data-row="${TLS_ROW_ID}" id="${TLS_SELECT_ID}" class="fld">
-            ${TLS_SELECT_OPTIONS.map((opt) => `<option value="${opt.value}">${translate(opt.labelKey)}</option>`).join('')}
-          </select>
+          <label data-row="${TLS_ROW_ID}" for="${TLS_TOGGLE_ID}">${TLS_FIELD_LABEL}</label>
+          <div class="tls-row" data-row="${TLS_ROW_ID}">
+            <label class="sw-wrap" for="${TLS_TOGGLE_ID}">
+              <input id="${TLS_TOGGLE_ID}" type="checkbox" role="switch" class="sw">
+              <span>${translate("Usar SSL")}</span>
+            </label>
+            <label class="chk-inl" id="${TLS_VERIFY_WRAP_ID}" for="${TLS_VERIFY_ID}">
+              <input id="${TLS_VERIFY_ID}" type="checkbox">
+              <span>${translate("Verificar certificado")}</span>
+            </label>
+          </div>
           <label data-row="path" for="db-path">${translate("Arquivo")}</label>
           <div class="mpair" data-row="path">${input('path', '/caminho/para/banco.sqlite')}</div>
-          <label class="chk" data-row="trust"><input id="db-trust" type="checkbox">${translate("Confiar no certificado do servidor (autoassinado, ex.: Docker)")}</label>
         </div>
         <div class="mnote" id="db-note"><span id="db-ico" style="color:var(--ok);display:flex">${ICON('ShieldCheck', 14)}</span><span id="db-status" aria-live="polite"></span></div>
+        <div class="merr-extra" id="${ids.ERROR_EXTRA_ID}" style="display:none">
+          <div class="merr-actions">
+            <button class="btn sm" id="${ids.USE_TLS_REQUIRE_ID}" type="button" style="display:none">${translate("Usar TLS: Exigir")}</button>
+            <button class="btn sm ghost" id="${ids.ERROR_DETAILS_TOGGLE_ID}" type="button" style="display:none">${translate("Detalhes")}</button>
+          </div>
+          <pre class="merr-detail" id="${ids.ERROR_DETAILS_ID}" style="display:none"></pre>
+        </div>
         <div class="mwarn" id="db-warns" style="display:none"></div>
         <div class="mfooter">
           <button class="btn" id="db-test" type="button">${ICON('PlugZap', 13)}${translate("Testar conexão")}</button><span class="grow"></span>
@@ -3102,6 +3116,10 @@ export class Workbench {
 
     const $ = <T extends HTMLElement>(sel: string) => bg.querySelector(sel) as T;
     const statusEl = $<HTMLElement>('#db-status');
+    const errExtraEl = $<HTMLElement>(`#${ids.ERROR_EXTRA_ID}`);
+    const errToggleBtn = $<HTMLButtonElement>(`#${ids.ERROR_DETAILS_TOGGLE_ID}`);
+    const errDetailEl = $<HTMLElement>(`#${ids.ERROR_DETAILS_ID}`);
+    const useTlsRequireBtn = $<HTMLButtonElement>(`#${ids.USE_TLS_REQUIRE_ID}`);
     const warnsEl = $<HTMLElement>('#db-warns');
     const connectBtn = $<HTMLButtonElement>('#db-connect');
     const testBtn = $<HTMLButtonElement>('#db-test');
@@ -3130,13 +3148,19 @@ export class Workbench {
       const connecting = model.status === 'connecting';
       for (const id of CONNECT_NETWORK_ROW_IDS) setHidden(`[data-row="${id}"]`, isFile);
       setHidden('[data-row="path"]', !isFile);
-      setHidden('[data-row="trust"]', model.engine !== 'sqlserver', 'flex');
       for (const name of FIELD_NAMES) {
         const el = $<HTMLInputElement>(`#db-${name}`);
         if (el.value !== model.fields[name]) el.value = model.fields[name];
       }
-      $<HTMLSelectElement>(`#${TLS_SELECT_ID}`).value = model.tls;
-      $<HTMLInputElement>('#db-trust').checked = model.trustCert;
+      const sslOn = model.tls !== TLS_MODE.DISABLE;
+      const tlsToggle = $<HTMLInputElement>(`#${TLS_TOGGLE_ID}`);
+      const tlsVerify = $<HTMLInputElement>(`#${TLS_VERIFY_ID}`);
+      const tlsVerifyWrap = $<HTMLElement>(`#${TLS_VERIFY_WRAP_ID}`);
+      tlsToggle.checked = sslOn;
+      tlsToggle.disabled = connecting;
+      tlsVerify.checked = model.tls === TLS_MODE.VERIFY;
+      tlsVerify.disabled = connecting || !sslOn;
+      tlsVerifyWrap.style.display = sslOn ? 'inline-flex' : 'none';
       const port = DB_ENGINES.find((e) => e.value === model.engine)?.port;
       $<HTMLInputElement>('#db-port').placeholder = port ? String(port) : translate("porta padrão");
       // com um parse pendente o campo é do usuário: não o sobrescrever no meio da digitação
@@ -3188,6 +3212,16 @@ export class Workbench {
               : model.status === 'tested'
                 ? model.error
                 : translate("Somente leitura: apenas o catálogo é lido, nunca os seus dados.");
+      const failed = model.status === 'failed';
+      const hasDetail = failed && model.errorDetail.trim().length > 0 && model.errorDetail.trim() !== model.error.trim();
+      const offerTlsRequire = failed && model.engine !== 'sqlite' && model.tls !== TLS_MODE.REQUIRE && isTlsCertError(model.errorDetail);
+      errExtraEl.style.display = hasDetail || offerTlsRequire ? 'flex' : 'none';
+      useTlsRequireBtn.style.display = offerTlsRequire ? '' : 'none';
+      useTlsRequireBtn.disabled = connecting;
+      errToggleBtn.style.display = hasDetail ? '' : 'none';
+      errToggleBtn.textContent = translate(model.showErrorDetails ? 'Ocultar detalhes' : 'Detalhes');
+      errDetailEl.style.display = hasDetail && model.showErrorDetails ? 'block' : 'none';
+      errDetailEl.textContent = hasDetail ? model.errorDetail : '';
       const warnings = [...model.warnings];
       if (conflicts.length) warnings.push(translate('Já existem no modelo: {}.', conflicts.join(', ')));
       warnsEl.style.display = warnings.length ? 'block' : 'none';
@@ -3262,14 +3296,18 @@ export class Workbench {
         syncForm();
       });
     }
-    $<HTMLInputElement>('#db-trust').addEventListener('change', (e) => {
+    $<HTMLInputElement>(`#${TLS_TOGGLE_ID}`).addEventListener('change', (e) => {
       flushUrl();
-      model.setTrustCert((e.target as HTMLInputElement).checked);
+      const on = (e.target as HTMLInputElement).checked;
+      model.setTrustCert(false);
+      model.setTls(on ? TLS_MODE.REQUIRE : TLS_MODE.DISABLE);
       syncForm();
     });
-    $<HTMLSelectElement>(`#${TLS_SELECT_ID}`).addEventListener('change', (e) => {
+    $<HTMLInputElement>(`#${TLS_VERIFY_ID}`).addEventListener('change', (e) => {
       flushUrl();
-      model.setTls((e.target as HTMLSelectElement).value as TlsMode);
+      const verify = (e.target as HTMLInputElement).checked;
+      model.setTrustCert(false);
+      model.setTls(verify ? TLS_MODE.VERIFY : TLS_MODE.REQUIRE);
       syncForm();
     });
 
@@ -3338,7 +3376,10 @@ export class Workbench {
       } catch (e) {
         if (g.cancelled) model.cancel();
         else if (g.timedOut) model.fail(translate('A conexão demorou mais de {} s e foi cancelada. Confira o host e a porta.', INTROSPECT_TIMEOUT_MS / 1000));
-        else model.fail(connectionHint(e instanceof Error ? e.message : String(e), dialect === 'sqlite'));
+        else {
+          const raw = e instanceof Error ? e.message : String(e);
+          model.fail(connectionHint(raw, dialect === 'sqlite'), raw);
+        }
       } finally {
         g.dispose();
         if (guard === g) guard = null;
@@ -3387,6 +3428,16 @@ export class Workbench {
       }
     };
 
+    errToggleBtn.addEventListener('click', () => {
+      model.toggleErrorDetails();
+      syncView();
+    });
+    useTlsRequireBtn.addEventListener('click', () => {
+      flushUrl();
+      model.setTls(TLS_MODE.REQUIRE);
+      model.reset();
+      syncView();
+    });
     testBtn.addEventListener('click', () => void test());
     connectBtn.addEventListener('click', () => void connect());
     replaceBtn.addEventListener('click', () => applyMode('replace'));
