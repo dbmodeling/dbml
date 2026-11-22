@@ -61,3 +61,46 @@ pub const TOUR_MIN_VIEWPORT_H_PX: f32 = 240.0;
 pub const TOUR_BOUNDS_EPSILON_PX: f32 = 0.5;
 pub const WHATS_NEW_DIALOG_W_PX: f32 = 560.0;
 pub const WHATS_NEW_DIALOG_MAX_H_PX: f32 = 560.0;
+
+/// Base do modo Comparar (#18): `git show HEAD:./<arquivo>`.
+pub const GIT_BIN: &str = "git";
+pub const GIT_HEAD_SPEC_PREFIX: &str = "HEAD:./";
+/// `CREATE_NO_WINDOW`: o `git` não abre console no Windows.
+#[cfg(windows)]
+pub const WIN_CREATE_NO_WINDOW: u32 = 0x0800_0000;
+
+/// Geometria do modo Comparar (unidades de mundo do canvas, salvo indicação `_PX`).
+/// Espaço entre a linha do cabeçalho e a primeira coluna do cartão (`pt` das linhas).
+pub const CARD_ROWS_TOP_PAD: f32 = 4.0;
+/// Folga entre cartões fantasma (removidos) e o diagrama atual.
+pub const DIFF_GHOST_GAP: f32 = 40.0;
+/// Quantos cartões fantasma por fileira, no máximo, abaixo do diagrama.
+pub const DIFF_GHOST_PER_ROW: f32 = 4.0;
+/// Opacidade dos cartões/linhas fantasma (contexto do que foi removido).
+pub const DIFF_GHOST_OPACITY: f32 = 0.55;
+/// Opacidade das tabelas, enums e relações inalteradas (o que mudou fica em evidência).
+pub const DIFF_UNCHANGED_OPACITY: f32 = 0.5;
+/// Fundo das linhas alteradas (alfa sobre a cor do status).
+pub const DIFF_ROW_TINT: f32 = 0.14;
+/// Halo do cartão alterado (alfa e espessura em px de tela).
+pub const DIFF_HALO_ALPHA: f32 = 0.22;
+pub const DIFF_HALO_SPREAD_PX: f32 = 3.0;
+/// Traço tracejado das relações removidas (px de tela).
+pub const DIFF_DASH_PX: f32 = 5.0;
+pub const DIFF_DASH_GAP_PX: f32 = 4.0;
+pub const DIFF_EDGE_W_PX: f32 = 1.6;
+/// Painel de resumo do modo Comparar (px de tela).
+pub const DIFF_PANEL_W_PX: f32 = 320.0;
+pub const DIFF_PANEL_MAX_H_PX: f32 = 420.0;
+pub const DIFF_PANEL_MARGIN_PX: f32 = 12.0;
+pub const DIFF_PANEL_PAD_PX: f32 = 10.0;
+pub const DIFF_ITEM_H_PX: f32 = 26.0;
+pub const DIFF_MARK_W_PX: f32 = 14.0;
+/// Zoom mínimo ao centralizar um item do resumo (abaixo disso, vai a 100%).
+pub const DIFF_FOCUS_MIN_ZOOM: f32 = 0.85;
+/// IDs de UI do modo Comparar.
+pub const ID_DIFF_PANEL: &str = "canvas-diff-panel";
+pub const ID_DIFF_LIST: &str = "canvas-diff-list";
+pub const ID_DIFF_EXIT: &str = "canvas-diff-exit";
+pub const ID_DIFF_ITEM_PREFIX: &str = "canvas-diff-item";
+pub const ID_DIFF_GHOST_PREFIX: &str = "canvas-diff-ghost";
