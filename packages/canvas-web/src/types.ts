@@ -217,6 +217,7 @@ export type Command =
   | { action: 'set_column_flag'; payload: { table: string; column: string; flag: string; value: boolean } }
   | { action: 'add_ref'; payload: { from_table: string; from_col?: string; to_table: string; to_col?: string } }
   | { action: 'delete_ref'; payload: { from_table: string; from_col: string; to_table: string; to_col: string } }
+  | { action: 'create_junction_table'; payload: { left_table: string; right_table: string; junction_name?: string } }
   | {
       action: 'update_ref';
       payload: {
@@ -282,6 +283,28 @@ export interface IntrospectRequest {
   schemas: string[];
 }
 
+/** Códigos estáveis de falha de `parse_connection_url` (Wasm); a UI traduz por chave. */
+export type ConnectionUrlErrorCode =
+  | 'empty'
+  | 'unknown_scheme'
+  | 'unsupported_engine'
+  | 'malformed'
+  | 'missing_host'
+  | 'invalid_port';
+
+/** Resultado de `parse_connection_url`: os campos de `IntrospectRequest` mais `password_masked`. */
+export interface ParsedConnectionUrl extends IntrospectRequest {
+  tls: TlsMode;
+  /** A URL trazia o marcador `***`: `password` vem vazio e o campo Senha deve ser mantido. */
+  password_masked: boolean;
+}
+
+/** Objeto lançado por `parse_connection_url` quando a string não pode ser lida. */
+export interface ConnectionUrlError {
+  code: ConnectionUrlErrorCode;
+  message: string;
+}
+
 export interface IntrospectResult {
   dbml: string;
   warnings: string[];
@@ -314,8 +337,27 @@ export interface DocumentMetadata {
 /** `connecting`: tentando (re)conectar; `online`: canal aberto; `offline`: caiu, aguardando nova tentativa. */
 export type ConnectionState = 'connecting' | 'online' | 'offline';
 
+/** Código de erro de `git_base_result` (ver `GIT_BASE_ERROR` em `constants.ts`). */
+export type GitBaseErrorCode =
+  | 'git_unavailable'
+  | 'not_a_repo'
+  | 'no_commits'
+  | 'untracked'
+  | 'not_utf8'
+  | 'other';
+
+/** Versão base do modo Comparar: o arquivo aberto no `HEAD` do git (ou o motivo de não haver). */
+export type GitBaseResult =
+  | { ok: true; source: string }
+  | { ok: false; code: GitBaseErrorCode; message: string };
+
 export interface HostTransport {
   checkDatabaseSupport?(): Promise<void>;
+  /**
+   * Modo Comparar: conteúdo do documento ativo no `HEAD` do git. Somente leitura. Falhas esperadas
+   * (sem git, sem repositório, arquivo novo) voltam como `{ ok: false }`; só erro de canal rejeita.
+   */
+  requestGitBase?(documentId?: string): Promise<GitBaseResult>;
   /** Só confere as credenciais e lista os schemas (sem ler tabelas). */
   testConnection?(req: IntrospectRequest, signal?: AbortSignal): Promise<TestConnectionResult>;
   /** Lê o catálogo de um banco (somente leitura) e devolve DBML; ausente quando o host não suporta. */
@@ -455,6 +497,10 @@ export interface WasmApi {
   search_schema?(source: string, query: string): unknown;
   import_sql_ddl?(sql: string, dialect: string): unknown;
   import_conflicts?(source: string, dbml: string): string[];
+  /** Lê uma connection string; lança `ConnectionUrlError`. Ausente em bundles antigos. */
+  parse_connection_url?(url: string): ParsedConnectionUrl;
   /** Diff estrutural base vs. head; lança string `base|head has DBML errors: ...` se um lado for inválido. */
   diff_dbml?(base_source: string, head_source: string): DiffResult;
+  /** Sugere nome único de tabela associativa para um relacionamento N:N. */
+  suggest_junction_name?(source: string, leftTable: string, rightTable: string): string;
 }

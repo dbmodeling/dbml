@@ -34,6 +34,7 @@ vscode-extension/dist/
 openspec/
 
 # Editores e SO
+.env
 .idea/
 .vscode/
 *.swp

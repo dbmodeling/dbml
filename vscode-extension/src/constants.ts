@@ -30,6 +30,7 @@ export const GLOBAL_STATE_KEY = {
 
 export const WEBVIEW_COMMAND = {
   SAVE_GUIDE_STATE: 'save_guide_state',
+  GIT_BASE: 'git_base',
 } as const;
 
 export const WEBVIEW_OUTBOUND_TYPE = {
@@ -37,7 +38,27 @@ export const WEBVIEW_OUTBOUND_TYPE = {
   DELTA: 'delta',
   RESULT: 'result',
   WORKSPACE_FILES: 'workspace_files',
+  GIT_BASE_RESULT: 'git_base_result',
 } as const;
+
+/** Modo Comparar: leitura do arquivo no `HEAD` do git (mesmos códigos de erro da CLI `dbml run`). */
+export const GIT_PROGRAM = 'git';
+export const GIT_TIMEOUT_MS = 10_000;
+export const GIT_MAX_BUFFER_BYTES = 64 * 1024 * 1024;
+/** Evita que a leitura grave no índice do repositório do usuário. */
+export const GIT_ENV_OPTIONAL_LOCKS = 'GIT_OPTIONAL_LOCKS';
+export const GIT_ENV_OPTIONAL_LOCKS_OFF = '0';
+
+export const GIT_BASE_ERROR = {
+  GIT_UNAVAILABLE: 'git_unavailable',
+  NOT_A_REPO: 'not_a_repo',
+  NO_COMMITS: 'no_commits',
+  UNTRACKED: 'untracked',
+  NOT_UTF8: 'not_utf8',
+  OTHER: 'other',
+} as const;
+
+export type GitBaseErrorCode = (typeof GIT_BASE_ERROR)[keyof typeof GIT_BASE_ERROR];
 
 export const TLS_MODE = {
   AUTO: 'auto',

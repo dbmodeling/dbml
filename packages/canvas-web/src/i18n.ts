@@ -43,6 +43,16 @@ export const translations: ReadonlyArray<readonly [string, string]> = [
   ["O banco recusou a autenticação. Confira o usuário e a senha.", "The database rejected authentication. Check the user and password."],
   ["O banco não respondeu. Confira o host, a porta e se o serviço está rodando.", "The database did not respond. Check the host, port, and whether the service is running."],
   ["Não foi possível ler o esquema. Verifique as permissões de leitura do catálogo.", "Could not read the schema. Check permissions to read the catalog."],
+  ["O certificado TLS do servidor não pôde ser verificado (comum em AWS RDS, GCP Cloud SQL, Azure e Supabase). Mude TLS para Exigir e tente novamente.", "The server's TLS certificate could not be verified (common on AWS RDS, GCP Cloud SQL, Azure, and Supabase). Switch TLS to Require and try again."],
+  ["Detalhes", "Details"],
+  ["Ocultar detalhes", "Hide details"],
+  ["Usar TLS: Exigir", "Use TLS: Require"],
+  ["Usar SSL", "Use SSL"],
+  ["Verificar certificado", "Verify certificate"],
+  ["Auto (TLS verificado em hosts remotos)", "Auto (verified TLS on remote hosts)"],
+  ["Verificar certificado (TLS)", "Verify certificate (TLS)"],
+  ["Exigir TLS (autoassinado)", "Require TLS (self-signed)"],
+  ["Desativar TLS (texto claro)", "Disable TLS (cleartext)"],
   ["Não foi possível abrir o banco SQLite. Confira o caminho e as permissões do arquivo.", "Could not open the SQLite database. Check the file path and permissions."],
   ["Não foi possível conectar. Confira os dados da conexão e tente novamente.", "Could not connect. Check the connection details and try again."],
   ["Arquivo", "File"],
@@ -268,6 +278,23 @@ export const translations: ReadonlyArray<readonly [string, string]> = [
   ["Faça engenharia reversa de um esquema existente para DBML.", "Reverse engineer an existing schema into DBML."],
   ["Suporte a Oracle em breve", "Oracle support coming soon"],
   ["Oracle (em breve)", "Oracle (coming soon)"],
+  ["Tipo de banco", "Database type"],
+  ["em breve", "coming soon"],
+  ["Connection string", "Connection string"],
+  ["Copiar string", "Copy string"],
+  ["Copiado", "Copied"],
+  ["Copia a string com a senha mascarada (***)", "Copies the string with the password masked (***)"],
+  ["Copia a string completa, com a senha", "Copies the full string, including the password"],
+  ["Não foi possível copiar a string.", "Could not copy the string."],
+  ["Mostrar senha", "Show password"],
+  ["Ocultar senha", "Hide password"],
+  ["Mostrar/ocultar senha da conexão", "Show/hide connection password"],
+  ["Informe a connection string.", "Enter a connection string."],
+  ["Esquema desconhecido. Use postgres://, mysql://, sqlserver:// ou um arquivo SQLite.", "Unknown scheme. Use postgres://, mysql://, sqlserver:// or a SQLite file."],
+  ["Este banco ainda não é suportado.", "This database is not supported yet."],
+  ["Informe o host na connection string.", "Enter the host in the connection string."],
+  ["Porta inválida. Use um número de 1 a 65535.", "Invalid port. Use a number from 1 to 65535."],
+  ["Connection string malformada. Formato: esquema://usuário:senha@host:porta/banco.", "Malformed connection string. Format: scheme://user:password@host:port/database."],
   ["Porta", "Port"],
   ["porta padrão", "default port"],
   ["Banco", "Database"],
@@ -374,6 +401,35 @@ export const translations: ReadonlyArray<readonly [string, string]> = [
   ["Laranja", "Orange"],
   ["Rosa", "Pink"],
   ["Violeta", "Violet"],
+  ["Criar tabela associativa", "Create junction table"],
+  ["TABELA ASSOCIATIVA", "JUNCTION TABLE"],
+  ["Criar", "Create"],
+  // Modo Comparar (diff com o git HEAD)
+  ["Comparar com o git HEAD", "Compare with git HEAD"],
+  ["Comparar com o git HEAD · D", "Compare with git HEAD · D"],
+  ["Sair do modo Comparar", "Exit Compare mode"],
+  ["Carregando a versão do git HEAD…", "Loading the git HEAD version…"],
+  ["Sem diferenças em relação ao git HEAD.", "No differences from git HEAD."],
+  ["Tentar novamente", "Try again"],
+  ["{} adicionados", "{} added"],
+  ["{} modificados", "{} modified"],
+  ["{} removidos", "{} removed"],
+  ["adicionado", "added"],
+  ["modificado", "modified"],
+  ["removido", "removed"],
+  ["Tabela removida {}", "Removed table {}"],
+  ["Enum removido {}", "Removed enum {}"],
+  ["Coluna removida {}", "Removed column {}"],
+  ["Comparando com o git HEAD · somente leitura", "Comparing with git HEAD · read-only"],
+  ["Não foi possível comparar: o git não está instalado ou não está no PATH.", "Cannot compare: git is not installed or not on PATH."],
+  ["Não foi possível comparar: o arquivo não está em um repositório git.", "Cannot compare: the file is not in a git repository."],
+  ["Não foi possível comparar: o repositório ainda não tem commits.", "Cannot compare: the repository has no commits yet."],
+  ["Arquivo novo: ele ainda não existe no git HEAD, então não há versão anterior para comparar.", "New file: it does not exist in git HEAD yet, so there is no earlier version to compare."],
+  ["Não foi possível comparar: a versão do git HEAD não é texto UTF-8.", "Cannot compare: the git HEAD version is not UTF-8 text."],
+  ["Não foi possível obter a versão do git HEAD.", "Could not get the git HEAD version."],
+  ["A versão do git HEAD tem erros de DBML e não pode ser comparada.", "The git HEAD version has DBML errors and cannot be compared."],
+  ["O documento atual tem erros de DBML. Corrija-os para comparar.", "The current document has DBML errors. Fix them to compare."],
+  ["Este ambiente não suporta o modo Comparar.", "This environment does not support Compare mode."],
 ];
 
 const english = new Map(translations);
@@ -411,15 +467,24 @@ export function diagnosticMessage(message: string): string {
   return message;
 }
 
+const TLS_CERT_ERROR_RE = /invalid peer certificate|unknownissuer|unknown issuer|certificate|self[- ]signed|notvalidforname|badcertificate|webpki|tls|ssl|handshake/i;
+
+export function isTlsCertError(message: string): boolean {
+  return TLS_CERT_ERROR_RE.test(message);
+}
+
 export function connectionHint(message: string, sqlite: boolean): string {
   if (/authenticat|login failed|access denied for user|password|28p01|18456/i.test(message)) {
     return t('O banco recusou a autenticação. Confira o usuário e a senha.');
   }
-  if (/timeout|timed? out|connection refused|econnrefused|could not resolve/i.test(message)) {
+  if (/timeout|timed? out|connection refused|econnrefused|could not resolve|network is unreachable|no route to host|name or service not known|failed to lookup|host unreachable/i.test(message)) {
     return t('O banco não respondeu. Confira o host, a porta e se o serviço está rodando.');
   }
   if (/could not read the catalog/i.test(message)) {
     return t('Não foi possível ler o esquema. Verifique as permissões de leitura do catálogo.');
+  }
+  if (!sqlite && isTlsCertError(message)) {
+    return t('O certificado TLS do servidor não pôde ser verificado (comum em AWS RDS, GCP Cloud SQL, Azure e Supabase). Mude TLS para Exigir e tente novamente.');
   }
   return sqlite
     ? t('Não foi possível abrir o banco SQLite. Confira o caminho e as permissões do arquivo.')

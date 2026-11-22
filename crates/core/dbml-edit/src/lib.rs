@@ -144,6 +144,16 @@ pub enum Command {
         /// New column data type.
         ty: String,
     },
+    /// Atomically creates a junction table between `left_table` and `right_table`
+    /// with FK columns matching their PK types, a composite `[pk]`, and both `Ref:` links.
+    CreateJunctionTable {
+        /// First source table name (bare or `schema.table`).
+        left_table: String,
+        /// Second source table name (bare or `schema.table`).
+        right_table: String,
+        /// Desired junction table name (auto-suggested if empty).
+        junction_name: String,
+    },
 }
 
 /// Error returned when a structural [`Command`] cannot be applied.
@@ -163,6 +173,21 @@ impl std::fmt::Display for EditError {
 
 impl std::error::Error for EditError {}
 
+/// Suggests a unique junction table name for `left_table` and `right_table`
+/// (e.g. `users` + `roles` -> `users_roles`, preserving a shared schema prefix).
+#[must_use]
+pub fn suggest_junction_name(text: &str, left_table: &str, right_table: &str) -> String {
+    let left_bare = model::bare_table_name(left_table);
+    let right_bare = model::bare_table_name(right_table);
+    let left_schema = left_table.rsplit_once('.').map(|(s, _)| s);
+    let right_schema = right_table.rsplit_once('.').map(|(s, _)| s);
+    let base = match (left_schema, right_schema) {
+        (Some(ls), Some(rs)) if ls == rs => format!("{ls}.{left_bare}_{right_bare}"),
+        _ => format!("{left_bare}_{right_bare}"),
+    };
+    unique_table_name(text, &base)
+}
+
 /// Computes a minimal [`Patch`] for `cmd` against `text`.
 ///
 /// # Errors
@@ -174,7 +199,77 @@ pub fn edit(text: &str, cmd: &Command) -> Result<Patch, EditError> {
             insert_columns(text, table, &[format!("{name} {ty}")])
         }
         Command::AddColumnPreset { table, preset } => add_column_preset(text, table, *preset),
+        Command::CreateJunctionTable {
+            left_table,
+            right_table,
+            junction_name,
+        } => create_junction_table_patch(text, left_table, right_table, junction_name),
     }
+}
+
+/// Resolves the final unique name that [`Command::CreateJunctionTable`] will create.
+#[must_use]
+pub fn resolve_junction_name(
+    text: &str,
+    left_table: &str,
+    right_table: &str,
+    junction_name: &str,
+) -> String {
+    let trimmed = junction_name.trim();
+    if trimmed.is_empty() {
+        suggest_junction_name(text, left_table, right_table)
+    } else {
+        unique_table_name(text, trimmed)
+    }
+}
+
+fn create_junction_table_patch(
+    text: &str,
+    left_table: &str,
+    right_table: &str,
+    junction_name: &str,
+) -> Result<Patch, EditError> {
+    let root = parse(text).syntax();
+    let left_node = model::find_table(&root, left_table)
+        .ok_or_else(|| EditError::TableNotFound(left_table.into()))?;
+    let right_node = model::find_table(&root, right_table)
+        .ok_or_else(|| EditError::TableNotFound(right_table.into()))?;
+
+    let left_q = model::table_qualified_name(&left_node).unwrap_or_else(|| left_table.to_string());
+    let right_q =
+        model::table_qualified_name(&right_node).unwrap_or_else(|| right_table.to_string());
+
+    let (left_pk_col, left_pk_ty) =
+        model::primary_key_of(&root, &left_q).unwrap_or_else(|| ("id".into(), "int".into()));
+    let (right_pk_col, right_pk_ty) =
+        model::primary_key_of(&root, &right_q).unwrap_or_else(|| ("id".into(), "int".into()));
+
+    let mut left_fk = format!("{}_id", model::bare_table_name(&left_q));
+    let mut right_fk = format!("{}_id", model::bare_table_name(&right_q));
+    if left_fk == right_fk {
+        left_fk = format!("{left_fk}_1");
+        right_fk = format!("{right_fk}_2");
+    }
+
+    let resolved_name = resolve_junction_name(text, &left_q, &right_q, junction_name);
+    let nl = LineEnding::detect(text).as_str();
+    let trim_end = text.trim_end_matches(['\r', '\n']).len();
+    let mut new_text = String::new();
+    if trim_end > 0 {
+        new_text.push_str(nl);
+        new_text.push_str(nl);
+    }
+    let _ = write!(
+        new_text,
+        "Table {resolved_name} {{{nl}  {left_fk} {left_pk_ty} [not null]{nl}  {right_fk} {right_pk_ty} [not null]{nl}{nl}  indexes {{{nl}    ({left_fk}, {right_fk}) [pk]{nl}  }}{nl}}}{nl}{nl}Ref: {resolved_name}.{left_fk} > {left_q}.{left_pk_col}{nl}Ref: {resolved_name}.{right_fk} > {right_q}.{right_pk_col}{nl}"
+    );
+    Ok(Patch {
+        range: TextRange::new(
+            rowan::TextSize::try_from(trim_end).unwrap_or_default(),
+            rowan::TextSize::try_from(text.len()).unwrap_or_default(),
+        ),
+        new_text,
+    })
 }
 
 fn add_column_preset(text: &str, table: &str, preset: ColumnPreset) -> Result<Patch, EditError> {
@@ -422,6 +517,67 @@ mod tests {
         assert_eq!(
             edit("Table t {}", &cmd),
             Err(EditError::TableNotFound("x".into()))
+        );
+    }
+
+    #[test]
+    fn create_junction_table_matches_pk_types_and_preserves_comments() {
+        let src = "// schema header\nTable users {\n  id uuid [pk]\n  name text\n}\n\nTable roles {\n  role_id bigint [pk]\n  label varchar\n}\n";
+        let cmd = Command::CreateJunctionTable {
+            left_table: "users".into(),
+            right_table: "roles".into(),
+            junction_name: "user_roles".into(),
+        };
+        let patch = edit(src, &cmd).unwrap();
+        let out = patch.apply(src);
+        assert!(out.starts_with("// schema header\n"));
+        assert!(out.contains("Table user_roles {\n  users_id uuid [not null]\n  roles_id bigint [not null]\n\n  indexes {\n    (users_id, roles_id) [pk]\n  }\n}"));
+        assert!(out.contains("Ref: user_roles.users_id > users.id"));
+        assert!(out.contains("Ref: user_roles.roles_id > roles.role_id"));
+    }
+
+    #[test]
+    fn create_junction_table_auto_suggests_unique_name_and_preserves_crlf() {
+        let src = "Table users {\r\n  id int [pk]\r\n}\r\n\r\nTable roles {\r\n  id int [pk]\r\n}\r\n\r\nTable users_roles {\r\n  id int [pk]\r\n}\r\n";
+        assert_eq!(
+            suggest_junction_name(src, "users", "roles"),
+            "users_roles_2"
+        );
+        let cmd = Command::CreateJunctionTable {
+            left_table: "users".into(),
+            right_table: "roles".into(),
+            junction_name: String::new(),
+        };
+        let out = edit(src, &cmd).unwrap().apply(src);
+        assert!(out.contains("Table users_roles_2 {\r\n"));
+        assert!(!out.replace("\r\n", "").contains('\n'));
+    }
+
+    #[test]
+    fn create_junction_table_self_reference_disambiguates_fk_columns() {
+        let src = "Table users {\n  id int [pk]\n}\n";
+        let cmd = Command::CreateJunctionTable {
+            left_table: "users".into(),
+            right_table: "users".into(),
+            junction_name: "user_links".into(),
+        };
+        let out = edit(src, &cmd).unwrap().apply(src);
+        assert!(out.contains("users_id_1 int [not null]"));
+        assert!(out.contains("users_id_2 int [not null]"));
+        assert!(out.contains("(users_id_1, users_id_2) [pk]"));
+    }
+
+    #[test]
+    fn create_junction_table_errors_on_missing_table() {
+        let src = "Table users {\n  id int [pk]\n}\n";
+        let cmd = Command::CreateJunctionTable {
+            left_table: "users".into(),
+            right_table: "missing".into(),
+            junction_name: "users_missing".into(),
+        };
+        assert_eq!(
+            edit(src, &cmd),
+            Err(EditError::TableNotFound("missing".into()))
         );
     }
 

@@ -5,15 +5,30 @@
  */
 
 import {
+  CONNECT_DIALOG,
   CONNECT_NETWORK_ROW_IDS,
+  DIFF_ACT,
+  DIFF_EDGE_WIDTH,
+  MINIMAP_GHOST_DASH,
+  DIFF_PANE_ID,
+  DIFF_STATUS_COLOR_VAR,
+  COPY_FEEDBACK_MS,
+  ENGINE_COMING_SOON,
+  ENGINE_COMING_SOON_LABEL,
   GUIDE_STORAGE_KEY,
+  JUNCTION_ACTION,
+  JUNCTION_INPUT_ID,
   LOCAL_SESSION_PREFIX,
   MAX_LOCAL_SESSIONS,
   MAX_WASM_RECOVERY_ATTEMPTS,
   TLS_FIELD_LABEL,
+  TLS_MODE,
   TLS_ROW_ID,
-  TLS_SELECT_ID,
-  TLS_SELECT_OPTIONS,
+  TLS_TOGGLE_ID,
+  TLS_VERIFY_ID,
+  TLS_VERIFY_WRAP_ID,
+  URL_PARSE_DEBOUNCE_MS,
+  URL_PASTE_SETTLE_MS,
 } from './constants';
 import {
   Command,
@@ -53,20 +68,38 @@ import {
 import { iconSvg, IconName } from './icons';
 import { ActionId, COLUMN_PRESET_ACTIONS, GROUP_EXPORT_CODE, GROUP_EXPORT_IMAGE, catalog } from './actions';
 import { MINIMAP_H, MINIMAP_PAD, MINIMAP_W, MinimapTransform, computeMinimapTransform, panForMapPoint, worldToMap } from './minimap';
-import { Language, connectionHint, diagnosticMessage, setLanguage, systemLanguage, t, t as translate } from './i18n';
+import { Language, connectionHint, diagnosticMessage, isTlsCertError, setLanguage, systemLanguage, t, t as translate } from './i18n';
 import { WORKBENCH_CSS } from './workbench-css';
 import { tokenizeLine, tableLineRange } from './dbml-highlight';
 import { curvedEdge, edgeDrawing } from './edge-path';
 import { MOTION, actSelector, cssQ, easeOut, lerp, noMotion } from './motion';
 import { exportToMermaid, exportToSvg, exportSvgStringToRasterBlob } from './export';
 import { canvasGridStep, canvasGroups } from './scene-style';
-import { ConnectDbModel, DB_ENGINES, DbEngine, INTROSPECT_TIMEOUT_MS, IntrospectGuard, buildRequest } from './connect-db';
+import { ConnectDbModel, DB_ENGINES, DbEngine, INTROSPECT_TIMEOUT_MS, IntrospectGuard, nextEnabledOption, urlErrorMessage } from './connect-db';
+import { copyText } from './clipboard';
 import { IMPORT_DIALECTS, ImportDialect, ImportSqlModel, ImportSqlResult } from './import-sql';
 import { APP_VERSION, GuideState, PRODUCT_GUIDE, TourTarget, decideStartupGuide, pickText } from './guide';
 import { TourController } from './tour';
+import { DIFF_OFF, diffErrorMessageKey, loadDiff, refreshDiff, type DiffState } from './diff/state';
+import { cameraFor, focusRect, type FocusContext } from './diff/focus';
+import { extendBounds, ghostRects, occupiedRects, placeGhosts, removedEdges, diffCardHeight, type Rect } from './diff/layout';
+import type { DiffView } from './diff/model';
+import {
+  columnDiffTitle,
+  diffMark,
+  diffStatusClass,
+  diffStatusLabel,
+  ghostSlots,
+  renderDiffPanel,
+  renderEnumGhostValues,
+  renderGhostEdges,
+  renderGhostEnum,
+  renderGhostRows,
+  renderGhostTable,
+} from './diff/render';
 
 type Pt = { x: number; y: number };
-type Pane = 'files' | 'schema' | 'problems';
+type Pane = 'files' | 'schema' | 'problems' | typeof DIFF_PANE_ID;
 type Drag =
   | { kind: 'edge'; last: Pt; snapshot: ReturnType<Workbench['captureSnapshot']>; moved: boolean }
   | { kind: 'pan'; lx: number; ly: number }
@@ -109,7 +142,7 @@ const ACTION_ICON: Partial<Record<ActionId, IconName>> = {
   ExportSqlPostgres: 'Database', ExportSqlMysql: 'Database', ExportSqlSqlite: 'Database', ExportSqlSqlServer: 'Database',
   ExportSqlOracle: 'Database', ExportMermaid: 'GitFork', ExportDocsHtml: 'FileCode', ExportDocsMarkdown: 'FileCode',
   ExportPng: 'Image', ExportJpeg: 'Image', ExportSvg: 'PenTool',
-  OpenPalette: 'Command', QuickSearch: 'Search', ToggleFocusMode: 'Scan', CycleFocusDepth: 'Layers',
+  OpenPalette: 'Command', QuickSearch: 'Search', ToggleFocusMode: 'Scan', ToggleDiff: 'GitCompare', CycleFocusDepth: 'Layers',
   ShowShortcuts: 'Keyboard', ShowTour: 'Info', ShowWhatsNew: 'WandSparkles', AddPresetUuidPk: 'Fingerprint', AddPresetBigIntPk: 'KeyRound',
   AddPresetTimestamps: 'Clock', AddPresetSoftDelete: 'Archive',
 };
@@ -118,7 +151,7 @@ const ACTION_ICON: Partial<Record<ActionId, IconName>> = {
 const MAIN_MENU: ReadonlyArray<readonly [string, IconName, ActionId[]]> = [
   ['Arquivo', 'File', ['NewFile', 'SaveFile', 'ExportDbml', 'ImportSqlDdl', 'ConnectDatabase']],
   ['Editar', 'Pencil', ['Undo', 'Redo', 'FormatDocument']],
-  ['Exibir', 'PanelsTopLeft', ['ShowFiles', 'ShowSchema', 'ShowProblems', 'ToggleTheme', 'ToggleEditor', 'ToggleSidebar', 'ToggleInspector', 'ToggleLegend']],
+  ['Exibir', 'PanelsTopLeft', ['ShowFiles', 'ShowSchema', 'ShowProblems', 'ToggleDiff', 'ToggleTheme', 'ToggleEditor', 'ToggleSidebar', 'ToggleInspector', 'ToggleLegend']],
   ['Canvas', 'Frame', ['ToolSelect', 'ToolHand', 'FitView', 'Relayout', 'ZoomIn', 'ZoomOut', 'Deselect']],
   ['Tabelas', 'Table2', ['NewTable', 'NewEnum', 'DeleteSelection', 'RenameSelected', 'GroupSelection', 'UngroupSelection']],
 ];
@@ -261,11 +294,21 @@ export class Workbench {
   private quickSearchIdx = 0;
   private focusMode = false;
   private focusDepth: 1 | 2 = 1;
+  /** Modo Comparar (somente leitura): base = git HEAD do arquivo aberto; nunca toca o buffer nem o histórico. */
+  private diff: DiffState = DIFF_OFF;
+  /** Texto do documento contra o qual `diff` foi calculado. */
+  private diffHead = '';
+  /** Descarta respostas atrasadas de um pedido de base já substituído ou cancelado. */
+  private diffSeq = 0;
+  private diffPrevPane: Exclude<Pane, typeof DIFF_PANE_ID> = 'schema';
+  private diffGhostPositions: Record<string, Pt> = {};
   private highlightedColumn: [string, string] | null = null;
   private minimapXform: MinimapTransform | null = null;
   private minimapVpRect: { x: number; y: number; w: number; h: number } | null = null;
   private minimapDrag: { grabX: number; grabY: number } | null = null;
   private connectEngine: DbEngine = 'postgres';
+  /** Diálogo "Conectar ao banco" aberto, para a ação de revelar a senha da command palette. */
+  private connectDialog: { bg: HTMLElement; togglePassword: () => void } | null = null;
   private importDialect: ImportDialect = 'postgres';
   private focusCol: [string, string] | null = null;
   private openCol: string | null = null;
@@ -273,6 +316,8 @@ export class Workbench {
   private schemaFilterOpen = false;
   private schemaFilter = '';
   private pendingNew: string | null = null;
+  private pendingPos: Pt | null = null;
+  private junctionDraft: { left: string; right: string; name: string } | null = null;
   private sessionTimer: number | null = null;
   private collapsed = new Set<string>();
   /** Efeitos em curso sobre elementos que o render recria: reaplicados com atraso negativo (retomam do ponto). */
@@ -439,7 +484,8 @@ export class Workbench {
 
   private saveDocSession(): void {
     const snap: SessionSnapshot = {
-      pane: this.pane,
+      // o modo Comparar não é persistido: a sessão guarda o painel que ele substituiu
+      pane: this.pane === DIFF_PANE_ID ? this.diffPrevPane : this.pane,
       editorOpen: this.editorOpen,
       zoom: this.zoom,
       pan: { x: this.pan.x, y: this.pan.y },
@@ -586,6 +632,8 @@ export class Workbench {
     this.source = source;
     this.syncEditorValue();
     this.reanalyze();
+    // outro arquivo: a base do git é a do arquivo novo
+    if (documentChanged && this.diff.status !== 'off') this.startDiff();
     this.renderAll();
     this.maybeStartGuide(meta?.guideState);
   }
@@ -647,6 +695,7 @@ export class Workbench {
     }
     this.selection = this.selection.filter((n) => this.schema.tables.some((t) => qualifiedTableName(t) === n));
     this.computeScene();
+    this.syncDiff();
   }
 
   /** Sessão Wasm (criada sob demanda); `null` se o host não a exporta ou já foi liberada. */
@@ -666,7 +715,7 @@ export class Workbench {
     }
     if (this.pendingNew && !known[this.pendingNew]) {
       const c = this.viewCenter();
-      known[this.pendingNew] = { x: Math.round(c.x - CARD_W / 2), y: Math.round(c.y - 60) };
+      known[this.pendingNew] = this.pendingPos ?? { x: Math.round(c.x - CARD_W / 2), y: Math.round(c.y - 60) };
       this.positions[this.pendingNew] = known[this.pendingNew];
     }
     try {
@@ -679,6 +728,7 @@ export class Workbench {
       this.wasmFailed('compute_scene', e);
     }
     this.pendingNew = null;
+    this.pendingPos = null;
   }
 
   private viewCenter(): Pt {
@@ -1000,6 +1050,7 @@ export class Workbench {
       x1 = Math.max(x1, p.x + e.w); y1 = Math.max(y1, p.y + e.h);
     }
     if (!Number.isFinite(x0)) return;
+    ({ minX: x0, minY: y0, maxX: x1, maxY: y1 } = extendBounds({ minX: x0, minY: y0, maxX: x1, maxY: y1 }, this.diffGhostRects()));
     const w = x1 - x0, h = y1 - y0;
     // a ilha de ferramentas flutua à esquerda (cresce com a escala da UI): o diagrama fica à direita dela
     const tr = this.els['tools']?.getBoundingClientRect();
@@ -1096,6 +1147,103 @@ export class Workbench {
       frontier = next;
     }
     return { tables: visited, edges };
+  }
+
+
+  // ───────────────────────── modo Comparar (diff com o git HEAD) ─────────────────────────
+
+  private toggleDiff(): void {
+    if (this.diff.status === 'off') this.startDiff();
+    else this.exitDiff();
+  }
+
+  /** Liga o modo: abre o painel de resumo, pede a base ao host e calcula o diff (somente leitura). */
+  private startDiff(): void {
+    if (this.pane !== DIFF_PANE_ID) this.diffPrevPane = this.pane;
+    this.pane = DIFF_PANE_ID;
+    this.prefs.sidebar = true;
+    this.editorOpen = false;
+    this.diff = { status: 'loading' };
+    const seq = ++this.diffSeq;
+    this.diffHead = this.source;
+    this.renderAll();
+    void loadDiff(this.transport, this.wasm, this.source, this.documentId).then((state) => {
+      if (this.destroyed || seq !== this.diffSeq || this.diff.status === 'off') return;
+      this.diff = state;
+      this.diffHead = this.source;
+      // o texto pode ter mudado enquanto a base chegava
+      this.syncDiff();
+      this.announce(state.status === 'error' ? t(diffErrorMessageKey(state.code)) : t('Comparar com o git HEAD'));
+      this.renderAll();
+    });
+  }
+
+  private exitDiff(): void {
+    if (this.diff.status === 'off') return;
+    this.diffSeq++;
+    this.diff = DIFF_OFF;
+    this.diffGhostPositions = {};
+    if (this.pane === DIFF_PANE_ID) this.pane = this.diffPrevPane;
+    this.renderAll();
+  }
+
+  /** Recalcula o diff contra a base guardada quando o texto mudou (sem nova consulta ao git). */
+  private syncDiff(): void {
+    if (this.diff.status !== 'ready' || this.diffHead === this.source) return;
+    this.diffHead = this.source;
+    this.diff = refreshDiff(this.diff, this.wasm, this.source);
+  }
+
+  /** Posições dos cartões fantasma: espaço livre fora dos cartões e enums do head. */
+  private ghostLayout(view: DiffView): Record<string, Pt> {
+    const occupied: Rect[] = occupiedRects(this.schema.tables, this.positions, view);
+    for (const ev of this.scene?.enums ?? []) {
+      const p = this.positions[`enum:${ev.name}`] || { x: ev.x, y: ev.y };
+      occupied.push({ x: p.x, y: p.y, w: ev.w, h: ev.h });
+    }
+    this.diffGhostPositions = placeGhosts(occupied, ghostSlots(view));
+    return this.diffGhostPositions;
+  }
+
+  /** Retângulos dos cartões fantasma enquanto o modo Comparar está pronto (fit e minimapa os incluem). */
+  private diffGhostRects(): Rect[] {
+    if (this.diff.status !== 'ready') return [];
+    return ghostRects(ghostSlots(this.diff.view), this.ghostLayout(this.diff.view));
+  }
+
+  /** Clique no resumo: seleciona (quando existe no head) e leva a câmera até o item. */
+  private focusDiffItem(id: string): void {
+    if (this.diff.status !== 'ready') return;
+    const view = this.diff.view;
+    const item = view.items.find((i) => i.id === id);
+    if (!item) return;
+    const enumRects = new Map<string, Rect>();
+    for (const ev of this.scene?.enums ?? []) {
+      const p = this.positions[`enum:${ev.name}`] || { x: ev.x, y: ev.y };
+      enumRects.set(ev.name, { x: p.x, y: p.y, w: ev.w, h: ev.h });
+    }
+    const ctx: FocusContext = {
+      view,
+      tables: this.schema.tables,
+      positions: this.positions,
+      ghostPositions: this.ghostLayout(view),
+      enumRects,
+    };
+    const rect = focusRect(item, ctx);
+    if (!rect) return;
+    const target = item.target;
+    this.selection = target.kind === 'table' && !target.removed ? [target.name] : [];
+    this.selectedEnum = target.kind === 'enum' && !target.removed ? target.name : null;
+    this.selectedRef = null;
+    this.highlightedColumn = null;
+    if (this.selection.length) this.top = this.selection[0];
+    this.renderAll();
+    const r = this.els['surface'].getBoundingClientRect();
+    const cam = cameraFor(rect, { x: r.width, y: r.height }, this.zoom);
+    this.glide(() => {
+      this.zoom = cam.zoom;
+      this.pan = cam.pan;
+    });
   }
 
   // ───────────────────────── movimento ─────────────────────────
@@ -1386,6 +1534,8 @@ export class Workbench {
     const sel = new Set(this.selection);
     const focusSub = this.focusSubgraph();
     const FOCUS_DIM = 0.18;
+    const dv = this.diff.status === 'ready' ? this.diff.view : null;
+    const ghostPos = dv ? this.ghostLayout(dv) : {};
     let svg = '';
     for (const e of sc.edges) {
       const ek = edgeKey(e);
@@ -1397,7 +1547,8 @@ export class Workbench {
         this.selectedRef.to_col === e.to_col;
       const lit = isSelRef || sel.has(e.from_table) || sel.has(e.to_table);
       const dim = focusSub && !focusSub.edges.has(ek) ? FOCUS_DIM : 1;
-      const col = lit ? g.accent : g.relStroke;
+      const refDiff = dv?.refs.get(ek);
+      const col = refDiff && refDiff.status !== 'removed' ? DIFF_STATUS_COLOR_VAR[refDiff.status] : lit ? g.accent : g.relStroke;
       const a = this.positions[e.from_table], b = this.positions[e.to_table];
       if (!a || !b) continue;
       const style = this.edges[ek];
@@ -1407,7 +1558,7 @@ export class Workbench {
       const lab = lit ? g.accent : g.textFaint;
       if (dim < 1) svg += `<g opacity="${dim}">`;
       if (lit) svg += `<path class="halo" d="${d}" fill="none" stroke="${g.accent}" stroke-opacity="0.16" stroke-width="8" stroke-linecap="round" stroke-linejoin="round"/>`;
-      svg += `<path class="edge" data-ek="${esc(ek)}" d="${d}" fill="none" stroke="${col}" stroke-width="${lit ? 1.8 : 1.4}" stroke-linejoin="round"/>`;
+      svg += `<path class="edge" data-ek="${esc(ek)}" d="${d}" fill="none" stroke="${col}" stroke-width="${refDiff ? DIFF_EDGE_WIDTH : lit ? 1.8 : 1.4}" stroke-linejoin="round"/>`;
       svg += `<path class="edge-hit" d="${d}" fill="none" stroke="transparent" stroke-width="${12 / this.zoom}" data-edge="1" data-from-table="${esc(e.from_table)}" data-from-col="${esc(e.from_col)}" data-to-table="${esc(e.to_table)}" data-to-col="${esc(e.to_col)}"/>`;
       if (isSelRef) svg += `<circle class="edge-handle" data-edge-handle="1" cx="${drawn.midpoint.x}" cy="${drawn.midpoint.y}" r="${4 / this.zoom}" fill="${g.accent}" stroke="${g.card}" stroke-width="${1 / this.zoom}"/>`;
       svg += `<circle cx="${curve.x1}" cy="${e.ay}" r="3" fill="${col}"/><circle cx="${curve.x2}" cy="${e.by}" r="3.5" fill="${g.card}" stroke="${col}" stroke-width="1.5"/>`;
@@ -1426,6 +1577,7 @@ export class Workbench {
         svg += `<path d="M ${p.x + CARD_W} ${ay} L ${d.now.x} ${d.now.y}" stroke="${g.accent}" stroke-width="2" stroke-dasharray="6 4" fill="none"/><circle cx="${d.now.x}" cy="${d.now.y}" r="5" fill="${g.accent}"/>`;
       }
     }
+    if (dv) svg = renderGhostEdges(removedEdges(dv, this.schema.tables, this.positions, ghostPos)) + svg;
     let html = `<svg class="edges" aria-hidden="true">${svg}</svg>`;
     // molduras de grupo
     for (const gr of canvasGroups(sc.groups, this.schema, this.positions)) {
@@ -1444,6 +1596,7 @@ export class Workbench {
       const tint = tv.tint;
       const tDim = focusSub && !focusSub.tables.has(qname) ? `opacity:${FOCUS_DIM};` : '';
       const fk = new Set(tv.fk_columns);
+      const tDiff = dv?.tables.get(qname);
       const idxCols = new Set<string>();
       for (const ix of t.indexes || []) {
         for (const ic of ix.columns || []) {
@@ -1470,8 +1623,12 @@ export class Workbench {
             c.unique ? '<span class="badge">UQ</span>' : '',
           ].join('');
           const rowLabel = [`${c.name}: ${c.ty}`, c.pk ? translate('chave primária') : '', isFk ? translate('chave estrangeira') : '', c.not_null ? translate('obrigatória') : '', c.unique ? translate('única') : ''].filter(Boolean).join(', ');
-          return `<div class="row" role="listitem" aria-label="${esc(rowLabel)}" data-col="${esc(c.name)}" data-table="${esc(qname)}"${isHi ? ' style="background:color-mix(in srgb, var(--accent) 14%, transparent)"' : ''}><div class="rail14">${ic}</div>
-            <div class="cn ${c.pk ? 'pk' : ''}">${esc(c.name)}</div>${noteBadge}${badges}<div class="ty">${esc(c.ty)}</div>
+          const cDiff = tDiff?.columns.get(c.name);
+          const diffCls = cDiff ? ` ${diffStatusClass(cDiff.status)}` : '';
+          const diffTitle = cDiff && columnDiffTitle(cDiff) ? ` title="${esc(columnDiffTitle(cDiff))}"` : '';
+          const diffLabel = cDiff ? `, ${diffStatusLabel(cDiff.status)}` : '';
+          return `<div class="row${diffCls}" role="listitem" aria-label="${esc(rowLabel + diffLabel)}"${diffTitle} data-col="${esc(c.name)}" data-table="${esc(qname)}"${isHi ? ' style="background:color-mix(in srgb, var(--accent) 14%, transparent)"' : ''}><div class="rail14">${ic}</div>
+            <div class="cn ${c.pk ? 'pk' : ''}">${esc(c.name)}</div>${cDiff ? diffMark(cDiff.status) : ''}${noteBadge}${badges}<div class="ty">${esc(c.ty)}</div>
             <div class="port" data-port="1" data-table="${esc(qname)}" data-col="${esc(c.name)}"></div></div>`;
         })
         .join('');
@@ -1480,11 +1637,11 @@ export class Workbench {
       const tblNoteBadge = tblNote
         ? `<span class="note-ic" style="color:var(--muted);display:flex;flex:none;cursor:help" title="${esc(tblNote)}">${ICON('Info', 12)}</span>`
         : '';
-      const cardLabel = translate(t.columns.length === 1 ? 'Tabela {}, 1 coluna' : 'Tabela {}, {} colunas', qname, t.columns.length) + (sel.has(qname) ? `, ${translate('selecionada')}` : '');
-      html += `<div class="card ${sel.has(qname) ? 'sel' : ''}" role="group" tabindex="0" aria-label="${esc(cardLabel)}" data-table="${esc(qname)}" style="${tDim}left:${p.x}px;top:${p.y}px;height:${cardH(t.columns.length)}px">
+      const cardLabel = translate(t.columns.length === 1 ? 'Tabela {}, 1 coluna' : 'Tabela {}, {} colunas', qname, t.columns.length) + (tDiff ? `, ${diffStatusLabel(tDiff.status)}` : '') + (sel.has(qname) ? `, ${translate('selecionada')}` : '');
+      html += `<div class="card ${sel.has(qname) ? 'sel' : ''}${tDiff ? ` ${diffStatusClass(tDiff.status)}` : ''}" role="group" tabindex="0" aria-label="${esc(cardLabel)}" data-table="${esc(qname)}" style="${tDim}left:${p.x}px;top:${p.y}px;height:${dv ? diffCardHeight(t, dv) : cardH(t.columns.length)}px">
         <div class="head"><span style="color:${tint || g.accent};display:flex">${ICON('Table2', 14)}</span>
         <div class="nm">${esc(t.name)}</div>${schemaBadge}${tblNoteBadge}<div class="cnt">${t.columns.length}</div></div>
-        <div class="rows" role="list">${rows}</div>
+        <div class="rows" role="list">${rows}${tDiff ? renderGhostRows(tDiff) : ''}</div>
         <div class="plus" data-addcol="${esc(qname)}" title="${translate("Adicionar coluna")}">${ICON('Plus', 14)}</div></div>`;
     }
     // enums
@@ -1493,14 +1650,28 @@ export class Workbench {
       const on = this.selectedEnum === ev.name;
       const referencedBySelected = !on && ev.referenced_by.some((tb) => sel.has(tb));
       const eDim = focusSub && !ev.referenced_by.some((tb) => focusSub.tables.has(tb)) ? `opacity:${FOCUS_DIM};` : '';
-      const valRows = ev.values.length
-        ? ev.values.map((v) => `<div class="ev" role="listitem"><span class="ev-ic">${ICON('Dot', 12)}</span>${esc(v)}</div>`).join('')
-        : `<div class="ev" role="listitem" style="color:var(--faint)">${translate("(vazio)")}</div>`;
+      const eDiff = dv?.enums.get(ev.name);
+      const valRows = (ev.values.length
+        ? ev.values.map((v) => {
+            const vs = eDiff?.values.get(v);
+            return `<div class="ev${vs ? ` ${diffStatusClass(vs)}` : ''}" role="listitem"><span class="ev-ic">${vs ? diffMark(vs) : ICON('Dot', 12)}</span>${esc(v)}</div>`;
+          }).join('')
+        : `<div class="ev" role="listitem" style="color:var(--faint)">${translate("(vazio)")}</div>`) + (eDiff ? renderEnumGhostValues(eDiff) : '');
       const enumLabel = translate(ev.values.length === 1 ? 'Enum {}, 1 valor' : 'Enum {}, {} valores', ev.name, ev.values.length) + (on ? `, ${translate('selecionada')}` : '');
-      html += `<div class="card enum-card ${on ? 'sel' : ''}" role="group" tabindex="0" aria-label="${esc(enumLabel)}" data-enum="${esc(ev.name)}" style="${eDim}left:${p.x}px;top:${p.y}px;${referencedBySelected ? 'border-color:var(--accent);' : ''}">
+      html += `<div class="card enum-card ${on ? 'sel' : ''}${eDiff ? ` ${diffStatusClass(eDiff.status)}` : ''}" role="group" tabindex="0" aria-label="${esc(enumLabel)}" data-enum="${esc(ev.name)}" style="${eDim}left:${p.x}px;top:${p.y}px;${referencedBySelected ? 'border-color:var(--accent);' : ''}">
         <div class="head"><span style="color:var(--accent);display:flex">${ICON('List', 14)}</span>
         <div class="nm">${esc(ev.name)}</div><span class="tag">ENUM</span></div>
         <div class="rows" role="list">${valRows}</div></div>`;
+    }
+    if (dv) {
+      for (const tbl of dv.removedTables) {
+        const p = ghostPos[qualifiedTableName(tbl)];
+        if (p) html += renderGhostTable(tbl, p);
+      }
+      for (const en of dv.removedEnums) {
+        const p = ghostPos[`enum:${en.name}`];
+        if (p) html += renderGhostEnum(en, p);
+      }
     }
     const focused = document.activeElement instanceof HTMLElement && w.contains(document.activeElement)
       ? document.activeElement.closest<HTMLElement>('.card')
@@ -1627,6 +1798,7 @@ export class Workbench {
       ${rb('ShowSchema', 'Table2', 'Tabelas · Ctrl+Shift+D', left === 'schema')}
       ${rb('ShowProblems', 'TriangleAlert', 'Problemas · Ctrl+Shift+M', left === 'problems', errs ? `<span class="rbadge">${errs}</span>` : '')}
       ${rb('ToggleEditor', 'Braces', 'Editor DBML · Ctrl+E', left === 'dbml')}
+      ${rb('ToggleDiff', 'GitCompare', 'Comparar com o git HEAD · D', this.diff.status !== 'off')}
       ${rb('ConnectDatabase', 'Database', 'Conectar ao banco')}
       ${rb('ImportSqlDdl', 'FileInput', 'Importar SQL DDL')}
       <div class="grow"></div>
@@ -1648,6 +1820,7 @@ export class Workbench {
       <div class="sep"></div>
       ${tb('Relayout', 'LayoutGrid', 'Auto-layout · Ctrl+L')}
       ${tb('ToggleFocusMode', 'Scan', 'Modo Foco (vizinhança FK) · F', this.focusMode && this.selection.length > 0 ? 'acc' : '')}
+      <button class="tb ${this.diff.status !== 'off' ? 'acc' : ''}" data-act="ToggleDiff" aria-pressed="${this.diff.status !== 'off'}" aria-label="${esc(t('Comparar com o git HEAD'))}" title="${esc(t('Comparar com o git HEAD · D'))}">${ICON('GitCompare', 16)}</button>
       ${tb('ToggleEditor', 'Braces', 'Editor DBML · Ctrl+E', this.editorOpen ? 'acc' : '')}`;
     const existingFocusBar = this.wb.querySelector('#focus-mode-bar');
     if (this.focusMode && this.selection.length > 0) {
@@ -1715,6 +1888,8 @@ export class Workbench {
       maxX = Math.max(maxX, p.x + ev.w);
       maxY = Math.max(maxY, p.y + ev.h);
     }
+    const ghosts = this.diffGhostRects();
+    ({ minX, minY, maxX, maxY } = extendBounds({ minX, minY, maxX, maxY }, ghosts));
     const margin = 40;
     const xf = computeMinimapTransform(minX - margin, minY - margin, maxX + margin, maxY + margin, MINIMAP_W, MINIMAP_H, MINIMAP_PAD);
     this.minimapXform = xf;
@@ -1730,6 +1905,11 @@ export class Workbench {
       const a = worldToMap(xf, p.x, p.y);
       const b = worldToMap(xf, p.x + ev.w, p.y + ev.h);
       svg += `<rect x="${a.x.toFixed(1)}" y="${a.y.toFixed(1)}" width="${Math.max(3, b.x - a.x).toFixed(1)}" height="${Math.max(3, b.y - a.y).toFixed(1)}" rx="2" fill="${g.textFaint}" fill-opacity="0.45"/>`;
+    }
+    for (const r of ghosts) {
+      const a = worldToMap(xf, r.x, r.y);
+      const b = worldToMap(xf, r.x + r.w, r.y + r.h);
+      svg += `<rect class="minimap-ghost" x="${a.x.toFixed(1)}" y="${a.y.toFixed(1)}" width="${Math.max(3, b.x - a.x).toFixed(1)}" height="${Math.max(3, b.y - a.y).toFixed(1)}" rx="2" fill="none" stroke="${DIFF_STATUS_COLOR_VAR.removed}" stroke-width="1" stroke-dasharray="${MINIMAP_GHOST_DASH}"/>`;
     }
     for (const tv of this.scene.tables) {
       const p = this.positions[tv.name];
@@ -1779,6 +1959,7 @@ export class Workbench {
     if (d?.kind === 'group') return translate('Movendo grupo {}', d.name);
     if (d?.kind === 'link') return translate('Relação de {}.{}: solte na tabela de destino', d.table, d.col);
     if (d?.kind === 'marquee') return translate("Selecionando: solte para selecionar as tabelas tocadas");
+    if (this.diff.status !== 'off') return translate('Comparando com o git HEAD · somente leitura');
     if (this.selectedEnum) return translate("Enum selecionado · edite os valores no inspetor · Delete exclui o enum · Esc limpa a seleção");
     if (this.selectedRef) return translate("Relação selecionada · Delete remove a linha e a coluna FK · Esc limpa a seleção");
     if (this.selection.length > 1) return translate('{} tabelas selecionadas · Ctrl+G agrupa', this.selection.length);
@@ -1928,6 +2109,8 @@ export class Workbench {
           next?.setSelectionRange(pos, pos);
         });
       }
+    } else if (left === DIFF_PANE_ID) {
+      el.innerHTML = renderDiffPanel(this.diff);
     } else {
       const hasProb = this.errorCount() > 0 || this.diags.length > 0;
       const items = this.diags
@@ -2006,6 +2189,55 @@ export class Workbench {
     this.els['ebd'].scrollLeft = ta.scrollLeft;
   }
 
+  private renderJunctionControl(left: string, right: string, primary: boolean): string {
+    const active =
+      this.junctionDraft &&
+      this.junctionDraft.left === left &&
+      this.junctionDraft.right === right;
+    if (active && this.junctionDraft) {
+      return `<div style="display:flex;flex-direction:column;gap:6px;width:100%">
+        <input class="fld" id="${JUNCTION_INPUT_ID}" aria-label="${translate('Nome da tabela')}" value="${esc(this.junctionDraft.name)}">
+        <div class="btnrow">
+          <button class="btn primary" style="height:28px;font-size:12px" data-act="${JUNCTION_ACTION.CONFIRM}">${translate('Criar')}</button>
+          <button class="btn" style="height:28px;font-size:12px" data-act="${JUNCTION_ACTION.CANCEL}">${translate('Cancelar')}</button>
+        </div>
+      </div>`;
+    }
+    const cls = primary ? 'btn primary' : 'btn';
+    return `<button class="${cls}" style="height:30px;font-size:12px;justify-content:center;gap:6px;width:100%" data-act="${JUNCTION_ACTION.START}" data-left="${esc(left)}" data-right="${esc(right)}">${ICON('Link', 13)}${translate('Criar tabela associativa')}</button>`;
+  }
+
+  private confirmJunction(): void {
+    const draft = this.junctionDraft;
+    if (!draft) return;
+    const inp = this.els['inspector'].querySelector(`#${JUNCTION_INPUT_ID}`) as HTMLInputElement | null;
+    const raw = (inp?.value ?? draft.name).trim();
+    const valid =
+      !raw ||
+      raw.split('.').every((seg) => seg.length > 0 && /^[A-Za-z0-9_]+$/.test(seg));
+    if (!valid) {
+      this.toast(translate('Nome de tabela inválido: use letras, números e _.'));
+      return;
+    }
+    const lp = this.positions[draft.left];
+    const rp = this.positions[draft.right];
+    this.pendingPos =
+      lp && rp ? { x: Math.round((lp.x + rp.x) / 2), y: Math.round((lp.y + rp.y) / 2) } : null;
+    this.junctionDraft = null;
+    this.selectedRef = null;
+    const patch = this.dispatch({
+      action: 'create_junction_table',
+      payload: {
+        left_table: draft.left,
+        right_table: draft.right,
+        junction_name: raw || undefined,
+      },
+    });
+    if (patch?.created_table) {
+      this.queueSaveLayout();
+    }
+  }
+
   private renderInspector(): void {
     const el = this.els['inspector'];
     const sel = this.selection;
@@ -2029,6 +2261,7 @@ export class Workbench {
           return `<div class="mrow" data-act="focus-table" data-table="${esc(n)}"><span style="color:${this.tint(n) || 'var(--accent)'};display:flex">${ICON('Table2', 13)}</span><span>${esc(n)}</span><span class="g">${grp ? esc(grp.name) : translate('sem grupo')}</span></div>`;
         })
         .join('');
+      const junctionHtml = sel.length === 2 ? this.renderJunctionControl(sel[0], sel[1], false) : '';
       el.innerHTML = `${inspHead}
         <div class="ident" style="gap:12px">
           <div class="multi-ic"><div class="back"></div><div class="front"><span style="color:var(--accent);display:flex">${ICON('Copy', 13)}</span></div></div>
@@ -2040,6 +2273,7 @@ export class Workbench {
         </div>
         <div class="isec" style="padding:14px;gap:6px">
           <button class="btn primary" style="height:32px;font-size:12.5px;justify-content:center;gap:8px;width:100%" data-act="GroupSelection">${ICON('Layers', 14)}${translate("Agrupar seleção")}<span class="mono" style="font-size:10.5px;opacity:.75">Ctrl G</span></button>
+          ${junctionHtml}
         </div>
         <div class="grow" style="border-top:1px solid var(--edge-soft)"></div>
         <div class="ifoot"><button class="btn danger" data-act="DeleteSelection">${ICON('Trash', 13)}${translate('Excluir {} tabelas', sel.length)}</button></div>`;
@@ -2116,11 +2350,16 @@ export class Workbench {
           actions
             .map(([val, label]) => `<button class="chip ${cur === val ? 'on' : ''}" data-act="${act}" data-val="${val}">${translate(label)}</button>`)
             .join('');
+        const junctionSec =
+          r.kind === 'ManyToMany'
+            ? `<div class="isec">${lab('TABELA ASSOCIATIVA')}${this.renderJunctionControl(qualifiedEndpointTable(r.from), qualifiedEndpointTable(r.to), true)}</div>`
+            : '';
         el.innerHTML = `${inspHead}
           <div class="isec tight">${lab('RELAÇÃO')}
           <div class="ititle mono" style="font-size:15px">${esc(qualifiedEndpointTable(r.from))}.${esc(r.from.column)}</div>
           <span class="isub mono">→ ${esc(qualifiedEndpointTable(r.to))}.${esc(r.to.column)}</span></div>
           <div class="isec">${lab('CARDINALIDADE')}<div class="btnrow">${cardBtns}</div></div>
+          ${junctionSec}
           <div class="isec">${lab('AO EXCLUIR')}<div class="btnrow">${mkActionBtns('update-ref-del', r.on_delete || '')}</div></div>
           <div class="isec">${lab('AO ATUALIZAR')}<div class="btnrow">${mkActionBtns('update-ref-upd', r.on_update || '')}</div></div>
           <div class="grow" style="border-top:1px solid var(--edge-soft)"></div>
@@ -2443,11 +2682,17 @@ export class Workbench {
         this.scheduleRender();
         return;
       }
-      case 'Deselect': this.selection = []; this.selectedRef = null; this.selectedEnum = null; this.focusMode = false; this.highlightedColumn = null; break;
+      case 'Deselect':
+        if (this.diff.status !== 'off' && this.selection.length === 0 && !this.selectedRef && !this.selectedEnum) {
+          this.exitDiff();
+          return;
+        }
+        this.selection = []; this.selectedRef = null; this.selectedEnum = null; this.focusMode = false; this.highlightedColumn = null; break;
       case 'ToggleFocusMode':
         if (this.focusMode) this.focusMode = false;
         else if (this.selection.length > 0) this.focusMode = true;
         break;
+      case 'ToggleDiff': this.toggleDiff(); return;
       case 'CycleFocusDepth':
         this.focusDepth = this.focusDepth === 1 ? 2 : 1;
         if (this.selection.length > 0) this.focusMode = true;
@@ -2512,6 +2757,7 @@ export class Workbench {
       case 'ExportSqlOracle': this.doExportSql('oracle'); return;
       case 'ImportSqlDdl': this.openImportSqlModal(); return;
       case 'ConnectDatabase': this.openConnectDbModal(); return;
+      case 'ToggleConnectPassword': this.connectDialogOpen()?.togglePassword(); return;
       case 'AddPresetUuidPk': case 'AddPresetBigIntPk': case 'AddPresetTimestamps': case 'AddPresetSoftDelete':
         this.applyColumnPreset(id);
         return;
@@ -2742,14 +2988,18 @@ export class Workbench {
     );
   }
 
-  private modal(inner: string, cls = '', bgCls = ''): HTMLElement {
-    this.closeModal();
+  /** `stacked` abre sobre o modal atual em vez de substituí-lo (a paleta sobre o diálogo de conexão). */
+  private modal(inner: string, cls = '', bgCls = '', stacked = false): HTMLElement {
+    if (!stacked) this.closeModal();
     const bg = document.createElement('div');
     bg.className = 'modal-bg ' + bgCls;
     bg.dataset.modal = '1';
+    if (stacked) bg.dataset.stacked = '1';
     bg.innerHTML = `<div class="modal ${cls}">${inner}</div>`;
     bg.addEventListener('mousedown', (e) => {
-      if (e.target === bg) this.closeModal();
+      if (e.target !== bg) return;
+      if (stacked) this.closePalette();
+      else this.closeModal();
     });
     this.wb.appendChild(bg);
     return bg;
@@ -2763,6 +3013,22 @@ export class Workbench {
     this.whatsNewOpen = false;
   }
 
+  /** O diálogo de conexão, enquanto estiver no DOM e não estiver saindo. */
+  private connectDialogOpen(): { bg: HTMLElement; togglePassword: () => void } | null {
+    const dialog = this.connectDialog;
+    if (dialog && dialog.bg.isConnected && !dialog.bg.classList.contains('out')) return dialog;
+    this.connectDialog = null;
+    return null;
+  }
+
+  /** Fecha a paleta; se ela está sobre o diálogo de conexão, só ela sai e o diálogo continua. */
+  private closePalette(): void {
+    const stacked = this.wb.querySelector<HTMLElement>('[data-stacked]:not(.out)');
+    if (!stacked) { this.closeModal(); return; }
+    this.paletteOpen = false;
+    this.fadeOut(stacked);
+  }
+
   private importConflicts(dbml: string): string[] {
     return dbml ? this.wasm?.import_conflicts?.(this.source, dbml) ?? [] : [];
   }
@@ -2773,34 +3039,71 @@ export class Workbench {
       return;
     }
     const introspect = this.transport.introspect.bind(this.transport);
-    const model = new ConnectDbModel(this.connectEngine);
-    const field = (id: string, label: string, ph: string, type = 'text') =>
+    const parseUrl = this.wasm?.parse_connection_url?.bind(this.wasm);
+    const model = new ConnectDbModel(this.connectEngine, parseUrl);
+    const ids = CONNECT_DIALOG;
+    const input = (id: string, ph: string, extra = '') =>
+      `<input id="db-${id}" type="text" placeholder="${esc(translate(ph))}" autocomplete="off" spellcheck="false" ${extra}>`;
+    const field = (id: string, label: string, ph: string) =>
       `<label data-row="${id}" for="db-${id}">${translate(label)}</label>
-       <input data-row="${id}" id="db-${id}" type="${type}" placeholder="${esc(translate(ph))}" autocomplete="off" spellcheck="false">`;
+       <div class="mpair" data-row="${id}">${input(id, ph)}</div>`;
+    const engineOptions = [
+      ...DB_ENGINES.map((e) => ({ value: e.value as string, label: e.label, disabled: false })),
+      { value: ENGINE_COMING_SOON, label: ENGINE_COMING_SOON_LABEL, disabled: true },
+    ];
 
     const bg = this.modal(`
       <div role="dialog" aria-modal="true" aria-labelledby="db-title" style="display:flex;flex-direction:column;min-height:0;overflow:auto">
         <div class="mhd"><div><div class="tt" id="db-title">${translate("Conectar ao banco")}</div><div class="st">${translate("Faça engenharia reversa de um esquema existente para DBML.")}</div></div><span class="grow"></span>
-          <button class="ib" id="db-x" type="button" title="${t("Fechar")}">${ICON('X', 15)}</button></div>
-        <div style="padding:14px 18px 6px"><div class="seg row acc" id="db-engines">
-          ${DB_ENGINES.map((e) => `<button type="button" data-engine="${e.value}">${e.label}</button>`).join('')}
-          <button type="button" disabled title="${translate("Suporte a Oracle em breve")}">${translate("Oracle (em breve)")}</button>
-        </div></div>
+          <button class="ib" id="db-x" type="button" title="${t("Fechar")}" aria-label="${t("Fechar")}">${ICON('X', 15)}</button></div>
         <div class="mform" id="db-form">
-          ${field('host', 'Host', 'localhost')}
-          ${field('port', 'Porta', 'porta padrão')}
+          <label id="${ids.ENGINE_LABEL_ID}" data-row="${ids.ROW_ENGINE}" for="${ids.ENGINE_TRIGGER_ID}">${translate("Tipo de banco")}</label>
+          <div class="dd mpair" data-row="${ids.ROW_ENGINE}">
+            <button type="button" id="${ids.ENGINE_TRIGGER_ID}" class="dd-trigger" role="combobox" aria-haspopup="listbox" aria-expanded="false"
+              aria-controls="${ids.ENGINE_LIST_ID}" aria-labelledby="${ids.ENGINE_LABEL_ID} ${ids.ENGINE_VALUE_ID}">
+              <span id="${ids.ENGINE_VALUE_ID}"></span>${ICON('ChevronDown', 14)}</button>
+            <div id="${ids.ENGINE_LIST_ID}" class="menu dd-list" role="listbox" aria-labelledby="${ids.ENGINE_LABEL_ID}" hidden>
+              ${engineOptions.map((o) => `<div class="mi" role="option" id="${ids.ENGINE_OPTION_ID_PREFIX}${o.value}" data-value="${o.value}" aria-selected="false"${o.disabled ? ' aria-disabled="true"' : ''}>${esc(o.label)}${o.disabled ? `<span class="k">${translate("em breve")}</span>` : ''}</div>`).join('')}
+            </div>
+          </div>
+          <label data-row="${ids.ROW_URL}" for="${ids.URL_ID}">${translate("Connection string")}</label>
+          <div class="mcell" data-row="${ids.ROW_URL}">
+            <div class="mpair">
+              ${input('url', '', model.canParse ? '' : 'readonly')}
+              <button class="btn sm" id="${ids.URL_COPY_ID}" type="button" title="${esc(translate("Copia a string com a senha mascarada (***)"))}">${ICON('Copy', 13)}<span id="${ids.URL_COPY_LABEL_ID}">${translate("Copiar string")}</span></button>
+            </div>
+            <div class="ferr" id="${ids.URL_ERROR_ID}" aria-live="polite"></div>
+          </div>
+          <label data-row="host" for="db-host">Host</label>
+          <div class="mpair" data-row="host">${input('host', 'localhost')}<label class="inl" for="db-port">${translate("Porta")}</label>${input('port', 'porta padrão', 'inputmode="numeric" class="narrow"')}</div>
           ${field('database', 'Banco', 'nome do banco')}
-          ${field('user', 'Usuário', 'usuário')}
-          ${field('password', 'Senha', 'senha', 'password')}
+          <label data-row="user" for="db-user">${translate("Usuário")}</label>
+          <div class="mpair" data-row="user">${input('user', 'usuário')}<label class="inl" for="${ids.PASSWORD_ID}">${translate("Senha")}</label>
+            <div class="pwd"><input id="${ids.PASSWORD_ID}" type="password" placeholder="${esc(translate('senha'))}" autocomplete="off" spellcheck="false">
+              <button type="button" class="ib" id="${ids.PASSWORD_TOGGLE_ID}" aria-pressed="false" aria-label="${translate("Mostrar senha")}" title="${translate("Mostrar senha")}">${ICON('Eye', 15)}</button></div></div>
           ${field('schemas', 'Schemas', 'todos os schemas (ou: public, sales)')}
-          <label data-row="${TLS_ROW_ID}" for="${TLS_SELECT_ID}">${TLS_FIELD_LABEL}</label>
-          <select data-row="${TLS_ROW_ID}" id="${TLS_SELECT_ID}" class="fld">
-            ${TLS_SELECT_OPTIONS.map((opt) => `<option value="${opt.value}">${translate(opt.labelKey)}</option>`).join('')}
-          </select>
-          ${field('path', 'Arquivo', '/caminho/para/banco.sqlite')}
-          <label class="chk" data-row="trust"><input id="db-trust" type="checkbox">${translate("Confiar no certificado do servidor (autoassinado, ex.: Docker)")}</label>
+          <label data-row="${TLS_ROW_ID}" for="${TLS_TOGGLE_ID}">${TLS_FIELD_LABEL}</label>
+          <div class="tls-row" data-row="${TLS_ROW_ID}">
+            <label class="sw-wrap" for="${TLS_TOGGLE_ID}">
+              <input id="${TLS_TOGGLE_ID}" type="checkbox" role="switch" class="sw">
+              <span>${translate("Usar SSL")}</span>
+            </label>
+            <label class="chk-inl" id="${TLS_VERIFY_WRAP_ID}" for="${TLS_VERIFY_ID}">
+              <input id="${TLS_VERIFY_ID}" type="checkbox">
+              <span>${translate("Verificar certificado")}</span>
+            </label>
+          </div>
+          <label data-row="path" for="db-path">${translate("Arquivo")}</label>
+          <div class="mpair" data-row="path">${input('path', '/caminho/para/banco.sqlite')}</div>
         </div>
         <div class="mnote" id="db-note"><span id="db-ico" style="color:var(--ok);display:flex">${ICON('ShieldCheck', 14)}</span><span id="db-status" aria-live="polite"></span></div>
+        <div class="merr-extra" id="${ids.ERROR_EXTRA_ID}" style="display:none">
+          <div class="merr-actions">
+            <button class="btn sm" id="${ids.USE_TLS_REQUIRE_ID}" type="button" style="display:none">${translate("Usar TLS: Exigir")}</button>
+            <button class="btn sm ghost" id="${ids.ERROR_DETAILS_TOGGLE_ID}" type="button" style="display:none">${translate("Detalhes")}</button>
+          </div>
+          <pre class="merr-detail" id="${ids.ERROR_DETAILS_ID}" style="display:none"></pre>
+        </div>
         <div class="mwarn" id="db-warns" style="display:none"></div>
         <div class="mfooter">
           <button class="btn" id="db-test" type="button">${ICON('PlugZap', 13)}${translate("Testar conexão")}</button><span class="grow"></span>
@@ -2812,8 +3115,11 @@ export class Workbench {
       </div>`, 'w560', 'top76');
 
     const $ = <T extends HTMLElement>(sel: string) => bg.querySelector(sel) as T;
-    const val = (id: string) => $<HTMLInputElement>(`#db-${id}`).value;
     const statusEl = $<HTMLElement>('#db-status');
+    const errExtraEl = $<HTMLElement>(`#${ids.ERROR_EXTRA_ID}`);
+    const errToggleBtn = $<HTMLButtonElement>(`#${ids.ERROR_DETAILS_TOGGLE_ID}`);
+    const errDetailEl = $<HTMLElement>(`#${ids.ERROR_DETAILS_ID}`);
+    const useTlsRequireBtn = $<HTMLButtonElement>(`#${ids.USE_TLS_REQUIRE_ID}`);
     const warnsEl = $<HTMLElement>('#db-warns');
     const connectBtn = $<HTMLButtonElement>('#db-connect');
     const testBtn = $<HTMLButtonElement>('#db-test');
@@ -2821,21 +3127,67 @@ export class Workbench {
     const insertBtn = $<HTMLButtonElement>('#db-insert');
     let cliStatus: 'checking' | 'ready' | 'missing' = this.transport.checkDatabaseSupport ? 'checking' : 'ready';
 
-    const syncView = () => {
+    const urlInput = $<HTMLInputElement>(`#${ids.URL_ID}`);
+    const urlErrorEl = $<HTMLElement>(`#${ids.URL_ERROR_ID}`);
+    const copyBtn = $<HTMLButtonElement>(`#${ids.URL_COPY_ID}`);
+    const pwdInput = $<HTMLInputElement>(`#${ids.PASSWORD_ID}`);
+    const pwdToggle = $<HTMLButtonElement>(`#${ids.PASSWORD_TOGGLE_ID}`);
+    const trigger = $<HTMLButtonElement>(`#${ids.ENGINE_TRIGGER_ID}`);
+    const list = $<HTMLElement>(`#${ids.ENGINE_LIST_ID}`);
+    const optionEls = [...list.querySelectorAll<HTMLElement>('[role="option"]')];
+    const FIELD_NAMES = ['host', 'port', 'database', 'user', 'password', 'path', 'schemas'] as const;
+    let urlTimer: number | undefined;
+    let copyTimer: number | undefined;
+
+    const setHidden = (sel: string, hidden: boolean, shown = '') =>
+      bg.querySelectorAll<HTMLElement>(sel).forEach((n) => (n.style.display = hidden ? 'none' : shown));
+
+    /** Campos, string, dropdown, senha e erro: tudo que depende só do model. */
+    const syncForm = () => {
       const isFile = model.engine === 'sqlite';
       const connecting = model.status === 'connecting';
-      for (const id of CONNECT_NETWORK_ROW_IDS) {
-        bg.querySelectorAll<HTMLElement>(`[data-row="${id}"]`).forEach((n) => (n.style.display = isFile ? 'none' : ''));
+      for (const id of CONNECT_NETWORK_ROW_IDS) setHidden(`[data-row="${id}"]`, isFile);
+      setHidden('[data-row="path"]', !isFile);
+      for (const name of FIELD_NAMES) {
+        const el = $<HTMLInputElement>(`#db-${name}`);
+        if (el.value !== model.fields[name]) el.value = model.fields[name];
       }
-      bg.querySelectorAll<HTMLElement>('[data-row="path"]').forEach((n) => (n.style.display = isFile ? '' : 'none'));
-      bg.querySelector<HTMLElement>('[data-row="trust"]')!.style.display =
-        model.engine === 'sqlserver' ? 'flex' : 'none';
-      bg.querySelectorAll<HTMLButtonElement>('[data-engine]').forEach((b) => {
-        b.classList.toggle('on', b.dataset.engine === model.engine);
-        b.disabled = connecting;
-      });
+      const sslOn = model.tls !== TLS_MODE.DISABLE;
+      const tlsToggle = $<HTMLInputElement>(`#${TLS_TOGGLE_ID}`);
+      const tlsVerify = $<HTMLInputElement>(`#${TLS_VERIFY_ID}`);
+      const tlsVerifyWrap = $<HTMLElement>(`#${TLS_VERIFY_WRAP_ID}`);
+      tlsToggle.checked = sslOn;
+      tlsToggle.disabled = connecting;
+      tlsVerify.checked = model.tls === TLS_MODE.VERIFY;
+      tlsVerify.disabled = connecting || !sslOn;
+      tlsVerifyWrap.style.display = sslOn ? 'inline-flex' : 'none';
       const port = DB_ENGINES.find((e) => e.value === model.engine)?.port;
       $<HTMLInputElement>('#db-port').placeholder = port ? String(port) : translate("porta padrão");
+      // com um parse pendente o campo é do usuário: não o sobrescrever no meio da digitação
+      if (urlTimer === undefined && urlInput.value !== model.urlText) urlInput.value = model.urlText;
+      urlInput.placeholder = model.urlPlaceholder;
+      const invalid = model.urlError !== null;
+      urlInput.setAttribute('aria-invalid', String(invalid));
+      if (invalid) urlInput.setAttribute('aria-describedby', ids.URL_ERROR_ID);
+      else urlInput.removeAttribute('aria-describedby');
+      urlErrorEl.textContent = model.urlError ? urlErrorMessage(model.urlError) : '';
+      copyBtn.disabled = connecting;
+      copyBtn.title = model.passwordRevealed
+        ? translate("Copia a string completa, com a senha")
+        : translate("Copia a string com a senha mascarada (***)");
+      const revealed = model.passwordRevealed;
+      pwdInput.type = revealed ? 'text' : 'password';
+      pwdToggle.setAttribute('aria-pressed', String(revealed));
+      pwdToggle.title = translate(revealed ? "Ocultar senha" : "Mostrar senha");
+      pwdToggle.innerHTML = ICON(revealed ? 'EyeOff' : 'Eye', 15);
+      $<HTMLElement>(`#${ids.ENGINE_VALUE_ID}`).textContent = DB_ENGINES.find((e) => e.value === model.engine)?.label ?? '';
+      trigger.disabled = connecting;
+      optionEls.forEach((o) => o.setAttribute('aria-selected', String(o.dataset.value === model.engine)));
+    };
+
+    const syncView = () => {
+      syncForm();
+      const connecting = model.status === 'connecting';
       const ready = model.canApply();
       const conflicts = ready ? this.importConflicts(model.dbml) : [];
       replaceBtn.disabled = !ready;
@@ -2860,41 +3212,153 @@ export class Workbench {
               : model.status === 'tested'
                 ? model.error
                 : translate("Somente leitura: apenas o catálogo é lido, nunca os seus dados.");
+      const failed = model.status === 'failed';
+      const hasDetail = failed && model.errorDetail.trim().length > 0 && model.errorDetail.trim() !== model.error.trim();
+      const offerTlsRequire = failed && model.engine !== 'sqlite' && model.tls !== TLS_MODE.REQUIRE && isTlsCertError(model.errorDetail);
+      errExtraEl.style.display = hasDetail || offerTlsRequire ? 'flex' : 'none';
+      useTlsRequireBtn.style.display = offerTlsRequire ? '' : 'none';
+      useTlsRequireBtn.disabled = connecting;
+      errToggleBtn.style.display = hasDetail ? '' : 'none';
+      errToggleBtn.textContent = translate(model.showErrorDetails ? 'Ocultar detalhes' : 'Detalhes');
+      errDetailEl.style.display = hasDetail && model.showErrorDetails ? 'block' : 'none';
+      errDetailEl.textContent = hasDetail ? model.errorDetail : '';
       const warnings = [...model.warnings];
       if (conflicts.length) warnings.push(translate('Já existem no modelo: {}.', conflicts.join(', ')));
       warnsEl.style.display = warnings.length ? 'block' : 'none';
       warnsEl.innerHTML = warnings.map((w) => `<div>${esc(w)}</div>`).join('');
     };
 
-    bg.querySelectorAll<HTMLButtonElement>('[data-engine]').forEach((b) =>
-      b.addEventListener('click', () => {
-        this.connectEngine = b.dataset.engine as DbEngine;
-        model.setEngine(this.connectEngine);
-        syncView();
-      })
-    );
-    $<HTMLInputElement>('#db-trust').addEventListener('change', (e) => {
-      model.trustCert = (e.target as HTMLInputElement).checked;
+    // ── dropdown do banco (combobox select-only: o foco fica no botão) ──
+    let listOpen = false;
+    let activeOption = 0;
+    const setActive = (index: number) => {
+      activeOption = index;
+      optionEls.forEach((o, i) => o.classList.toggle('on', i === index));
+      trigger.setAttribute('aria-activedescendant', optionEls[index].id);
+    };
+    const openList = () => {
+      if (trigger.disabled) return;
+      listOpen = true;
+      list.hidden = false;
+      trigger.setAttribute('aria-expanded', 'true');
+      setActive(Math.max(0, DB_ENGINES.findIndex((e) => e.value === model.engine)));
+    };
+    const closeList = (refocus = true) => {
+      listOpen = false;
+      list.hidden = true;
+      trigger.setAttribute('aria-expanded', 'false');
+      trigger.removeAttribute('aria-activedescendant');
+      if (refocus) trigger.focus();
+    };
+    const chooseOption = (index: number) => {
+      const option = optionEls[index];
+      if (!option || option.getAttribute('aria-disabled') === 'true') return;
+      flushUrl();
+      this.connectEngine = option.dataset.value as DbEngine;
+      model.setEngine(this.connectEngine);
+      closeList();
+      syncView();
+    };
+    const optionsState = () => optionEls.map((o) => ({ disabled: o.getAttribute('aria-disabled') === 'true' }));
+    trigger.addEventListener('click', () => (listOpen ? closeList() : openList()));
+    // Enter/Espaço abrem pelo teclado sem disparar o clique nativo do botão
+    trigger.addEventListener('keyup', (e) => {
+      if (e.key === ' ') e.preventDefault();
     });
-    $<HTMLSelectElement>(`#${TLS_SELECT_ID}`).addEventListener('change', (e) => {
-      model.tls = (e.target as HTMLSelectElement).value as import('./types').TlsMode;
+    trigger.addEventListener('keydown', (e) => {
+      const stop = () => { e.preventDefault(); e.stopPropagation(); };
+      if (!listOpen) {
+        if (['Enter', ' ', 'ArrowDown', 'ArrowUp'].includes(e.key)) { stop(); openList(); }
+        return;
+      }
+      switch (e.key) {
+        case 'ArrowDown': stop(); setActive(nextEnabledOption(optionsState(), activeOption, 1)); break;
+        case 'ArrowUp': stop(); setActive(nextEnabledOption(optionsState(), activeOption, -1)); break;
+        case 'Home': stop(); setActive(nextEnabledOption(optionsState(), activeOption, 'first')); break;
+        case 'End': stop(); setActive(nextEnabledOption(optionsState(), activeOption, 'last')); break;
+        case 'Enter': case ' ': stop(); chooseOption(activeOption); break;
+        case 'Escape': stop(); closeList(); break;
+        case 'Tab': closeList(false); break;
+      }
+    });
+    trigger.addEventListener('blur', () => { if (listOpen) closeList(false); });
+    optionEls.forEach((o, i) => {
+      o.addEventListener('mousedown', (e) => e.preventDefault()); // não tirar o foco do botão
+      o.addEventListener('mousemove', () => { if (o.getAttribute('aria-disabled') !== 'true') setActive(i); });
+      o.addEventListener('click', () => chooseOption(i));
     });
 
-    const readRequest = () =>
-      buildRequest(
-        model.engine,
-        {
-          host: val('host'),
-          port: val('port'),
-          database: val('database'),
-          user: val('user'),
-          password: val('password'),
-          path: val('path'),
-          schemas: val('schemas'),
-        },
-        model.trustCert,
-        model.tls
-      );
+    // ── campos, string e senha ──
+    for (const name of FIELD_NAMES) {
+      $<HTMLInputElement>(`#db-${name}`).addEventListener('input', (e) => {
+        flushUrl();
+        model.setField(name, (e.target as HTMLInputElement).value);
+        syncForm();
+      });
+    }
+    $<HTMLInputElement>(`#${TLS_TOGGLE_ID}`).addEventListener('change', (e) => {
+      flushUrl();
+      const on = (e.target as HTMLInputElement).checked;
+      model.setTrustCert(false);
+      model.setTls(on ? TLS_MODE.REQUIRE : TLS_MODE.DISABLE);
+      syncForm();
+    });
+    $<HTMLInputElement>(`#${TLS_VERIFY_ID}`).addEventListener('change', (e) => {
+      flushUrl();
+      const verify = (e.target as HTMLInputElement).checked;
+      model.setTrustCert(false);
+      model.setTls(verify ? TLS_MODE.VERIFY : TLS_MODE.REQUIRE);
+      syncForm();
+    });
+
+    /** Aplica agora o texto da string, sem esperar o debounce. */
+    function flushUrl(): void {
+      if (urlTimer === undefined) return;
+      window.clearTimeout(urlTimer);
+      urlTimer = undefined;
+      model.setUrl(urlInput.value);
+    }
+    const applyUrl = (commit: boolean) => {
+      flushUrl();
+      if (commit) model.commitUrl();
+      this.connectEngine = model.engine;
+      syncForm();
+    };
+    // `urlTimer` definido = há texto digitado ainda não interpretado; o syncForm não o sobrescreve
+    const scheduleUrl = (delay: number, commit: boolean) => {
+      window.clearTimeout(urlTimer);
+      urlTimer = window.setTimeout(() => applyUrl(commit), delay);
+    };
+    urlInput.addEventListener('input', () => scheduleUrl(URL_PARSE_DEBOUNCE_MS, false));
+    // o texto colado só entra no campo depois do evento `paste`
+    urlInput.addEventListener('paste', () => scheduleUrl(URL_PASTE_SETTLE_MS, true));
+    urlInput.addEventListener('change', () => applyUrl(true));
+
+    const togglePassword = () => {
+      flushUrl();
+      model.togglePassword();
+      syncForm();
+    };
+    pwdToggle.addEventListener('click', togglePassword);
+    // a paleta fecha ao executar: o foco volta para o botão do olho
+    this.connectDialog = { bg, togglePassword: () => { togglePassword(); pwdToggle.focus(); } };
+
+    copyBtn.addEventListener('click', () => {
+      flushUrl();
+      void copyText(model.urlForCopy()).then((ok) => {
+        if (!bg.isConnected) return;
+        if (!ok) { this.toast(translate("Não foi possível copiar a string.")); return; }
+        const label = $<HTMLElement>(`#${ids.URL_COPY_LABEL_ID}`);
+        label.textContent = translate("Copiado");
+        window.clearTimeout(copyTimer);
+        copyTimer = window.setTimeout(() => { label.textContent = translate("Copiar string"); }, COPY_FEEDBACK_MS);
+      });
+    });
+
+    const readRequest = () => {
+      flushUrl();
+      return model.buildRequest();
+    };
 
     let guard: IntrospectGuard | null = null;
     /** Chamada de rede com prazo e cancelamento; o modal pode ter sido fechado no meio. */
@@ -2912,7 +3376,10 @@ export class Workbench {
       } catch (e) {
         if (g.cancelled) model.cancel();
         else if (g.timedOut) model.fail(translate('A conexão demorou mais de {} s e foi cancelada. Confira o host e a porta.', INTROSPECT_TIMEOUT_MS / 1000));
-        else model.fail(connectionHint(e instanceof Error ? e.message : String(e), dialect === 'sqlite'));
+        else {
+          const raw = e instanceof Error ? e.message : String(e);
+          model.fail(connectionHint(raw, dialect === 'sqlite'), raw);
+        }
       } finally {
         g.dispose();
         if (guard === g) guard = null;
@@ -2929,12 +3396,14 @@ export class Workbench {
 
     const connect = () => {
       const req = readRequest();
+      model.hidePassword();
       return run(req.dialect, (signal) => introspect(req, signal), (r) => model.finish(r));
     };
 
     /** Durante a conexão, Cancelar/Esc/X só abortam a chamada; fora dela, fecham o modal. */
     const dismiss = () => {
       if (guard) { guard.cancel(); return; }
+      model.close();
       this.closeModal();
     };
 
@@ -2946,6 +3415,7 @@ export class Workbench {
         return;
       }
       const next = model.buildMergedSource(this.source, mode);
+      model.close();
       this.closeModal();
       this.applyPatch(this.fullReplace(next));
       if (mode === 'replace') {
@@ -2958,6 +3428,16 @@ export class Workbench {
       }
     };
 
+    errToggleBtn.addEventListener('click', () => {
+      model.toggleErrorDetails();
+      syncView();
+    });
+    useTlsRequireBtn.addEventListener('click', () => {
+      flushUrl();
+      model.setTls(TLS_MODE.REQUIRE);
+      model.reset();
+      syncView();
+    });
     testBtn.addEventListener('click', () => void test());
     connectBtn.addEventListener('click', () => void connect());
     replaceBtn.addEventListener('click', () => applyMode('replace'));
@@ -2976,7 +3456,7 @@ export class Workbench {
       }
     });
     syncView();
-    ($<HTMLInputElement>(model.engine === 'sqlite' ? '#db-path' : '#db-host')).focus();
+    urlInput.focus();
     void this.transport.checkDatabaseSupport?.().then(
       () => { cliStatus = 'ready'; if (bg.isConnected) syncView(); },
       () => { cliStatus = 'missing'; if (bg.isConnected) syncView(); },
@@ -3180,7 +3660,8 @@ export class Workbench {
     const bg = this.modal(
       `<div class="mbar">${ICON('Search', 15)}<input id="pal-q" placeholder="${translate('Buscar tabelas, colunas, comandos…')}" autocomplete="off"><span class="esc">Esc</span></div>
        <div class="list" id="pal-list"></div>
-       <div class="mfoot"><span>${translate("↑↓ navegar")}</span><span>${translate("↵ executar")}</span><span>${translate("Esc fechar")}</span><span class="grow"></span><span id="pal-n"></span></div>`
+       <div class="mfoot"><span>${translate("↑↓ navegar")}</span><span>${translate("↵ executar")}</span><span>${translate("Esc fechar")}</span><span class="grow"></span><span id="pal-n"></span></div>`,
+      '', '', !!this.connectDialogOpen()
     );
     this.paletteOpen = true; // depois de modal(), que zera os flags
     const q = bg.querySelector('#pal-q') as HTMLInputElement;
@@ -3203,8 +3684,8 @@ export class Workbench {
       const items = this.paletteItems();
       if (e.key === 'ArrowDown') { this.paletteIdx = Math.min(this.paletteIdx + 1, items.length - 1); draw(); e.preventDefault(); }
       else if (e.key === 'ArrowUp') { this.paletteIdx = Math.max(this.paletteIdx - 1, 0); draw(); e.preventDefault(); }
-      else if (e.key === 'Enter') { const a = items[this.paletteIdx]; this.closeModal(); if (a) this.runPaletteItem(a); e.preventDefault(); }
-      else if (e.key === 'Escape') this.closeModal();
+      else if (e.key === 'Enter') { const a = items[this.paletteIdx]; this.closePalette(); if (a) this.runPaletteItem(a); e.preventDefault(); }
+      else if (e.key === 'Escape') { this.closePalette(); e.stopPropagation(); }
     });
     draw();
     q.focus();
@@ -3217,7 +3698,7 @@ export class Workbench {
       for (const ch of s.toLowerCase()) if (ch === q[i]) i++;
       return i >= q.length;
     };
-    const commands = catalog().filter((a) => (this.selectedRef || (a.id !== 'ToggleEdgeStraight' && a.id !== 'ResetEdgeCurve')) && a.id !== 'OpenPalette' && (!q || fuzzy(a.label) || fuzzy(a.group)));
+    const commands = catalog().filter((a) => (this.selectedRef || (a.id !== 'ToggleEdgeStraight' && a.id !== 'ResetEdgeCurve')) && a.id !== 'OpenPalette' && (a.id !== 'ToggleConnectPassword' || !!this.connectDialogOpen()) && (!q || fuzzy(a.label) || fuzzy(a.group)));
     const tables = q ? this.schema.tables.flatMap((table) => {
       const name = qualifiedTableName(table);
       const items = [{ label: name, group: translate('Tabelas'), table: name },
@@ -3615,6 +4096,11 @@ export class Workbench {
         (Array.from(insp.querySelectorAll<HTMLElement>('[data-act=toggle-col]')).find((row) => row.dataset.col === col))?.focus();
         return;
       }
+      if (t.id === JUNCTION_INPUT_ID) {
+        if (e.key === 'Enter') { e.preventDefault(); e.stopPropagation(); this.confirmJunction(); }
+        else if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); this.junctionDraft = null; this.renderInspector(); }
+        return;
+      }
       if (t.tagName !== 'INPUT') return;
       if (e.key === 'Enter') t.blur();
       else if (e.key === 'Escape') { t.value = t.dataset.orig || ''; t.blur(); this.closeMenus(); e.stopPropagation(); }
@@ -3690,6 +4176,8 @@ export class Workbench {
           })();
         }
         return;
+      case DIFF_ACT.FOCUS: this.focusDiffItem(d.diffId!); return;
+      case DIFF_ACT.RETRY: this.startDiff(); return;
       case 'focus-table': this.selectedEnum = null; this.focusTable(d.table!); return;
       case 'focus-enum': {
         this.selection = [];
@@ -3731,7 +4219,7 @@ export class Workbench {
         ta.scrollTop = Math.max(0, (g.range.start.line - 3) * 22);
         return;
       }
-      case 'palette-run': { const item = this.paletteItems()[Number(d.index)]; this.closeModal(); if (item) this.runPaletteItem(item); return; }
+      case 'palette-run': { const item = this.paletteItems()[Number(d.index)]; this.closePalette(); if (item) this.runPaletteItem(item); return; }
       case 'quick-search-run': { const item = this.quickSearchItems()[Number(d.index)]; this.closeModal(); if (item) this.runQuickSearchItem(item); return; }
       case 'set-color':
         this.dispatch({ action: 'set_table_color', payload: { table: d.table!, color: d.color || null } });
@@ -3802,6 +4290,26 @@ export class Workbench {
         });
         return;
       }
+      case JUNCTION_ACTION.START: {
+        const left = d.left!;
+        const right = d.right!;
+        const suggested =
+          this.wasm?.suggest_junction_name?.(this.source, left, right) ??
+          `${left.split('.').pop()}_${right.split('.').pop()}`;
+        this.junctionDraft = { left, right, name: suggested };
+        this.renderInspector();
+        const inp = this.els['inspector'].querySelector(`#${JUNCTION_INPUT_ID}`) as HTMLInputElement | null;
+        inp?.focus();
+        inp?.select();
+        return;
+      }
+      case JUNCTION_ACTION.CONFIRM:
+        this.confirmJunction();
+        return;
+      case JUNCTION_ACTION.CANCEL:
+        this.junctionDraft = null;
+        this.renderInspector();
+        return;
       case 'del-col':
         this.dispatch({ action: 'delete_column', payload: { table: d.table!, column: d.col! } });
         return;

@@ -34,3 +34,33 @@ pub const TLS_MODE_AUTO: &str = "auto";
 pub const TLS_MODE_VERIFY: &str = "verify";
 pub const TLS_MODE_REQUIRE: &str = "require";
 pub const TLS_MODE_DISABLE: &str = "disable";
+
+/// Rota pública de verificação de integridade (Docker `HEALTHCHECK` / probes).
+pub const HEALTH_ROUTE: &str = "/health";
+/// Content-Type para respostas JSON simples.
+pub const CONTENT_TYPE_JSON: &str = "application/json";
+/// Corpo JSON retornado por `GET /health`.
+pub const HEALTH_BODY_OK: &str = r#"{"status":"ok"}"#;
+
+/// Executável chamado pelo modo Comparar para ler a versão do arquivo no `HEAD`.
+pub const GIT_PROGRAM: &str = "git";
+/// Variáveis herdadas (ex.: de hooks do git) que redirecionariam o `git` para outro repositório.
+pub const GIT_REPO_ENV_VARS: [&str; 5] = [
+    "GIT_DIR",
+    "GIT_WORK_TREE",
+    "GIT_INDEX_FILE",
+    "GIT_OBJECT_DIRECTORY",
+    "GIT_COMMON_DIR",
+];
+
+/// Resposta do servidor ao pedido `git_base` do cliente (versão base no git `HEAD`): `source` (sucesso) ou `error` + `error_code`.
+pub const WS_MSG_GIT_BASE_RESULT: &str = "git_base_result";
+
+/// Códigos de erro estáveis de `git_base_result` (o cliente traduz a mensagem a partir deles).
+pub const GIT_BASE_ERR_GIT_UNAVAILABLE: &str = "git_unavailable";
+pub const GIT_BASE_ERR_NOT_A_REPO: &str = "not_a_repo";
+pub const GIT_BASE_ERR_NO_COMMITS: &str = "no_commits";
+pub const GIT_BASE_ERR_UNTRACKED: &str = "untracked";
+pub const GIT_BASE_ERR_NOT_UTF8: &str = "not_utf8";
+/// Qualquer outra falha (arquivo ativo mudou, tarefa interrompida).
+pub const GIT_BASE_ERR_OTHER: &str = "other";

@@ -354,6 +354,33 @@ export function parse_and_analyze(source) {
 }
 
 /**
+ * Lê uma string de conexão (`postgres://user:senha@host:porta/banco?sslmode=...`, `sqlite:caminho`
+ * ou um caminho puro) e devolve os campos do formulário "Conectar ao banco".
+ *
+ * Sucesso: os campos de `IntrospectRequest` (`dialect`, `host`, `port`, `database`, `user`,
+ * `password`, `path`, `trust_server_certificate`, `tls`, `schemas`) mais `password_masked`
+ * (verdadeiro quando a senha da URL é o marcador `***`; então `password` vem vazio e o campo
+ * Senha deve ser mantido). Falha: lança `{ code, message }` com `code` estável
+ * (`empty`, `unknown_scheme`, `unsupported_engine`, `malformed`, `missing_host`,
+ * `invalid_port`).
+ *
+ * # Errors
+ *
+ * Lança o objeto `{ code, message }` descrito acima, ou um erro de serialização.
+ * @param {string} url
+ * @returns {any}
+ */
+export function parse_connection_url(url) {
+    const ptr0 = passStringToWasm0(url, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+    const len0 = WASM_VECTOR_LEN;
+    const ret = wasm.parse_connection_url(ptr0, len0);
+    if (ret[2]) {
+        throw takeFromExternrefTable0(ret[1]);
+    }
+    return takeFromExternrefTable0(ret[0]);
+}
+
+/**
  * Searches tables, columns (names and types), and enums in `source`.
  *
  * # Errors
@@ -373,6 +400,32 @@ export function search_schema(source, query) {
         throw takeFromExternrefTable0(ret[1]);
     }
     return takeFromExternrefTable0(ret[0]);
+}
+
+/**
+ * Sugere um nome único de tabela associativa para um relacionamento N:N entre duas tabelas.
+ * @param {string} source
+ * @param {string} left_table
+ * @param {string} right_table
+ * @returns {string}
+ */
+export function suggest_junction_name(source, left_table, right_table) {
+    let deferred4_0;
+    let deferred4_1;
+    try {
+        const ptr0 = passStringToWasm0(source, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ptr1 = passStringToWasm0(left_table, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len1 = WASM_VECTOR_LEN;
+        const ptr2 = passStringToWasm0(right_table, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len2 = WASM_VECTOR_LEN;
+        const ret = wasm.suggest_junction_name(ptr0, len0, ptr1, len1, ptr2, len2);
+        deferred4_0 = ret[0];
+        deferred4_1 = ret[1];
+        return getStringFromWasm0(ret[0], ret[1]);
+    } finally {
+        wasm.__wbindgen_free(deferred4_0, deferred4_1, 1);
+    }
 }
 
 /**
@@ -497,7 +550,7 @@ function __wbg_get_imports() {
             const ret = Object.entries(arg0);
             return ret;
         },
-        __wbg_error_1362fb0c521e7184: function(arg0, arg1) {
+        __wbg_error_6019206edff6d1ac: function(arg0, arg1) {
             console.error(getStringFromWasm0(arg0, arg1));
         },
         __wbg_get_658f6698067d9515: function() { return handleError(function (arg0, arg1) {

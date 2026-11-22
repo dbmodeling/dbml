@@ -645,6 +645,18 @@ const TRANSLATIONS: &[(&str, &str)] = &[
         "Could not read the schema. Check permissions to read the catalog.",
     ),
     (
+        "O certificado TLS do servidor não pôde ser verificado (comum em AWS RDS, GCP Cloud SQL, Azure e Supabase). Mude TLS para Exigir e tente novamente.",
+        "The server's TLS certificate could not be verified (common on AWS RDS, GCP Cloud SQL, Azure, and Supabase). Switch TLS to Require and try again.",
+    ),
+    ("Detalhes", "Details"),
+    ("Ocultar detalhes", "Hide details"),
+    ("Usar TLS: Exigir", "Use TLS: Require"),
+    ("Usar SSL", "Use SSL"),
+    ("Verificar certificado", "Verify certificate"),
+    ("Verificar", "Verify"),
+    ("Exigir", "Require"),
+    ("Desativar", "Disable"),
+    (
         "Não foi possível abrir o banco SQLite. Confira o caminho e as permissões do arquivo.",
         "Could not open the SQLite database. Check the file path and permissions.",
     ),
@@ -938,11 +950,80 @@ const TRANSLATIONS: &[(&str, &str)] = &[
     ("RECENTES", "RECENT"),
     ("SVG vetorial", "SVG vector"),
     ("somente leitura", "read-only"),
+    ("Comparar com HEAD (git)", "Compare with HEAD (git)"),
+    ("Comparar com HEAD", "Compare with HEAD"),
+    ("Comparar: próxima mudança", "Compare: next change"),
+    ("Comparar: mudança anterior", "Compare: previous change"),
+    ("Sair do modo Comparar", "Exit Compare mode"),
+    (
+        "Lendo o arquivo no HEAD do git…",
+        "Reading the file at git HEAD…",
+    ),
+    (
+        "Sem diferenças em relação ao HEAD",
+        "No differences from HEAD",
+    ),
+    ("Removido desde o HEAD: {}", "Removed since HEAD: {}"),
+    (
+        "Comparar com HEAD (somente leitura) · clique em um item do resumo · N / Shift+N navega · Esc sai",
+        "Compare with HEAD (read-only) · click a summary item · N / Shift+N to navigate · Esc to exit",
+    ),
+    (
+        "Salve o arquivo para comparar com o HEAD do git",
+        "Save the file to compare it with git HEAD",
+    ),
+    ("git não encontrado no PATH", "git not found on PATH"),
+    (
+        "O arquivo não está em um repositório git",
+        "The file is not in a git repository",
+    ),
+    (
+        "O repositório ainda não tem commits",
+        "The repository has no commits yet",
+    ),
+    (
+        "Arquivo novo ou não rastreado: não existe no HEAD",
+        "New or untracked file: it does not exist in HEAD",
+    ),
     ("Modo", "Mode"),
     (
         "não foi possível gravar o layout de {}: {}",
         "could not save layout for {}: {}",
     ),
+    ("Informe a connection string.", "Enter a connection string."),
+    (
+        "Esquema desconhecido. Use postgres://, mysql://, sqlserver:// ou um arquivo SQLite.",
+        "Unknown scheme. Use postgres://, mysql://, sqlserver:// or a SQLite file.",
+    ),
+    (
+        "Este banco ainda não é suportado.",
+        "This database is not supported yet.",
+    ),
+    (
+        "Connection string malformada. Formato: esquema://usuário:senha@host:porta/banco.",
+        "Malformed connection string. Format: scheme://user:password@host:port/database.",
+    ),
+    (
+        "Informe o host na connection string.",
+        "Enter the host in the connection string.",
+    ),
+    (
+        "Porta inválida. Use um número de 1 a 65535.",
+        "Invalid port. Use a number from 1 to 65535.",
+    ),
+    ("Mostrar senha", "Show password"),
+    ("Ocultar senha", "Hide password"),
+    ("Mostrar/ocultar senha", "Show/hide password"),
+    ("Copiar connection string", "Copy connection string"),
+    ("Tipo de banco", "Database type"),
+    ("Conexão", "Connection"),
+    (
+        "postgres://usuário:senha@host:5432/banco",
+        "postgres://user:password@host:5432/database",
+    ),
+    ("Criar tabela associativa", "Create junction table"),
+    ("TABELA ASSOCIATIVA", "JUNCTION TABLE"),
+    ("Criar", "Create"),
 ];
 
 pub fn t(text: &'static str) -> &'static str {

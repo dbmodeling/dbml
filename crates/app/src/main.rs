@@ -14,8 +14,10 @@ mod canvas;
 mod canvas_geom;
 mod connect_db;
 mod constants;
+mod diff_view;
 mod disk_sync;
 mod fatal;
+mod git_base;
 mod glass;
 mod guide;
 mod handoff;
@@ -140,11 +142,11 @@ fn main() {
                 ))
             });
         cx.bind_keys(actions::catalog().into_iter().filter_map(|e| e.binding));
-        cx.bind_keys([KeyBinding::new(
-            "ctrl-p",
-            actions::QuickSearch,
-            Some(actions::CTX),
-        )]);
+        cx.bind_keys([
+            KeyBinding::new("ctrl-p", actions::QuickSearch, Some(actions::CTX)),
+            // a paleta também abre com o modal de conexão em foco (lista a ação da senha)
+            KeyBinding::new("ctrl-k", actions::OpenPalette, Some(actions::CONNECT_DB)),
+        ]);
         let prefs = settings::load();
         i18n::set(
             std::env::var("DBM_LANG")

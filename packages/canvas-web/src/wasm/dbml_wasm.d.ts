@@ -147,6 +147,23 @@ export function install_panic_hook(): void;
 export function parse_and_analyze(source: string): any;
 
 /**
+ * Lê uma string de conexão (`postgres://user:senha@host:porta/banco?sslmode=...`, `sqlite:caminho`
+ * ou um caminho puro) e devolve os campos do formulário "Conectar ao banco".
+ *
+ * Sucesso: os campos de `IntrospectRequest` (`dialect`, `host`, `port`, `database`, `user`,
+ * `password`, `path`, `trust_server_certificate`, `tls`, `schemas`) mais `password_masked`
+ * (verdadeiro quando a senha da URL é o marcador `***`; então `password` vem vazio e o campo
+ * Senha deve ser mantido). Falha: lança `{ code, message }` com `code` estável
+ * (`empty`, `unknown_scheme`, `unsupported_engine`, `malformed`, `missing_host`,
+ * `invalid_port`).
+ *
+ * # Errors
+ *
+ * Lança o objeto `{ code, message }` descrito acima, ou um erro de serialização.
+ */
+export function parse_connection_url(url: string): any;
+
+/**
  * Searches tables, columns (names and types), and enums in `source`.
  *
  * # Errors
@@ -154,6 +171,11 @@ export function parse_and_analyze(source: string): any;
  * Returns a [`JsValue`] error if JSON serialization fails.
  */
 export function search_schema(source: string, query: string): any;
+
+/**
+ * Sugere um nome único de tabela associativa para um relacionamento N:N entre duas tabelas.
+ */
+export function suggest_junction_name(source: string, left_table: string, right_table: string): string;
 
 /**
  * Move uma linha para cima ou para baixo (`Alt+Up` / `Alt+Down`) preservando terminadores CRLF/LF.
@@ -181,12 +203,14 @@ export interface InitOutput {
     readonly import_sql_ddl: (a: number, b: number, c: number, d: number) => [number, number, number];
     readonly install_panic_hook: () => void;
     readonly parse_and_analyze: (a: number, b: number) => [number, number, number];
+    readonly parse_connection_url: (a: number, b: number) => [number, number, number];
     readonly search_schema: (a: number, b: number, c: number, d: number) => [number, number, number];
     readonly session_analysis_count: (a: number) => number;
     readonly session_analyze: (a: number, b: number, c: number) => [number, number, number];
     readonly session_compute_scene: (a: number, b: number, c: number, d: any) => [number, number, number];
     readonly session_new: () => number;
     readonly session_route_edges: (a: number, b: any) => [number, number, number];
+    readonly suggest_junction_name: (a: number, b: number, c: number, d: number, e: number, f: number) => [number, number];
     readonly swap_dbml_lines: (a: number, b: number, c: number, d: number) => [number, number, number];
     readonly __wbindgen_malloc: (a: number, b: number) => number;
     readonly __wbindgen_realloc: (a: number, b: number, c: number, d: number) => number;

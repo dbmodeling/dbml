@@ -20,8 +20,9 @@ use serde::Serialize;
 use std::collections::{HashMap, HashSet};
 use std::fmt::Write as _;
 use types::{
-    AnalysisResult, Command, DiagnosticSeverity, DiffResult, EnumVisual, GroupBox, ImportResult,
-    ImportWarningDto, LayoutResult, NodeCoordinate, RoutedEdge, SceneGeometry, TableVisual,
+    AnalysisResult, Command, ConnectionDialect, ConnectionTls, ConnectionUrlError,
+    DiagnosticSeverity, DiffResult, EnumVisual, GroupBox, ImportResult, ImportWarningDto,
+    LayoutResult, NodeCoordinate, ParsedConnectionUrl, RoutedEdge, SceneGeometry, TableVisual,
     TextPatch, WasmDiagnostic,
 };
 use wasm_bindgen::prelude::*;
@@ -722,6 +723,13 @@ pub fn parse_and_analyze(source: &str) -> Result<JsValue, JsValue> {
     to_js_json(&output)
 }
 
+/// Sugere um nome único de tabela associativa para um relacionamento N:N entre duas tabelas.
+#[wasm_bindgen]
+#[must_use]
+pub fn suggest_junction_name(source: &str, left_table: &str, right_table: &str) -> String {
+    dbml_edit::suggest_junction_name(source, left_table, right_table)
+}
+
 /// Aplica um comando semântico e gera o patch textual mínimo com metadados de UI.
 ///
 /// # Errors
@@ -811,6 +819,26 @@ fn apply_command_internal(source: &str, command: Command) -> Result<TextPatch, S
             to_table,
             to_col,
         } => dbml_edit::delete_ref(source, (&from_table, &from_col), (&to_table, &to_col)),
+        Command::CreateJunctionTable {
+            left_table,
+            right_table,
+            junction_name,
+        } => {
+            let desired = junction_name.unwrap_or_default();
+            let resolved_name =
+                dbml_edit::resolve_junction_name(source, &left_table, &right_table, &desired);
+            let patch = dbml_edit::edit(
+                source,
+                &dbml_edit::Command::CreateJunctionTable {
+                    left_table,
+                    right_table,
+                    junction_name: desired,
+                },
+            )
+            .map_err(|e| e.to_string())?;
+            created_table = Some(resolved_name);
+            patch.apply(source)
+        }
         Command::UpdateRef {
             from_table,
             from_col,
@@ -1089,6 +1117,73 @@ pub fn diff_dbml_impl(base_source: &str, head_source: &str) -> Result<DiffResult
     Ok(DiffResult { diff, summary })
 }
 
+/// Lê uma string de conexão (`postgres://user:senha@host:porta/banco?sslmode=...`, `sqlite:caminho`
+/// ou um caminho puro) e devolve os campos do formulário "Conectar ao banco".
+///
+/// Sucesso: os campos de `IntrospectRequest` (`dialect`, `host`, `port`, `database`, `user`,
+/// `password`, `path`, `trust_server_certificate`, `tls`, `schemas`) mais `password_masked`
+/// (verdadeiro quando a senha da URL é o marcador `***`; então `password` vem vazio e o campo
+/// Senha deve ser mantido). Falha: lança `{ code, message }` com `code` estável
+/// (`empty`, `unknown_scheme`, `unsupported_engine`, `malformed`, `missing_host`,
+/// `invalid_port`).
+///
+/// # Errors
+///
+/// Lança o objeto `{ code, message }` descrito acima, ou um erro de serialização.
+#[wasm_bindgen]
+pub fn parse_connection_url(url: &str) -> Result<JsValue, JsValue> {
+    match parse_connection_url_impl(url) {
+        Ok(parsed) => to_js_json(&parsed),
+        Err(error) => Err(to_js_json(&error).unwrap_or_else(|serialize_error| serialize_error)),
+    }
+}
+
+/// Núcleo nativo (testável sem Wasm) de [`parse_connection_url`].
+///
+/// # Errors
+///
+/// [`ConnectionUrlError`] com o código estável da falha.
+pub fn parse_connection_url_impl(url: &str) -> Result<ParsedConnectionUrl, ConnectionUrlError> {
+    use db_introspect::{ConnectionParams, Dialect, TlsMode, UrlErrorCode};
+    let to_error = |code: UrlErrorCode, message: &str| ConnectionUrlError {
+        code: code.key().to_owned(),
+        message: message.to_owned(),
+    };
+    let parsed = ConnectionParams::from_url(url).map_err(|e| to_error(e.code(), e.message()))?;
+    let params = parsed.params;
+    let dialect = match params.dialect {
+        Dialect::Postgres => ConnectionDialect::Postgres,
+        Dialect::Mysql => ConnectionDialect::Mysql,
+        Dialect::SqlServer => ConnectionDialect::Sqlserver,
+        Dialect::Sqlite => ConnectionDialect::Sqlite,
+        Dialect::Oracle => {
+            return Err(to_error(
+                UrlErrorCode::UnsupportedEngine,
+                "oracle connections are not supported yet",
+            ));
+        }
+    };
+    let tls = match params.tls {
+        TlsMode::Auto => ConnectionTls::Auto,
+        TlsMode::Verify => ConnectionTls::Verify,
+        TlsMode::Require => ConnectionTls::Require,
+        TlsMode::Disable => ConnectionTls::Disable,
+    };
+    Ok(ParsedConnectionUrl {
+        dialect,
+        host: params.host,
+        port: params.port,
+        database: params.database,
+        user: params.user,
+        password: params.password,
+        path: params.path,
+        trust_server_certificate: params.trust_server_certificate,
+        tls,
+        schemas: Vec::new(),
+        password_masked: parsed.password_masked,
+    })
+}
+
 /// Analisa `source` falhando no primeiro diagnóstico de severidade erro.
 fn analyze_strict(side: &'static str, source: &str) -> Result<Schema, WasmError> {
     let first_error = dbml_analysis::lint(source)
@@ -1162,6 +1257,74 @@ mod tests {
     use super::*;
 
     const DIFF_BASE: &str = "Table users {\n  id int [pk]\n}\n";
+
+    #[test]
+    fn parse_connection_url_impl_matches_the_introspect_request_shape() {
+        let url = "postgres://app:p%40ss@db.example.com:6543/shop?sslmode=require";
+        let parsed = parse_connection_url_impl(url).expect("ok");
+        let json = serde_json::to_value(&parsed).expect("json");
+        assert_eq!(
+            json,
+            serde_json::json!({
+                "dialect": "postgres",
+                "host": "db.example.com",
+                "port": 6543,
+                "database": "shop",
+                "user": "app",
+                "password": "p@ss",
+                "path": "",
+                "trust_server_certificate": false,
+                "tls": "require",
+                "schemas": [],
+                "password_masked": false,
+            })
+        );
+    }
+
+    #[test]
+    fn parse_connection_url_impl_names_every_dialect_and_tls_mode() {
+        for (url, dialect, tls) in [
+            (
+                "mariadb://u@h/d?ssl-mode=VERIFY_IDENTITY",
+                "mysql",
+                "verify",
+            ),
+            ("mssql://u@h/d?encrypt=false", "sqlserver", "disable"),
+            ("sqlite:/data/app.db", "sqlite", "auto"),
+        ] {
+            let json =
+                serde_json::to_value(parse_connection_url_impl(url).expect("ok")).expect("json");
+            assert_eq!(
+                (json["dialect"].as_str(), json["tls"].as_str()),
+                (Some(dialect), Some(tls))
+            );
+        }
+        let json = serde_json::to_value(parse_connection_url_impl("sqlite:app.db").expect("ok"))
+            .expect("json");
+        assert_eq!(json["path"], "app.db");
+        assert_eq!(json["port"], serde_json::Value::Null);
+    }
+
+    #[test]
+    fn parse_connection_url_impl_flags_masked_password() {
+        let parsed = parse_connection_url_impl("mysql://app:***@h:3306/shop").expect("ok");
+        assert!(parsed.password_masked);
+        assert_eq!(parsed.password, "");
+    }
+
+    #[test]
+    fn parse_connection_url_impl_reports_a_stable_code_and_message() {
+        let err = parse_connection_url_impl("ftp://x").expect_err("unknown scheme");
+        let json = serde_json::to_value(&err).expect("json");
+        assert_eq!(
+            json,
+            serde_json::json!({ "code": "unknown_scheme", "message": "unknown scheme `ftp`" })
+        );
+        let err = parse_connection_url_impl("postgres://u@h:99999/d").expect_err("port");
+        assert_eq!(err.code, "invalid_port");
+        let err = parse_connection_url_impl("oracle://u@h/d").expect_err("oracle");
+        assert_eq!(err.code, "unsupported_engine");
+    }
 
     #[test]
     fn diff_dbml_impl_reports_added_column_and_summary() {

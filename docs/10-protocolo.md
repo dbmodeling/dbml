@@ -58,6 +58,25 @@ rejeita (`base_version !== document.version`) sem aplicar nada, reenvia `update`
 atuais e responde `result` com erro. `update` e `result` de patch/salvar levam `version`. Texto
 idêntico com versão diferente também gera `update` (digitar e desfazer dentro do debounce).
 
+## Modo Comparar: versão base no git HEAD
+
+Pedido de **leitura**, fora do controle de versão do documento: não altera texto, disco nem
+`version`, e não gera `result`.
+
+- **CLI (WebSocket)**: cliente → servidor `{type: "git_base", payload: {expected_file}, id}`; o
+  servidor responde só a quem pediu com
+  `{type: "git_base_result", id, source, error, error_code}`. `expected_file` precisa ser o arquivo
+  ativo (mesma checagem de `apply_patch`; o servidor nunca lê um caminho escolhido pelo cliente).
+  O servidor roda `git rev-parse --is-inside-work-tree`, `git rev-parse --verify HEAD^{commit}` e
+  `git cat-file blob HEAD:./<nome>` na pasta do arquivo, sem shell. Passa pelas mesmas defesas
+  (`Host`/`Origin` e token de sessão) das demais mensagens.
+- **VS Code**: Webview → host `{command: "git_base", id}`; o host responde
+  `{type: "git_base_result", id, source | error + error_code}`. Só arquivos `file:` em workspace
+  confiável; o extension host web responde `git_unavailable`.
+- **Códigos de erro** (`error_code`, mesmos nos dois hosts; `error` é texto técnico em inglês e a
+  Webview traduz a mensagem a partir do código): `git_unavailable`, `not_a_repo`, `no_commits`,
+  `untracked` (arquivo novo, ainda fora do `HEAD`), `not_utf8` e `other`.
+
 ## Cliente (`packages/canvas-web/src/transport.ts`)
 
 `WebSocketTransport` e `VsCodeTransport` guardam a versão (só avança; mensagem atrasada não a faz
@@ -67,6 +86,10 @@ recuar; o `init` de uma conexão nova a substitui, pois o servidor pode ter rein
 callback de documento atualizado: o patch não é aplicado localmente, e o erro do `result` rejeita a
 promessa de `sendPatch`, mantendo o aviso visível ao usuário. Edições locais ainda não persistidas
 continuam sob a regra existente do Workbench (não são sobrescritas; o aviso pede para exportá-las).
+
+`WebSocketTransport` e `VsCodeTransport` expõem `requestGitBase()`, que resolve com
+`{ok: true, source}` ou `{ok: false, code, message}`; só falha de canal (conexão caiu) rejeita. O
+modo Comparar (`packages/canvas-web/src/diff/`) usa o resultado com `diff_dbml` do Wasm.
 
 ## Fila de edições offline (#75)
 

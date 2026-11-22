@@ -188,6 +188,16 @@ pub enum Command {
         /// Target column name.
         to_col: String,
     },
+    /// Create a junction table for a many-to-many relationship between two tables.
+    CreateJunctionTable {
+        /// First source table name.
+        left_table: String,
+        /// Second source table name.
+        right_table: String,
+        /// Optional desired junction table name (auto-suggested if omitted or blank).
+        #[serde(default)]
+        junction_name: Option<String>,
+    },
     /// Update cardinality and referential actions on an existing relationship.
     UpdateRef {
         /// Source table name.
@@ -531,4 +541,69 @@ pub struct ImportResult {
     pub dbml: String,
     /// Skipped or dropped constructs ordered by position.
     pub warnings: Vec<ImportWarningDto>,
+}
+
+/// Engine of a connection form (`dialect` of `IntrospectRequest`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ConnectionDialect {
+    /// PostgreSQL.
+    Postgres,
+    /// MySQL / MariaDB.
+    Mysql,
+    /// Microsoft SQL Server.
+    Sqlserver,
+    /// SQLite file.
+    Sqlite,
+}
+
+/// Transport protection of a connection form (`tls` of `IntrospectRequest`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ConnectionTls {
+    /// Engine default; verified TLS for remote hosts.
+    Auto,
+    /// TLS with certificate verification.
+    Verify,
+    /// TLS without certificate verification.
+    Require,
+    /// No TLS.
+    Disable,
+}
+
+/// Result of `parse_connection_url`: the fields of `IntrospectRequest` plus `password_masked`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ParsedConnectionUrl {
+    /// Engine.
+    pub dialect: ConnectionDialect,
+    /// Host without IPv6 brackets (empty for SQLite).
+    pub host: String,
+    /// TCP port; `null` means the engine default.
+    pub port: Option<u16>,
+    /// Database name.
+    pub database: String,
+    /// User name.
+    pub user: String,
+    /// Decoded password; empty when `password_masked` is set.
+    pub password: String,
+    /// SQLite database file.
+    pub path: String,
+    /// SQL Server: accept a self-signed certificate.
+    pub trust_server_certificate: bool,
+    /// Transport protection.
+    pub tls: ConnectionTls,
+    /// Always empty: a URL does not carry schemas.
+    pub schemas: Vec<String>,
+    /// The URL carried the `***` placeholder: keep the password already in the form.
+    pub password_masked: bool,
+}
+
+/// Failure of `parse_connection_url`: stable `code` (translate by key) and English `message`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ConnectionUrlError {
+    /// `empty`, `unknown_scheme`, `unsupported_engine`, `malformed`, `missing_host` or
+    /// `invalid_port`.
+    pub code: String,
+    /// Stable English message, without secrets.
+    pub message: String,
 }

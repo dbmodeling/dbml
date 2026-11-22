@@ -47,6 +47,7 @@ export type ActionId =
   | 'OpenPalette'
   | 'QuickSearch'
   | 'ToggleFocusMode'
+  | 'ToggleDiff'
   | 'CycleFocusDepth'
   | 'ShowShortcuts'
   | 'ShowTour'
@@ -64,6 +65,7 @@ export type ActionId =
   | 'ExportSqlOracle'
   | 'ImportSqlDdl'
   | 'ConnectDatabase'
+  | 'ToggleConnectPassword'
   | 'AddPresetUuidPk'
   | 'AddPresetBigIntPk'
   | 'AddPresetTimestamps'
@@ -114,6 +116,7 @@ export function catalog(): ActionEntry[] {
     e('', [], 'ExportDbml', 'Arquivo', 'Exportar DBML (.dbml)'),
     e('', [], 'ImportSqlDdl', 'Arquivo', 'Importar SQL DDL…'),
     e('', [], 'ConnectDatabase', 'Arquivo', 'Conectar ao banco…'),
+    e('', [], 'ToggleConnectPassword', 'Arquivo', 'Mostrar/ocultar senha da conexão'),
     ...COLUMN_PRESET_ACTIONS.map((p) => e('', [], p.action, 'Editar', t('Adicionar predefinição de coluna: {}', p.label))),
     e('ctrl-z', ['Ctrl', 'Z'], 'Undo', 'Editar', 'Desfazer'),
     e('ctrl-shift-z', ['Ctrl', 'Shift', 'Z'], 'Redo', 'Editar', 'Refazer'),
@@ -187,6 +190,7 @@ export function catalog(): ActionEntry[] {
     e('ctrl-k', ['Ctrl', 'K'], 'OpenPalette', 'Ajuda', 'Paleta de comandos'),
     e('ctrl-f', ['Ctrl', 'F'], 'QuickSearch', 'Exibir', 'Busca rápida (tabelas, colunas, enums)'),
     e('f', ['F'], 'ToggleFocusMode', 'Canvas', 'Modo Foco (vizinhança FK)'),
+    e('d', ['D'], 'ToggleDiff', 'Exibir', 'Comparar com o git HEAD'),
     e('shift-f', ['Shift', 'F'], 'CycleFocusDepth', 'Canvas', 'Modo Foco: alternar 1-hop / 2-hop'),
     e('ctrl-/', ['Ctrl', '/'], 'ShowShortcuts', 'Ajuda', 'Atalhos de teclado'),
     e('', [], 'ShowTour', 'Ajuda', 'Tour guiado'),

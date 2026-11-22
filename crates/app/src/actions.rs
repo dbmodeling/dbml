@@ -83,8 +83,15 @@ actions!(
         ResetEdgeCurve,
         ToggleFocusMode,
         CycleFocusDepth,
+        ToggleDiffMode,
+        NextDiffChange,
+        PrevDiffChange,
+        TogglePasswordVisibility,
     ]
 );
+
+/// Grupo do catálogo das ações do modal "Conectar ao banco".
+pub const GROUP_CONNECTION: &str = "Conexão";
 
 /// Grupo do catálogo / dropdown da barra: exportação de código (SQL por banco, Mermaid).
 pub const GROUP_EXPORT_CODE: &str = "Exportar código";
@@ -96,6 +103,14 @@ pub const CTX: &str = "Shell";
 /// Contexto do canvas focado: atalhos de uma tecla só valem aqui, para não
 /// disparar enquanto se digita no editor.
 pub const CANVAS: &str = "Canvas";
+/// Contexto do modal "Conectar ao banco": suas ações só existem (atalho e paleta) com ele aberto.
+pub const CONNECT_DB: &str = "ConnectDb";
+
+/// A paleta lista a ação? As do modal de conexão só enquanto ele está aberto.
+#[must_use]
+pub fn palette_lists(entry: &Entry, connect_dialog_open: bool) -> bool {
+    entry.context != CONNECT_DB || connect_dialog_open
+}
 
 pub struct Entry {
     pub action: Box<dyn Action>,
@@ -127,6 +142,17 @@ pub fn catalog() -> Vec<Entry> {
             context,
         }
     }
+    let toggle_password = Entry {
+        binding: Some(KeyBinding::new(
+            "ctrl-shift-h",
+            TogglePasswordVisibility,
+            Some(CONNECT_DB),
+        )),
+        action: Box::new(TogglePasswordVisibility),
+        group: GROUP_CONNECTION,
+        label: crate::i18n::t("Mostrar/ocultar senha"),
+        context: CONNECT_DB,
+    };
     vec![
         e("ctrl-n", NewFile, "Arquivo", "Novo arquivo"),
         e("ctrl-o", OpenFile, "Arquivo", "Abrir arquivo .dbml…"),
@@ -286,6 +312,19 @@ pub fn catalog() -> Vec<Entry> {
             "Canvas",
             "Modo Foco: alternar 1-hop / 2-hop",
         ),
+        e(
+            "ctrl-alt-g",
+            ToggleDiffMode,
+            "Exibir",
+            "Comparar com HEAD (git)",
+        ),
+        e("n", NextDiffChange, "Canvas", "Comparar: próxima mudança"),
+        e(
+            "shift-n",
+            PrevDiffChange,
+            "Canvas",
+            "Comparar: mudança anterior",
+        ),
         e("ctrl-/", ShowShortcuts, "Ajuda", "Atalhos de teclado"),
         e("", ShowTour, "Ajuda", "Tour guiado"),
         e("", ShowWhatsNew, "Ajuda", "O que há de novo"),
@@ -376,5 +415,32 @@ pub fn catalog() -> Vec<Entry> {
             "Editar",
             "Adicionar predefinição de coluna: Soft Delete",
         ),
+        toggle_password,
     ]
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        CONNECT_DB, ConnectDatabase, GROUP_CONNECTION, TogglePasswordVisibility, catalog,
+        palette_lists,
+    };
+
+    #[test]
+    fn password_toggle_is_registered_only_for_the_connect_dialog() {
+        let entry = catalog()
+            .into_iter()
+            .find(|e| e.action.partial_eq(&TogglePasswordVisibility))
+            .expect("TogglePasswordVisibility no catálogo");
+        assert_eq!(entry.context, CONNECT_DB);
+        assert_eq!(entry.group, GROUP_CONNECTION);
+        assert!(entry.binding.is_some());
+        assert!(!palette_lists(&entry, false));
+        assert!(palette_lists(&entry, true));
+        let other = catalog()
+            .into_iter()
+            .find(|e| e.action.partial_eq(&ConnectDatabase))
+            .unwrap();
+        assert!(palette_lists(&other, false));
+    }
 }
