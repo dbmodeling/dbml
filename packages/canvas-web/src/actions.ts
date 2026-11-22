@@ -64,6 +64,7 @@ export type ActionId =
   | 'ExportSqlOracle'
   | 'ImportSqlDdl'
   | 'ConnectDatabase'
+  | 'ToggleConnectPassword'
   | 'AddPresetUuidPk'
   | 'AddPresetBigIntPk'
   | 'AddPresetTimestamps'
@@ -114,6 +115,7 @@ export function catalog(): ActionEntry[] {
     e('', [], 'ExportDbml', 'Arquivo', 'Exportar DBML (.dbml)'),
     e('', [], 'ImportSqlDdl', 'Arquivo', 'Importar SQL DDL…'),
     e('', [], 'ConnectDatabase', 'Arquivo', 'Conectar ao banco…'),
+    e('', [], 'ToggleConnectPassword', 'Arquivo', 'Mostrar/ocultar senha da conexão'),
     ...COLUMN_PRESET_ACTIONS.map((p) => e('', [], p.action, 'Editar', t('Adicionar predefinição de coluna: {}', p.label))),
     e('ctrl-z', ['Ctrl', 'Z'], 'Undo', 'Editar', 'Desfazer'),
     e('ctrl-shift-z', ['Ctrl', 'Shift', 'Z'], 'Redo', 'Editar', 'Refazer'),

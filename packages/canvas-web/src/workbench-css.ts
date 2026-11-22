@@ -409,6 +409,29 @@ export const WORKBENCH_CSS = `${FONT_FACE_CSS}
 .wb .mform input[type=text], .wb .mform input[type=password] { height: 32px; padding: 0 10px; border-radius: 7px; background: var(--input-solid); border: 1px solid var(--edge-strong);
   outline: 0; font: 12.5px var(--mono); user-select: text; -webkit-user-select: text; min-width: 0; }
 .wb .mform input:focus { border-color: var(--accent); box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 20%, transparent); }
+.wb .mform .mpair { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.wb .mform .mpair > input, .wb .mform .pwd { flex: 1 1 0; min-width: 0; }
+.wb .mform .mpair > input.narrow { flex: 0 0 84px; }
+.wb .mform .mpair .inl { flex: none; }
+.wb .mform .mcell { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+.wb .mform .mcell .btn { flex: none; height: 32px; }
+.wb .mform .ferr { font-size: 12px; color: var(--danger); }
+.wb .mform .ferr:empty { display: none; }
+.wb .mform input[aria-invalid="true"] { border-color: var(--danger); }
+.wb .mform .pwd { position: relative; display: flex; }
+.wb .mform .pwd input { flex: 1; padding-right: 34px; }
+.wb .mform .pwd .ib { position: absolute; right: 2px; top: 2px; width: 28px; height: 28px; color: var(--muted); }
+.wb .mform .pwd .ib:hover { background: var(--hover); color: var(--text); }
+.wb .mform .dd { position: relative; }
+.wb .mform .dd-trigger { flex: 1; display: flex; align-items: center; justify-content: space-between; gap: 8px; height: 32px; padding: 0 10px; border-radius: 7px;
+  background: var(--input-solid); border: 1px solid var(--edge-strong); font-size: 12.5px; text-align: left; }
+.wb .mform .dd-trigger:hover { border-color: var(--faint); }
+.wb .mform .dd-trigger:disabled { opacity: .5; cursor: default; }
+.wb .menu.dd-list { position: absolute; z-index: 5; top: calc(100% + 4px); left: 0; right: 0; width: auto; }
+.wb .menu.dd-list[hidden] { display: none; }
+.wb .menu.dd-list .mi[aria-selected="true"] { font-weight: 600; }
+.wb .menu.dd-list .mi[aria-disabled="true"] { cursor: default; color: var(--faint); }
+.wb .menu.dd-list .mi[aria-disabled="true"]:hover { background: none; }
 .wb .mform .chk { grid-column: 1 / -1; display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--muted); }
 .wb .mnote { display: flex; align-items: center; gap: 8px; margin: 4px 18px 0; padding: 10px 12px; border-radius: 8px; background: var(--input); font-size: 12.5px; color: var(--muted); }
 .wb .suggest { position: fixed; z-index: 65; width: 220px; padding: 4px; border-radius: 9px; background: var(--pop); border: 1px solid var(--edge-strong); box-shadow: var(--pop-shadow);

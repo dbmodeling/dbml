@@ -282,6 +282,28 @@ export interface IntrospectRequest {
   schemas: string[];
 }
 
+/** Códigos estáveis de falha de `parse_connection_url` (Wasm); a UI traduz por chave. */
+export type ConnectionUrlErrorCode =
+  | 'empty'
+  | 'unknown_scheme'
+  | 'unsupported_engine'
+  | 'malformed'
+  | 'missing_host'
+  | 'invalid_port';
+
+/** Resultado de `parse_connection_url`: os campos de `IntrospectRequest` mais `password_masked`. */
+export interface ParsedConnectionUrl extends IntrospectRequest {
+  tls: TlsMode;
+  /** A URL trazia o marcador `***`: `password` vem vazio e o campo Senha deve ser mantido. */
+  password_masked: boolean;
+}
+
+/** Objeto lançado por `parse_connection_url` quando a string não pode ser lida. */
+export interface ConnectionUrlError {
+  code: ConnectionUrlErrorCode;
+  message: string;
+}
+
 export interface IntrospectResult {
   dbml: string;
   warnings: string[];
@@ -455,6 +477,8 @@ export interface WasmApi {
   search_schema?(source: string, query: string): unknown;
   import_sql_ddl?(sql: string, dialect: string): unknown;
   import_conflicts?(source: string, dbml: string): string[];
+  /** Lê uma connection string; lança `ConnectionUrlError`. Ausente em bundles antigos. */
+  parse_connection_url?(url: string): ParsedConnectionUrl;
   /** Diff estrutural base vs. head; lança string `base|head has DBML errors: ...` se um lado for inválido. */
   diff_dbml?(base_source: string, head_source: string): DiffResult;
 }
