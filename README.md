@@ -65,6 +65,18 @@ Most visual database modeling tools either lock your schemas inside a cloud web 
   dbml path/to/schema.dbml
   # Options: --port 3000 --no-open --no-watch
   ```
+- **Docker (Self-Hosted Web Server):** Run the `dbml` web server in a container without installing Rust or Node.js:
+  ```bash
+  # Build the image (compiles Wasm, canvas-web, and the dbml CLI binary)
+  docker build -t dbml-web .
+
+  # Run and mount your local .dbml directory into /workspace
+  docker run -p 3000:3000 -v "$(pwd):/workspace" dbml-web
+
+  # Or use Docker Compose (mounts ./schemas -> /workspace by default)
+  docker compose up --build
+  ```
+  The startup logs print the session URL (`http://127.0.0.1:3000/?token=...`). All edits to `.dbml` files and `.dbml.layout.json` sidecars are persisted directly to the mounted host directory. Health status is exposed at `GET /health`.
 - **VS Code Extension:** Open any `.dbml` file using the **DB Modeling** custom editor (`vscode-extension/`).
 
 ---

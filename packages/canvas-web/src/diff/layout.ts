@@ -3,6 +3,7 @@
  * livre e resolve a linha de uma coluna para desenhar as arestas removidas. Módulo puro.
  */
 
+import { ENUM_CARD_HEAD_H, ENUM_CARD_PAD_H, ENUM_CARD_ROW_H } from '../constants';
 import { CARD_W, HEADER_H, ROW_H, cardH } from '../glass';
 import { qualifiedEndpointTable, qualifiedTableName, type Ref, type Table } from '../types';
 import type { DiffView } from './model';
@@ -64,8 +65,40 @@ export function placeGhosts(occupied: readonly Rect[], slots: readonly GhostSlot
   return out;
 }
 
+export interface Bounds {
+  minX: number;
+  minY: number;
+  maxX: number;
+  maxY: number;
+}
+
+/** Retângulos dos cartões fantasma já posicionados (slots sem posição são ignorados). */
+export function ghostRects(slots: readonly GhostSlot[], positions: Record<string, Pt>): Rect[] {
+  const out: Rect[] = [];
+  for (const s of slots) {
+    const p = positions[s.key];
+    if (p) out.push({ x: p.x, y: p.y, w: s.w, h: s.h });
+  }
+  return out;
+}
+
+/** Estende `bounds` para conter `rects` (usado por "ajustar à tela" e minimapa no modo Comparar). */
+export function extendBounds(bounds: Bounds, rects: readonly Rect[]): Bounds {
+  let { minX, minY, maxX, maxY } = bounds;
+  for (const r of rects) {
+    minX = Math.min(minX, r.x);
+    minY = Math.min(minY, r.y);
+    maxX = Math.max(maxX, r.x + r.w);
+    maxY = Math.max(maxY, r.y + r.h);
+  }
+  return { minX, minY, maxX, maxY };
+}
+
 /** Y (mundo) do centro da linha `row` de um cartão posicionado em `pos`. */
 export const rowCenterY = (pos: Pt, row: number): number => pos.y + HEADER_H + 4 + ROW_H * (row + 0.5);
+
+/** Altura de um cartão de enum com `values` valores (mínimo de uma linha, para o "(vazio)"). */
+export const enumCardH = (values: number): number => ENUM_CARD_HEAD_H + ENUM_CARD_ROW_H * Math.max(values, 1) + ENUM_CARD_PAD_H;
 
 /** Altura do cartão com as colunas fantasma (removidas) anexadas ao fim. */
 export function diffCardHeight(table: Table, view: DiffView | null): number {

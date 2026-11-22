@@ -147,10 +147,10 @@ async fn main() -> anyhow::Result<()> {
     );
     let shutdown_state = state.clone();
 
-    // Encerramento gracioso com Ctrl+C
+    // Encerramento gracioso com Ctrl+C ou SIGTERM (ex.: `docker stop`)
     axum::serve(listener, app)
         .with_graceful_shutdown(async move {
-            let _ = tokio::signal::ctrl_c().await;
+            shutdown_signal().await;
             shutdown_state.lifecycle.begin_shutdown();
             println!(
                 "\n{}",
@@ -163,6 +163,31 @@ async fn main() -> anyhow::Result<()> {
     state.shutdown(std::time::Duration::from_secs(5)).await;
 
     Ok(())
+}
+
+/// Aguarda `Ctrl+C` (`SIGINT`) ou, em Unix, `SIGTERM` (usado por Docker/orchestrators).
+async fn shutdown_signal() {
+    let ctrl_c = async {
+        let _ = tokio::signal::ctrl_c().await;
+    };
+
+    #[cfg(unix)]
+    let terminate = async {
+        match tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()) {
+            Ok(mut sig) => {
+                let _ = sig.recv().await;
+            }
+            Err(_) => std::future::pending::<()>().await,
+        }
+    };
+
+    #[cfg(not(unix))]
+    let terminate = std::future::pending::<()>();
+
+    tokio::select! {
+        () = ctrl_c => {}
+        () = terminate => {}
+    }
 }
 
 /// Runs `dbml diff` and exits the process: 0 same, 1 different, 2 error.

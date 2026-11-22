@@ -37,6 +37,11 @@ describe('parseWebviewMessage', () => {
     bad({ command: 'ready', id: NaN });
   });
 
+  it('git_base (modo Comparar) é um comando sem payload, com id', () => {
+    expect(ok({ command: 'git_base', id: 4 })).toEqual({ command: 'git_base', id: 4 });
+    expect(ok({ command: 'git_base' })).toEqual({ command: 'git_base', id: undefined });
+  });
+
   it('comandos sem payload passam', () => {
     for (const command of ['ready', 'new_file', 'check_cli']) expect(ok({ command, id: 1 }).command).toBe(command);
   });

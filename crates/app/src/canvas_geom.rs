@@ -36,6 +36,20 @@ pub fn point_hits_curve(p: (f32, f32), curve: &[layout::Pos; 4], tolerance: f32)
     point_hits_polyline(p, &points, tolerance)
 }
 
+/// Retângulo que envolve todos os `rects` (`(x0, y0, x1, y1)` em mundo); `None` sem cartões.
+#[must_use]
+pub fn world_bounds(rects: impl IntoIterator<Item = layout::Rect>) -> Option<(f32, f32, f32, f32)> {
+    rects.into_iter().fold(None, |acc, r| {
+        let (x1, y1) = (r.x + r.w, r.y + r.h);
+        Some(acc.map_or(
+            (r.x, r.y, x1, y1),
+            |(a0, b0, a1, b1): (f32, f32, f32, f32)| {
+                (a0.min(r.x), b0.min(r.y), a1.max(x1), b1.max(y1))
+            },
+        ))
+    })
+}
+
 /// Minimap dimensions in screen pixels (shared with `packages/canvas-web/src/minimap.ts`).
 pub const MINIMAP_W: f32 = 210.0;
 /// Minimap height in screen pixels.
@@ -117,8 +131,18 @@ impl MinimapTransform {
 
 #[cfg(test)]
 mod tests {
-    use super::{MinimapTransform, point_hits_curve, point_hits_polyline};
+    use super::{MinimapTransform, point_hits_curve, point_hits_polyline, world_bounds};
     use layout::Pos;
+
+    #[test]
+    fn world_bounds_covers_every_rect_and_is_none_when_empty() {
+        assert_eq!(world_bounds(std::iter::empty()), None);
+        let r = |x, y, w, h| layout::Rect { x, y, w, h };
+        assert_eq!(
+            world_bounds([r(0., 0., 10., 10.), r(-5., 20., 10., 30.)]),
+            Some((-5., 0., 10., 50.))
+        );
+    }
 
     #[test]
     fn hits_horizontal_and_vertical_segments() {

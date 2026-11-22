@@ -1,3 +1,5 @@
+use crate::constants::{GIT_BASE_ERR_OTHER, WS_MSG_GIT_BASE_RESULT};
+use crate::git_base::read_head_blob;
 use anyhow::Context;
 use serde::Serialize;
 use std::collections::hash_map::DefaultHasher;
@@ -535,6 +537,41 @@ impl AppState {
         } else {
             anyhow::bail!("Active file changed; reload or reconcile changes")
         }
+    }
+
+    /// Resposta `git_base_result` ao pedido do modo Comparar: o conteúdo do arquivo ativo no `HEAD`
+    /// do git (`source`) ou, em falha, `error` (texto) e `error_code` (ver `GIT_BASE_ERR_*`).
+    /// Somente leitura: não toca o documento, a versão nem o disco. Só serve o arquivo ativo
+    /// (`expected_file`), nunca um caminho arbitrário.
+    ///
+    /// # Panics
+    ///
+    /// Nunca: a serialização de valores JSON em memória não falha.
+    pub async fn git_base_message(&self, id: &serde_json::Value, expected_file: &str) -> String {
+        let active = {
+            let doc = self.doc.read().await;
+            Self::ensure_active(&doc, expected_file).map(|()| doc.file_path.clone())
+        };
+        let outcome: Result<String, (&'static str, String)> = match active {
+            Err(err) => Err((GIT_BASE_ERR_OTHER, format!("{err:#}"))),
+            Ok(path) => match tokio::task::spawn_blocking(move || read_head_blob(&path)).await {
+                Ok(Ok(source)) => Ok(source),
+                Ok(Err(err)) => Err((err.code(), err.to_string())),
+                Err(err) => Err((GIT_BASE_ERR_OTHER, format!("git task failed: {err}"))),
+            },
+        };
+        let (source, error, error_code) = match outcome {
+            Ok(source) => (Some(source), None, None),
+            Err((code, error)) => (None, Some(error), Some(code)),
+        };
+        serde_json::json!({
+            "type": WS_MSG_GIT_BASE_RESULT,
+            "id": id,
+            "source": source,
+            "error": error,
+            "error_code": error_code,
+        })
+        .to_string()
     }
 
     /// Recusa quando `base_version` não é a versão atual do documento; o erro leva o estado atual.

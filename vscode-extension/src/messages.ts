@@ -25,7 +25,7 @@ export interface DiagnosticMessage {
 }
 
 export type WebviewMessage =
-  | { command: 'ready' | 'new_file' | 'check_cli'; id?: number }
+  | { command: 'ready' | 'new_file' | 'check_cli' | typeof WEBVIEW_COMMAND.GIT_BASE; id?: number }
   | { command: 'apply_patch'; id?: number; base_version: number; patch: PatchMessage }
   | { command: 'save_document'; id?: number; base_version: number; expected_source: string }
   | { command: 'save_layout'; id?: number; layout: Record<string, unknown> }
@@ -95,6 +95,7 @@ export function parseWebviewMessage(raw: unknown): ParseResult {
     case 'ready':
     case 'new_file':
     case 'check_cli':
+    case WEBVIEW_COMMAND.GIT_BASE:
       return { ok: true, message: { command, id } };
     case 'apply_patch':
       if (!isIndex(raw.base_version)) return invalid('invalid base_version');

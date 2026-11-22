@@ -1,0 +1,11 @@
+services:
+  dbml-web:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: ghcr.io/dbmodeling/dbml:latest
+    ports:
+      - "${DBML_PORT:-3000}:3000"
+    volumes:
+      - "${DBML_SCHEMAS_DIR:-./schemas}:/workspace"
+    restart: unless-stopped
