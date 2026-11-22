@@ -354,6 +354,33 @@ export function parse_and_analyze(source) {
 }
 
 /**
+ * Lê uma string de conexão (`postgres://user:senha@host:porta/banco?sslmode=...`, `sqlite:caminho`
+ * ou um caminho puro) e devolve os campos do formulário "Conectar ao banco".
+ *
+ * Sucesso: os campos de `IntrospectRequest` (`dialect`, `host`, `port`, `database`, `user`,
+ * `password`, `path`, `trust_server_certificate`, `tls`, `schemas`) mais `password_masked`
+ * (verdadeiro quando a senha da URL é o marcador `***`; então `password` vem vazio e o campo
+ * Senha deve ser mantido). Falha: lança `{ code, message }` com `code` estável
+ * (`empty`, `unknown_scheme`, `unsupported_engine`, `malformed`, `missing_host`,
+ * `invalid_port`).
+ *
+ * # Errors
+ *
+ * Lança o objeto `{ code, message }` descrito acima, ou um erro de serialização.
+ * @param {string} url
+ * @returns {any}
+ */
+export function parse_connection_url(url) {
+    const ptr0 = passStringToWasm0(url, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+    const len0 = WASM_VECTOR_LEN;
+    const ret = wasm.parse_connection_url(ptr0, len0);
+    if (ret[2]) {
+        throw takeFromExternrefTable0(ret[1]);
+    }
+    return takeFromExternrefTable0(ret[0]);
+}
+
+/**
  * Searches tables, columns (names and types), and enums in `source`.
  *
  * # Errors

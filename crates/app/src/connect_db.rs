@@ -108,14 +108,16 @@ pub fn engine_label(dialect: Dialect) -> &'static str {
 #[must_use]
 pub fn url_error_text(code: UrlErrorCode) -> &'static str {
     crate::i18n::t(match code {
-        UrlErrorCode::Empty => "Connection string vazia.",
+        UrlErrorCode::Empty => "Informe a connection string.",
         UrlErrorCode::UnknownScheme => {
-            "Esquema desconhecido. Use postgres://, mysql://, sqlserver:// ou sqlite:."
+            "Esquema desconhecido. Use postgres://, mysql://, sqlserver:// ou um arquivo SQLite."
         }
-        UrlErrorCode::UnsupportedEngine => "Oracle ainda não é suportado.",
-        UrlErrorCode::Malformed => "Connection string malformada.",
-        UrlErrorCode::MissingHost => "Informe o host.",
-        UrlErrorCode::InvalidPort => "Porta inválida (1 a 65535).",
+        UrlErrorCode::UnsupportedEngine => "Este banco ainda não é suportado.",
+        UrlErrorCode::Malformed => {
+            "Connection string malformada. Formato: esquema://usuário:senha@host:porta/banco."
+        }
+        UrlErrorCode::MissingHost => "Informe o host na connection string.",
+        UrlErrorCode::InvalidPort => "Porta inválida. Use um número de 1 a 65535.",
     })
 }
 

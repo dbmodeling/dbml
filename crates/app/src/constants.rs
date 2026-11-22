@@ -26,7 +26,7 @@ pub const CONN_SCHEME_SEP: &str = "://";
 pub const CONN_USER_STUB: &str = "u";
 pub const CONN_PASSWORD_STUB: &str = "p";
 /// Espera após a última tecla na connection string antes de lê-la (ms).
-pub const CONN_STRING_DEBOUNCE_MS: u64 = 250;
+pub const CONN_STRING_DEBOUNCE_MS: u64 = 150;
 
 /// IDs dos controles do modal "Conectar ao banco".
 pub const ID_DB_ENGINE: &str = "db-engine";
