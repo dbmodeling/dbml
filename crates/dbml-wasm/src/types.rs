@@ -188,6 +188,16 @@ pub enum Command {
         /// Target column name.
         to_col: String,
     },
+    /// Create a junction table for a many-to-many relationship between two tables.
+    CreateJunctionTable {
+        /// First source table name.
+        left_table: String,
+        /// Second source table name.
+        right_table: String,
+        /// Optional desired junction table name (auto-suggested if omitted or blank).
+        #[serde(default)]
+        junction_name: Option<String>,
+    },
     /// Update cardinality and referential actions on an existing relationship.
     UpdateRef {
         /// Source table name.

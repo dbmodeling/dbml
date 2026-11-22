@@ -2450,7 +2450,7 @@ impl Shell {
                                 .child(crate::i18n::t("Shift+clique adiciona ou remove")),
                         ),
                 );
-            let acts = div()
+            let mut acts = div()
                 .flex_none()
                 .flex()
                 .flex_col()
@@ -2496,6 +2496,83 @@ impl Shell {
                                 .child("Ctrl G"),
                         ),
                 );
+            if selection.len() == 2 {
+                let left = selection[0].clone();
+                let right = selection[1].clone();
+                let editing_junc = self.editing.as_ref().and_then(|(t, st, _)| {
+                    (*t == EditTarget::NewJunction(left.clone(), right.clone())).then(|| st.clone())
+                });
+                let junc_el: AnyElement = if let Some(st) = editing_junc {
+                    div()
+                        .flex()
+                        .flex_col()
+                        .gap(px(6.))
+                        .child(edit_box(&st))
+                        .child(
+                            div()
+                                .flex()
+                                .gap(px(6.))
+                                .child(
+                                    Button::new(crate::constants::ID_JUNCTION_CONFIRM_BTN)
+                                        .xsmall()
+                                        .primary()
+                                        .label(crate::i18n::t("Criar"))
+                                        .on_click(cx.listener(|this, _, window, cx| {
+                                            this.commit_edit(window, cx);
+                                        })),
+                                )
+                                .child(
+                                    Button::new(crate::constants::ID_JUNCTION_CANCEL_BTN)
+                                        .xsmall()
+                                        .ghost()
+                                        .label(crate::i18n::t("Cancelar"))
+                                        .on_click(cx.listener(|this, _, _, cx| {
+                                            this.editing = None;
+                                            cx.notify();
+                                        })),
+                                ),
+                        )
+                        .into_any_element()
+                } else {
+                    div()
+                        .id(crate::constants::ID_CREATE_JUNCTION_BTN)
+                        .role(Role::Button)
+                        .aria_label(crate::i18n::t("Criar tabela associativa"))
+                        .h(px(crate::constants::JUNCTION_BTN_HEIGHT_PX))
+                        .rounded(px(8.))
+                        .border_1()
+                        .border_color(g.edge_soft)
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .gap(px(6.))
+                        .text_size(px(12.))
+                        .font_weight(FontWeight::MEDIUM)
+                        .text_color(g.text)
+                        .cursor_pointer()
+                        .hover({
+                            let h = g.hover;
+                            move |s| s.bg(h)
+                        })
+                        .on_click(cx.listener(move |this, _, window, cx| {
+                            let text = this
+                                .doc()
+                                .map(|d| d.editor.read(cx).value().to_string())
+                                .unwrap_or_default();
+                            let suggested = dbml_edit::suggest_junction_name(&text, &left, &right);
+                            this.start_edit(
+                                EditTarget::NewJunction(left.clone(), right.clone()),
+                                suggested,
+                                window,
+                                cx,
+                            );
+                        }))
+                        .child(Icon::new(IconName::Link2).size(px(13.)))
+                        .child(crate::i18n::t("Criar tabela associativa"))
+                        .into_any_element()
+                };
+                acts = acts.child(junc_el);
+            }
             (
                 div()
                     .flex()
@@ -4169,6 +4246,66 @@ impl Shell {
             let del_row = build_action_row(true, r.on_delete, cx);
             let upd_row = build_action_row(false, r.on_update, cx);
 
+            let junction_sec = (r.kind == schema::RefKind::ManyToMany).then(|| {
+                let left = r.from.qualified_table();
+                let right = r.to.qualified_table();
+                let editing_junc = self.editing.as_ref().and_then(|(t, st, _)| {
+                    (*t == EditTarget::NewJunction(left.clone(), right.clone())).then(|| st.clone())
+                });
+                let body: AnyElement = if let Some(st) = editing_junc {
+                    div()
+                        .flex()
+                        .flex_col()
+                        .gap(px(6.))
+                        .child(edit_box(&st))
+                        .child(
+                            div()
+                                .flex()
+                                .gap(px(6.))
+                                .child(
+                                    Button::new(crate::constants::ID_JUNCTION_CONFIRM_BTN)
+                                        .xsmall()
+                                        .primary()
+                                        .label(crate::i18n::t("Criar"))
+                                        .on_click(cx.listener(|this, _, window, cx| {
+                                            this.commit_edit(window, cx);
+                                        })),
+                                )
+                                .child(
+                                    Button::new(crate::constants::ID_JUNCTION_CANCEL_BTN)
+                                        .xsmall()
+                                        .ghost()
+                                        .label(crate::i18n::t("Cancelar"))
+                                        .on_click(cx.listener(|this, _, _, cx| {
+                                            this.editing = None;
+                                            cx.notify();
+                                        })),
+                                ),
+                        )
+                        .into_any_element()
+                } else {
+                    Button::new(crate::constants::ID_CREATE_JUNCTION_BTN)
+                        .xsmall()
+                        .primary()
+                        .label(crate::i18n::t("Criar tabela associativa"))
+                        .on_click(cx.listener(move |this, _, window, cx| {
+                            let text = this
+                                .doc()
+                                .map(|d| d.editor.read(cx).value().to_string())
+                                .unwrap_or_default();
+                            let suggested = dbml_edit::suggest_junction_name(&text, &left, &right);
+                            this.start_edit(
+                                EditTarget::NewJunction(left.clone(), right.clone()),
+                                suggested,
+                                window,
+                                cx,
+                            );
+                        }))
+                        .into_any_element()
+                };
+                block(crate::i18n::t("TABELA ASSOCIATIVA"), None).child(body)
+            });
+
             (
                 div()
                     .flex()
@@ -4232,6 +4369,7 @@ impl Shell {
                             ),
                     )
                     .child(block(crate::i18n::t("CARDINALIDADE"), None).child(card_row))
+                    .when_some(junction_sec, gpui_kit::ParentElement::child)
                     .child(block(crate::i18n::t("AO EXCLUIR"), None).child(del_row))
                     .child(block(crate::i18n::t("AO ATUALIZAR"), None).child(upd_row)),
                 Some(footer_danger(

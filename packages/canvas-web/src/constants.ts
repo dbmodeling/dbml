@@ -81,3 +81,11 @@ export const TRANSPORT_ERROR = {
   CONNECTION_CLOSED: 'Connection closed',
   OFFLINE_CONFLICT: 'Document changed while offline; reconcile or export your changes',
 } as const;
+
+export const JUNCTION_INPUT_ID = 'insp-junction-name';
+
+export const JUNCTION_ACTION = {
+  START: 'start-junction',
+  CONFIRM: 'confirm-junction',
+  CANCEL: 'cancel-junction',
+} as const;

@@ -91,6 +91,7 @@ enum EditTarget {
     Enum(String),
     EnumVal(String, String),
     NewEnumVal(String),
+    NewJunction(String, String),
 }
 
 /// Visão do espaço de trabalho: só canvas, canvas + editor, ou só editor.
@@ -4119,9 +4120,58 @@ impl Shell {
                     );
                 }
             }
+            EditTarget::NewJunction(left, right) => {
+                let valid_name = value.is_empty()
+                    || value.split('.').all(|seg| {
+                        !seg.is_empty()
+                            && seg.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+                    });
+                if valid_name {
+                    self.create_junction_table(&left, &right, &value, window, cx);
+                } else {
+                    window.push_notification(
+                        crate::i18n::t("Nome de tabela inválido: use letras, números e _."),
+                        cx,
+                    );
+                }
+            }
             _ => {}
         }
         cx.notify();
+    }
+
+    fn create_junction_table(
+        &mut self,
+        left: &str,
+        right: &str,
+        desired_name: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(doc) = self.doc() else { return };
+        let text = doc.editor.read(cx).value().to_string();
+        let midpoint = doc.diagram.read(cx).midpoint_between(left, right);
+        let created_name = dbml_edit::resolve_junction_name(&text, left, right, desired_name);
+        self.edit_text(false, window, cx, |t| {
+            dbml_edit::edit(
+                t,
+                &dbml_edit::Command::CreateJunctionTable {
+                    left_table: left.to_owned(),
+                    right_table: right.to_owned(),
+                    junction_name: desired_name.to_owned(),
+                },
+            )
+            .ok()
+            .map(|p| p.apply(t))
+        });
+        self.with_diagram(cx, |d| match midpoint {
+            Some(at) => d.place_new_at(&created_name, at),
+            None => d.place_new(&created_name),
+        });
+        let active = self.active;
+        self.save_layout(active, cx);
+        self.inspector_open = true;
+        self.open_col = Some((created_name, None));
     }
 
     fn add_column_to(&mut self, table: String, window: &mut Window, cx: &mut Context<Self>) {

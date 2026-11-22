@@ -937,12 +937,28 @@ impl Diagram {
             (w / 2. - self.pan.0) / self.zoom - CARD_W / 2.,
             (h / 2. - self.pan.1) / self.zoom - 60.,
         );
+        self.place_new_at(name, at);
+    }
+
+    /// Posiciona uma tabela recém-criada em uma coordenada explícita de mundo e a seleciona.
+    pub fn place_new_at(&mut self, name: &str, at: (f32, f32)) {
         self.pos.insert(name.to_string(), at);
         self.selected = Some(name.to_string());
         self.selected_enum = None;
         self.selected_ref = None;
         self.multi.clear();
         self.top = Some(name.to_string());
+    }
+
+    /// Calcula o ponto médio entre duas tabelas no canvas (ou `None` se alguma não tiver posição).
+    #[must_use]
+    pub fn midpoint_between(&self, left: &str, right: &str) -> Option<(f32, f32)> {
+        let lp = self.pos.get(left)?;
+        let rp = self.pos.get(right)?;
+        Some((
+            f32::midpoint(lp.0, rp.0).round(),
+            f32::midpoint(lp.1, rp.1).round(),
+        ))
     }
 
     /// Posiciona um enum recém-criado no centro da vista e o seleciona.

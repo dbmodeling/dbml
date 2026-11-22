@@ -7,6 +7,8 @@
 import {
   CONNECT_NETWORK_ROW_IDS,
   GUIDE_STORAGE_KEY,
+  JUNCTION_ACTION,
+  JUNCTION_INPUT_ID,
   LOCAL_SESSION_PREFIX,
   MAX_LOCAL_SESSIONS,
   MAX_WASM_RECOVERY_ATTEMPTS,
@@ -273,6 +275,8 @@ export class Workbench {
   private schemaFilterOpen = false;
   private schemaFilter = '';
   private pendingNew: string | null = null;
+  private pendingPos: Pt | null = null;
+  private junctionDraft: { left: string; right: string; name: string } | null = null;
   private sessionTimer: number | null = null;
   private collapsed = new Set<string>();
   /** Efeitos em curso sobre elementos que o render recria: reaplicados com atraso negativo (retomam do ponto). */
@@ -666,7 +670,7 @@ export class Workbench {
     }
     if (this.pendingNew && !known[this.pendingNew]) {
       const c = this.viewCenter();
-      known[this.pendingNew] = { x: Math.round(c.x - CARD_W / 2), y: Math.round(c.y - 60) };
+      known[this.pendingNew] = this.pendingPos ?? { x: Math.round(c.x - CARD_W / 2), y: Math.round(c.y - 60) };
       this.positions[this.pendingNew] = known[this.pendingNew];
     }
     try {
@@ -679,6 +683,7 @@ export class Workbench {
       this.wasmFailed('compute_scene', e);
     }
     this.pendingNew = null;
+    this.pendingPos = null;
   }
 
   private viewCenter(): Pt {
@@ -2006,6 +2011,55 @@ export class Workbench {
     this.els['ebd'].scrollLeft = ta.scrollLeft;
   }
 
+  private renderJunctionControl(left: string, right: string, primary: boolean): string {
+    const active =
+      this.junctionDraft &&
+      this.junctionDraft.left === left &&
+      this.junctionDraft.right === right;
+    if (active && this.junctionDraft) {
+      return `<div style="display:flex;flex-direction:column;gap:6px;width:100%">
+        <input class="fld" id="${JUNCTION_INPUT_ID}" aria-label="${translate('Nome da tabela')}" value="${esc(this.junctionDraft.name)}">
+        <div class="btnrow">
+          <button class="btn primary" style="height:28px;font-size:12px" data-act="${JUNCTION_ACTION.CONFIRM}">${translate('Criar')}</button>
+          <button class="btn" style="height:28px;font-size:12px" data-act="${JUNCTION_ACTION.CANCEL}">${translate('Cancelar')}</button>
+        </div>
+      </div>`;
+    }
+    const cls = primary ? 'btn primary' : 'btn';
+    return `<button class="${cls}" style="height:30px;font-size:12px;justify-content:center;gap:6px;width:100%" data-act="${JUNCTION_ACTION.START}" data-left="${esc(left)}" data-right="${esc(right)}">${ICON('Link', 13)}${translate('Criar tabela associativa')}</button>`;
+  }
+
+  private confirmJunction(): void {
+    const draft = this.junctionDraft;
+    if (!draft) return;
+    const inp = this.els['inspector'].querySelector(`#${JUNCTION_INPUT_ID}`) as HTMLInputElement | null;
+    const raw = (inp?.value ?? draft.name).trim();
+    const valid =
+      !raw ||
+      raw.split('.').every((seg) => seg.length > 0 && /^[A-Za-z0-9_]+$/.test(seg));
+    if (!valid) {
+      this.toast(translate('Nome de tabela inválido: use letras, números e _.'));
+      return;
+    }
+    const lp = this.positions[draft.left];
+    const rp = this.positions[draft.right];
+    this.pendingPos =
+      lp && rp ? { x: Math.round((lp.x + rp.x) / 2), y: Math.round((lp.y + rp.y) / 2) } : null;
+    this.junctionDraft = null;
+    this.selectedRef = null;
+    const patch = this.dispatch({
+      action: 'create_junction_table',
+      payload: {
+        left_table: draft.left,
+        right_table: draft.right,
+        junction_name: raw || undefined,
+      },
+    });
+    if (patch?.created_table) {
+      this.queueSaveLayout();
+    }
+  }
+
   private renderInspector(): void {
     const el = this.els['inspector'];
     const sel = this.selection;
@@ -2029,6 +2083,7 @@ export class Workbench {
           return `<div class="mrow" data-act="focus-table" data-table="${esc(n)}"><span style="color:${this.tint(n) || 'var(--accent)'};display:flex">${ICON('Table2', 13)}</span><span>${esc(n)}</span><span class="g">${grp ? esc(grp.name) : translate('sem grupo')}</span></div>`;
         })
         .join('');
+      const junctionHtml = sel.length === 2 ? this.renderJunctionControl(sel[0], sel[1], false) : '';
       el.innerHTML = `${inspHead}
         <div class="ident" style="gap:12px">
           <div class="multi-ic"><div class="back"></div><div class="front"><span style="color:var(--accent);display:flex">${ICON('Copy', 13)}</span></div></div>
@@ -2040,6 +2095,7 @@ export class Workbench {
         </div>
         <div class="isec" style="padding:14px;gap:6px">
           <button class="btn primary" style="height:32px;font-size:12.5px;justify-content:center;gap:8px;width:100%" data-act="GroupSelection">${ICON('Layers', 14)}${translate("Agrupar seleção")}<span class="mono" style="font-size:10.5px;opacity:.75">Ctrl G</span></button>
+          ${junctionHtml}
         </div>
         <div class="grow" style="border-top:1px solid var(--edge-soft)"></div>
         <div class="ifoot"><button class="btn danger" data-act="DeleteSelection">${ICON('Trash', 13)}${translate('Excluir {} tabelas', sel.length)}</button></div>`;
@@ -2116,11 +2172,16 @@ export class Workbench {
           actions
             .map(([val, label]) => `<button class="chip ${cur === val ? 'on' : ''}" data-act="${act}" data-val="${val}">${translate(label)}</button>`)
             .join('');
+        const junctionSec =
+          r.kind === 'ManyToMany'
+            ? `<div class="isec">${lab('TABELA ASSOCIATIVA')}${this.renderJunctionControl(qualifiedEndpointTable(r.from), qualifiedEndpointTable(r.to), true)}</div>`
+            : '';
         el.innerHTML = `${inspHead}
           <div class="isec tight">${lab('RELAÇÃO')}
           <div class="ititle mono" style="font-size:15px">${esc(qualifiedEndpointTable(r.from))}.${esc(r.from.column)}</div>
           <span class="isub mono">→ ${esc(qualifiedEndpointTable(r.to))}.${esc(r.to.column)}</span></div>
           <div class="isec">${lab('CARDINALIDADE')}<div class="btnrow">${cardBtns}</div></div>
+          ${junctionSec}
           <div class="isec">${lab('AO EXCLUIR')}<div class="btnrow">${mkActionBtns('update-ref-del', r.on_delete || '')}</div></div>
           <div class="isec">${lab('AO ATUALIZAR')}<div class="btnrow">${mkActionBtns('update-ref-upd', r.on_update || '')}</div></div>
           <div class="grow" style="border-top:1px solid var(--edge-soft)"></div>
@@ -3615,6 +3676,11 @@ export class Workbench {
         (Array.from(insp.querySelectorAll<HTMLElement>('[data-act=toggle-col]')).find((row) => row.dataset.col === col))?.focus();
         return;
       }
+      if (t.id === JUNCTION_INPUT_ID) {
+        if (e.key === 'Enter') { e.preventDefault(); e.stopPropagation(); this.confirmJunction(); }
+        else if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); this.junctionDraft = null; this.renderInspector(); }
+        return;
+      }
       if (t.tagName !== 'INPUT') return;
       if (e.key === 'Enter') t.blur();
       else if (e.key === 'Escape') { t.value = t.dataset.orig || ''; t.blur(); this.closeMenus(); e.stopPropagation(); }
@@ -3802,6 +3868,26 @@ export class Workbench {
         });
         return;
       }
+      case JUNCTION_ACTION.START: {
+        const left = d.left!;
+        const right = d.right!;
+        const suggested =
+          this.wasm?.suggest_junction_name?.(this.source, left, right) ??
+          `${left.split('.').pop()}_${right.split('.').pop()}`;
+        this.junctionDraft = { left, right, name: suggested };
+        this.renderInspector();
+        const inp = this.els['inspector'].querySelector(`#${JUNCTION_INPUT_ID}`) as HTMLInputElement | null;
+        inp?.focus();
+        inp?.select();
+        return;
+      }
+      case JUNCTION_ACTION.CONFIRM:
+        this.confirmJunction();
+        return;
+      case JUNCTION_ACTION.CANCEL:
+        this.junctionDraft = null;
+        this.renderInspector();
+        return;
       case 'del-col':
         this.dispatch({ action: 'delete_column', payload: { table: d.table!, column: d.col! } });
         return;

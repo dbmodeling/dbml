@@ -722,6 +722,13 @@ pub fn parse_and_analyze(source: &str) -> Result<JsValue, JsValue> {
     to_js_json(&output)
 }
 
+/// Sugere um nome único de tabela associativa para um relacionamento N:N entre duas tabelas.
+#[wasm_bindgen]
+#[must_use]
+pub fn suggest_junction_name(source: &str, left_table: &str, right_table: &str) -> String {
+    dbml_edit::suggest_junction_name(source, left_table, right_table)
+}
+
 /// Aplica um comando semântico e gera o patch textual mínimo com metadados de UI.
 ///
 /// # Errors
@@ -811,6 +818,26 @@ fn apply_command_internal(source: &str, command: Command) -> Result<TextPatch, S
             to_table,
             to_col,
         } => dbml_edit::delete_ref(source, (&from_table, &from_col), (&to_table, &to_col)),
+        Command::CreateJunctionTable {
+            left_table,
+            right_table,
+            junction_name,
+        } => {
+            let desired = junction_name.unwrap_or_default();
+            let resolved_name =
+                dbml_edit::resolve_junction_name(source, &left_table, &right_table, &desired);
+            let patch = dbml_edit::edit(
+                source,
+                &dbml_edit::Command::CreateJunctionTable {
+                    left_table,
+                    right_table,
+                    junction_name: desired,
+                },
+            )
+            .map_err(|e| e.to_string())?;
+            created_table = Some(resolved_name);
+            patch.apply(source)
+        }
         Command::UpdateRef {
             from_table,
             from_col,

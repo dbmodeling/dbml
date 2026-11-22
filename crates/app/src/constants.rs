@@ -61,3 +61,9 @@ pub const TOUR_MIN_VIEWPORT_H_PX: f32 = 240.0;
 pub const TOUR_BOUNDS_EPSILON_PX: f32 = 0.5;
 pub const WHATS_NEW_DIALOG_W_PX: f32 = 560.0;
 pub const WHATS_NEW_DIALOG_MAX_H_PX: f32 = 560.0;
+
+/// IDs de UI para criação de tabela associativa (relacionamentos N:N).
+pub const ID_CREATE_JUNCTION_BTN: &str = "insp-create-junction";
+pub const ID_JUNCTION_CONFIRM_BTN: &str = "insp-junction-confirm";
+pub const ID_JUNCTION_CANCEL_BTN: &str = "insp-junction-cancel";
+pub const JUNCTION_BTN_HEIGHT_PX: f32 = 30.0;

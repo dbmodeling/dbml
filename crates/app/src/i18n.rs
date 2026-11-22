@@ -943,6 +943,9 @@ const TRANSLATIONS: &[(&str, &str)] = &[
         "não foi possível gravar o layout de {}: {}",
         "could not save layout for {}: {}",
     ),
+    ("Criar tabela associativa", "Create junction table"),
+    ("TABELA ASSOCIATIVA", "JUNCTION TABLE"),
+    ("Criar", "Create"),
 ];
 
 pub fn t(text: &'static str) -> &'static str {

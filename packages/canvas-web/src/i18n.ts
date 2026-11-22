@@ -374,6 +374,9 @@ export const translations: ReadonlyArray<readonly [string, string]> = [
   ["Laranja", "Orange"],
   ["Rosa", "Pink"],
   ["Violeta", "Violet"],
+  ["Criar tabela associativa", "Create junction table"],
+  ["TABELA ASSOCIATIVA", "JUNCTION TABLE"],
+  ["Criar", "Create"],
 ];
 
 const english = new Map(translations);

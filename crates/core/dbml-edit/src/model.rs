@@ -517,7 +517,7 @@ pub(crate) fn add_ref(text: &str, from: (&str, &str), to: (&str, &str)) -> Strin
 }
 
 /// Descobre a coluna PK (ou primeira coluna) de `table` e seu tipo `(nome_col, tipo)`.
-fn primary_key_of(root: &SyntaxNode, table: &str) -> Option<(String, String)> {
+pub(crate) fn primary_key_of(root: &SyntaxNode, table: &str) -> Option<(String, String)> {
     let t = find_table(root, table)?;
     let mut first_col: Option<(String, String)> = None;
     for c in t.children().filter(|n| n.kind() == SyntaxKind::Column) {

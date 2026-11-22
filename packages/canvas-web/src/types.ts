@@ -217,6 +217,7 @@ export type Command =
   | { action: 'set_column_flag'; payload: { table: string; column: string; flag: string; value: boolean } }
   | { action: 'add_ref'; payload: { from_table: string; from_col?: string; to_table: string; to_col?: string } }
   | { action: 'delete_ref'; payload: { from_table: string; from_col: string; to_table: string; to_col: string } }
+  | { action: 'create_junction_table'; payload: { left_table: string; right_table: string; junction_name?: string } }
   | {
       action: 'update_ref';
       payload: {
@@ -457,4 +458,6 @@ export interface WasmApi {
   import_conflicts?(source: string, dbml: string): string[];
   /** Diff estrutural base vs. head; lança string `base|head has DBML errors: ...` se um lado for inválido. */
   diff_dbml?(base_source: string, head_source: string): DiffResult;
+  /** Sugere nome único de tabela associativa para um relacionamento N:N. */
+  suggest_junction_name?(source: string, leftTable: string, rightTable: string): string;
 }
