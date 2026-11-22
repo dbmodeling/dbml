@@ -523,3 +523,83 @@ async fn version_grows_on_external_change_and_file_switch() {
     let update = next_of(&mut ws, "update").await;
     assert!(update["version"].as_u64().unwrap() > before, "{update}");
 }
+
+// ───────────────────────── modo Comparar: versão base no git HEAD ─────────────────────────
+
+async fn ask_git_base_for(ws: &mut Ws, expected_file: &str, id: u32) -> serde_json::Value {
+    use futures_util::SinkExt;
+    let msg = serde_json::json!({
+        "type": "git_base",
+        "payload": { "expected_file": expected_file },
+        "id": id,
+    });
+    ws.send(Message::Text(msg.to_string().into()))
+        .await
+        .unwrap();
+    next_of(ws, "git_base_result").await
+}
+
+fn git_in(dir: &std::path::Path, args: &[&str]) {
+    let status = std::process::Command::new("git")
+        .arg("-C")
+        .arg(dir)
+        .args(["-c", "user.name=t", "-c", "user.email=t@t"])
+        .args(["-c", "commit.gpgsign=false"])
+        .args(args)
+        .stdout(std::process::Stdio::null())
+        .status()
+        .unwrap();
+    assert!(status.success(), "git {args:?}");
+}
+
+#[tokio::test]
+async fn git_base_returns_head_content_of_the_active_file() {
+    let h = spawn("git_ok").await;
+    git_in(&h.dir, &["init", "-q"]);
+    git_in(&h.dir, &["add", "schema.dbml"]);
+    git_in(&h.dir, &["commit", "-q", "-m", "init"]);
+    let file = h.dir.join("schema.dbml");
+    std::fs::write(&file, "Table a { id int [pk]\n  extra text }\n").unwrap();
+
+    let mut ws = connect(&h).await;
+    next_of(&mut ws, "init").await;
+    let reply = ask_git_base_for(&mut ws, &active_file(&h).await, 7).await;
+    assert_eq!(reply["id"], 7);
+    assert_eq!(reply["source"], "Table a { id int [pk] }\n", "{reply}");
+    assert!(reply["error"].is_null(), "{reply}");
+    // Somente leitura: o documento servido não mudou.
+    assert_eq!(h.state.doc.read().await.version, 1);
+}
+
+#[tokio::test]
+async fn git_base_reports_untracked_file_with_a_code() {
+    let h = spawn("git_untracked").await;
+    git_in(&h.dir, &["init", "-q"]);
+    std::fs::write(h.dir.join("other.dbml"), "Table o { id int }\n").unwrap();
+    git_in(&h.dir, &["add", "other.dbml"]);
+    git_in(&h.dir, &["commit", "-q", "-m", "init"]);
+
+    let mut ws = connect(&h).await;
+    next_of(&mut ws, "init").await;
+    let reply = ask_git_base_for(&mut ws, &active_file(&h).await, 1).await;
+    assert!(reply["source"].is_null(), "{reply}");
+    assert_eq!(reply["error_code"], "untracked", "{reply}");
+    assert!(reply["error"].is_string(), "{reply}");
+}
+
+#[tokio::test]
+async fn git_base_refuses_a_file_that_is_not_the_active_one() {
+    let h = spawn("git_other").await;
+    let mut ws = connect(&h).await;
+    next_of(&mut ws, "init").await;
+    let reply = ask_git_base_for(&mut ws, "/etc/passwd", 3).await;
+    assert!(reply["source"].is_null(), "{reply}");
+    assert_eq!(reply["error_code"], "other", "{reply}");
+}
+
+#[tokio::test]
+async fn git_base_requires_the_session_token() {
+    let h = spawn("git_token").await;
+    let url = format!("ws://{}/ws", h.addr);
+    assert!(tokio_tungstenite::connect_async(&url).await.is_err());
+}
