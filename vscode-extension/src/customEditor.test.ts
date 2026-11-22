@@ -1,6 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { DbmlCustomEditorProvider } from './customEditor.js';
+import type { CliHost } from './cliHost.js';
 import { nodeCliHost } from './cliHost.node.js';
+import { webCliHost } from './cliHost.web.js';
 import { fakeContext, openEditor } from './test/harness.js';
 import { mockState, resetMock, Uri } from './test/vscode-mock.js';
 
@@ -373,6 +375,58 @@ describe('conexão com o banco', () => {
     expect(h.posted.find((m) => m.type === 'result' && m.id === 1).error).toMatch(/untrusted/);
     expect(h.posted.find((m) => m.type === 'test_connection_result' && m.id === 2).error).toMatch(/untrusted/);
     expect(h.posted.find((m) => m.type === 'introspect_result' && m.id === 3).error).toMatch(/untrusted/);
+  });
+});
+
+describe('git_base (modo Comparar)', () => {
+  const withGit = (readGitHead: CliHost['readGitHead']): CliHost => ({ ...nodeCliHost, readGitHead });
+
+  it('responde com o conteúdo do HEAD do arquivo aberto', async () => {
+    const readGitHead = vi.fn(async () => ({ ok: true as const, source: 'Table a { id int }\n' }));
+    const h = await openEditor(DbmlCustomEditorProvider, { cli: withGit(readGitHead) });
+    await h.send({ command: 'git_base', id: 11 });
+    expect(readGitHead).toHaveBeenCalledWith('/ws/schema.dbml');
+    expect(h.posted).toContainEqual({ type: 'git_base_result', id: 11, source: 'Table a { id int }\n' });
+  });
+
+  it('falha esperada (arquivo novo) volta com código e mensagem, sem tocar o documento', async () => {
+    const readGitHead = vi.fn(async () => ({ ok: false as const, code: 'untracked' as const, message: 'new file' }));
+    const h = await openEditor(DbmlCustomEditorProvider, { cli: withGit(readGitHead) });
+    const version = h.document.version;
+    await h.send({ command: 'git_base', id: 12 });
+    expect(h.posted).toContainEqual({ type: 'git_base_result', id: 12, error: 'new file', error_code: 'untracked' });
+    expect(h.document.version).toBe(version);
+    expect(h.document.getText()).toBe('Table a {\n  id int\n}\n');
+  });
+
+  it('documento que não é arquivo local (untitled, virtual) não consulta o git', async () => {
+    const readGitHead = vi.fn();
+    const h = await openEditor(DbmlCustomEditorProvider, { cli: withGit(readGitHead), uri: Uri.parse('untitled:Untitled-1') });
+    await h.send({ command: 'git_base', id: 13 });
+    expect(readGitHead).not.toHaveBeenCalled();
+    expect(h.posted.find((m) => m.type === 'git_base_result')).toMatchObject({ id: 13, error_code: 'not_a_repo' });
+  });
+
+  it('workspace não confiável não executa o git', async () => {
+    mockState.isTrusted = false;
+    const readGitHead = vi.fn();
+    const h = await openEditor(DbmlCustomEditorProvider, { cli: withGit(readGitHead) });
+    await h.send({ command: 'git_base', id: 14 });
+    expect(readGitHead).not.toHaveBeenCalled();
+    expect(h.posted.find((m) => m.type === 'git_base_result')).toMatchObject({ id: 14, error_code: 'other' });
+    expect(h.posted.find((m) => m.type === 'git_base_result').error).toMatch(/untrusted/);
+  });
+
+  it('exceção inesperada do host vira erro "other" (a Webview nunca fica esperando)', async () => {
+    const h = await openEditor(DbmlCustomEditorProvider, { cli: withGit(async () => { throw new Error('boom'); }) });
+    await h.send({ command: 'git_base', id: 15 });
+    expect(h.posted.find((m) => m.type === 'git_base_result')).toMatchObject({ id: 15, error: 'boom', error_code: 'other' });
+  });
+
+  it('host web (sem processos) responde git_unavailable', async () => {
+    const h = await openEditor(DbmlCustomEditorProvider, { cli: webCliHost });
+    await h.send({ command: 'git_base', id: 16 });
+    expect(h.posted.find((m) => m.type === 'git_base_result')).toMatchObject({ id: 16, error_code: 'git_unavailable' });
   });
 });
 
