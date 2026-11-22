@@ -3546,6 +3546,34 @@ impl Shell {
         cx.notify();
     }
 
+    /// `true` com o modo Comparar ativo na aba atual (canvas somente leitura).
+    fn diff_active(&self, cx: &App) -> bool {
+        self.doc().is_some_and(|d| d.diagram.read(cx).diff_active())
+    }
+
+    /// Entra/sai do modo Comparar (#18): base = arquivo no `HEAD` do git; head = buffer atual.
+    fn toggle_diff_mode(&mut self, _: &ToggleDiffMode, _: &mut Window, cx: &mut Context<Self>) {
+        if self.diff_active(cx) {
+            self.with_diagram(cx, Diagram::exit_diff);
+            cx.notify();
+            return;
+        }
+        let Some(doc) = self.doc() else { return };
+        let base = crate::git_base::head_source(doc.path.as_deref())
+            .map(|src| dbml_analysis::analyze(&src))
+            .map_err(crate::git_base::HeadError::message);
+        self.with_diagram(cx, |d| d.enter_diff(base));
+        cx.notify();
+    }
+
+    fn next_diff_change(&mut self, _: &NextDiffChange, _: &mut Window, cx: &mut Context<Self>) {
+        self.with_diagram(cx, |d| d.step_diff(true));
+    }
+
+    fn prev_diff_change(&mut self, _: &PrevDiffChange, _: &mut Window, cx: &mut Context<Self>) {
+        self.with_diagram(cx, |d| d.step_diff(false));
+    }
+
     fn open_quick_search(&mut self, _: &QuickSearch, window: &mut Window, cx: &mut Context<Self>) {
         let Some(doc) = self.doc() else { return };
         let schema = doc.diagram.read(cx).schema().clone();
@@ -3865,6 +3893,10 @@ impl Shell {
         cx: &mut Context<Self>,
         f: impl FnOnce(&str) -> Option<String>,
     ) {
+        // modo Comparar é somente leitura: nenhuma ação da UI edita o DBML
+        if self.diff_active(cx) {
+            return;
+        }
         let Some(doc) = self.docs.get_mut(self.active) else {
             return;
         };
@@ -3937,6 +3969,9 @@ impl Shell {
     }
 
     fn undo(&mut self, _: &Undo, window: &mut Window, cx: &mut Context<Self>) {
+        if self.diff_active(cx) {
+            return;
+        }
         let Some(doc) = self.docs.get_mut(self.active) else {
             return;
         };
@@ -3948,6 +3983,9 @@ impl Shell {
     }
 
     fn redo(&mut self, _: &Redo, window: &mut Window, cx: &mut Context<Self>) {
+        if self.diff_active(cx) {
+            return;
+        }
         let Some(doc) = self.docs.get_mut(self.active) else {
             return;
         };
@@ -4485,6 +4523,9 @@ impl Shell {
     }
 
     fn relayout(&mut self, _: &Relayout, _: &mut Window, cx: &mut Context<Self>) {
+        if self.diff_active(cx) {
+            return;
+        }
         if let Some(doc) = self.docs.get_mut(self.active) {
             let before = Self::snapshot_of(doc, cx);
             doc.history.push(before);
@@ -4513,6 +4554,12 @@ impl Shell {
     }
 
     fn deselect(&mut self, _: &Deselect, _: &mut Window, cx: &mut Context<Self>) {
+        // Esc no modo Comparar sai do modo (restaura vista e seleção)
+        if self.diff_active(cx) {
+            self.with_diagram(cx, Diagram::exit_diff);
+            cx.notify();
+            return;
+        }
         self.with_diagram(cx, super::canvas::Diagram::deselect);
     }
 
@@ -4701,6 +4748,9 @@ pub fn register_global_actions(win: AnyWindowHandle, shell: &Entity<Shell>, cx: 
         QuickSearch => open_quick_search,
         ToggleFocusMode => toggle_focus_mode,
         CycleFocusDepth => cycle_focus_depth,
+        ToggleDiffMode => toggle_diff_mode,
+        NextDiffChange => next_diff_change,
+        PrevDiffChange => prev_diff_change,
         ShowShortcuts => show_shortcuts,
         ShowTour => show_tour,
         ShowWhatsNew => show_whats_new,
@@ -5007,6 +5057,9 @@ impl Render for Shell {
             .on_action(cx.listener(Self::move_line_down))
             .on_action(cx.listener(Self::open_palette))
             .on_action(cx.listener(Self::open_quick_search))
+            .on_action(cx.listener(Self::toggle_diff_mode))
+            .on_action(cx.listener(Self::next_diff_change))
+            .on_action(cx.listener(Self::prev_diff_change))
             .on_action(cx.listener(Self::toggle_focus_mode))
             .on_action(cx.listener(Self::cycle_focus_depth))
             .on_action(cx.listener(Self::import_sql_ddl))
@@ -5201,6 +5254,9 @@ mod tests {
             "Self::open_quick_search",
             "Self::toggle_focus_mode",
             "Self::cycle_focus_depth",
+            "Self::toggle_diff_mode",
+            "Self::next_diff_change",
+            "Self::prev_diff_change",
             "Self::toggle_minimap",
             "Self::export_png",
             "Self::export_jpeg",

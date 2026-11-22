@@ -83,6 +83,9 @@ actions!(
         ResetEdgeCurve,
         ToggleFocusMode,
         CycleFocusDepth,
+        ToggleDiffMode,
+        NextDiffChange,
+        PrevDiffChange,
     ]
 );
 
@@ -285,6 +288,19 @@ pub fn catalog() -> Vec<Entry> {
             CycleFocusDepth,
             "Canvas",
             "Modo Foco: alternar 1-hop / 2-hop",
+        ),
+        e(
+            "ctrl-alt-g",
+            ToggleDiffMode,
+            "Exibir",
+            "Comparar com HEAD (git)",
+        ),
+        e("n", NextDiffChange, "Canvas", "Comparar: próxima mudança"),
+        e(
+            "shift-n",
+            PrevDiffChange,
+            "Canvas",
+            "Comparar: mudança anterior",
         ),
         e("ctrl-/", ShowShortcuts, "Ajuda", "Atalhos de teclado"),
         e("", ShowTour, "Ajuda", "Tour guiado"),
