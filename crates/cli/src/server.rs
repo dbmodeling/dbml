@@ -42,6 +42,9 @@ enum ClientMessage {
     },
     #[serde(rename = "open_file")]
     OpenFile(String),
+    /// Modo Comparar: pede o conteúdo do arquivo ativo no `HEAD` do git. Somente leitura.
+    #[serde(rename = "git_base")]
+    GitBase { expected_file: String },
 }
 
 /// Tamanho máximo de uma mensagem/frame WebSocket (aplicado pelo protocolo, antes da alocação).
@@ -276,6 +279,11 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
                     continue;
                 }
             };
+            // Pedido de leitura com resposta própria (`git_base_result`), sem `result`/versão.
+            if let ClientMessage::GitBase { expected_file } = &client_msg {
+                let _ = reply_tx.send(state.git_base_message(&id, expected_file).await);
+                continue;
+            }
             let result = handle_client_message(&state, client_msg).await;
             // Versão velha: primeiro o estado atual (só para quem errou), depois o erro do pedido.
             if let Some(stale) = result
@@ -351,6 +359,8 @@ async fn handle_client_message(
             state.switch_file(std::path::PathBuf::from(path)).await?;
             Ok(None)
         }
+        // Tratado antes, em `handle_socket` (resposta própria).
+        ClientMessage::GitBase { .. } => Ok(None),
     }
 }
 

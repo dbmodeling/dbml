@@ -3,6 +3,7 @@
  * livre e resolve a linha de uma coluna para desenhar as arestas removidas. Módulo puro.
  */
 
+import { ENUM_CARD_HEAD_H, ENUM_CARD_PAD_H, ENUM_CARD_ROW_H } from '../constants';
 import { CARD_W, HEADER_H, ROW_H, cardH } from '../glass';
 import { qualifiedEndpointTable, qualifiedTableName, type Ref, type Table } from '../types';
 import type { DiffView } from './model';
@@ -66,6 +67,9 @@ export function placeGhosts(occupied: readonly Rect[], slots: readonly GhostSlot
 
 /** Y (mundo) do centro da linha `row` de um cartão posicionado em `pos`. */
 export const rowCenterY = (pos: Pt, row: number): number => pos.y + HEADER_H + 4 + ROW_H * (row + 0.5);
+
+/** Altura de um cartão de enum com `values` valores (mínimo de uma linha, para o "(vazio)"). */
+export const enumCardH = (values: number): number => ENUM_CARD_HEAD_H + ENUM_CARD_ROW_H * Math.max(values, 1) + ENUM_CARD_PAD_H;
 
 /** Altura do cartão com as colunas fantasma (removidas) anexadas ao fim. */
 export function diffCardHeight(table: Table, view: DiffView | null): number {
