@@ -81,6 +81,23 @@
   ],
   "releases": [
     {
+      "version": "0.4.2",
+      "date": "2026-11-23",
+      "highlights": [
+        {
+          "kind": "improved",
+          "title": {
+            "pt": "Release de verificação do auto-update",
+            "en": "Auto-update verification release"
+          },
+          "detail": {
+            "pt": "Versão publicada para confirmar que as instalações 0.4.1 (.deb, .rpm, tarball, Windows e macOS) detectam e instalam a atualização.",
+            "en": "Release published to confirm that 0.4.1 installs (.deb, .rpm, tarball, Windows and macOS) detect and install the update."
+          }
+        }
+      ]
+    },
+    {
       "version": "0.4.1",
       "date": "2026-11-23",
       "highlights": [
