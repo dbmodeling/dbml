@@ -512,6 +512,20 @@ fn worker_main(shared: &Shared, runner: &Runner, installer: &dyn Installer) {
 
 /// Instala segurando o `VerifiedUpdate` (e, com ele, a trava) até o fim.
 fn install(shared: &Shared, installer: &dyn Installer, update: updater_net::round::VerifiedUpdate) {
+    install_in(
+        shared,
+        installer,
+        update,
+        crate::session::config_dir().as_deref(),
+    );
+}
+
+fn install_in(
+    shared: &Shared,
+    installer: &dyn Installer,
+    update: updater_net::round::VerifiedUpdate,
+    config_dir: Option<&std::path::Path>,
+) {
     let outcome = update
         .recheck()
         .map_err(InstallError::Recheck)
@@ -519,22 +533,21 @@ fn install(shared: &Shared, installer: &dyn Installer, update: updater_net::roun
     if let Err(error) = &outcome {
         tracing::warn!("instalação da atualização falhou: {error}");
     }
-    if settle_install(&shared.state, &outcome) {
-        remember_for_next_start(&update);
+    if settle_install(&shared.state, &outcome)
+        && let Some(dir) = config_dir
+    {
+        remember_for_next_start(&update, dir);
     }
     drop(update);
 }
 
 /// Grava o aviso "Atualizado para X" para o primeiro start depois do reinício.
-fn remember_for_next_start(update: &updater_net::round::VerifiedUpdate) {
-    let Some(dir) = crate::session::config_dir() else {
-        return;
-    };
+fn remember_for_next_start(update: &updater_net::round::VerifiedUpdate, dir: &std::path::Path) {
     let notice = PersistedNotice {
         version: update.version().to_string(),
         notes_url: update.notes_url().to_owned(),
     };
-    if let Err(error) = crate::update_notice::save(&dir, &notice) {
+    if let Err(error) = crate::update_notice::save(dir, &notice) {
         tracing::warn!("não foi possível gravar o aviso de atualização: {error}");
     }
 }
@@ -1034,5 +1047,157 @@ mod tests {
             assert_eq!(controller.restart_ready(), None);
             assert!(matches!(controller.view(), UpdateView::Hidden));
         }
+    }
+
+    #[test]
+    fn install_recalcula_hash_antes_de_chamar_instalador_e_grava_aviso() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use updater::constants::{MANIFEST_SIGNATURE_URL, MANIFEST_URL};
+        use updater::policy::PolicyEnv;
+        use updater::transport::{Fetched, Transport, TransportError};
+
+        struct FixtureEnv;
+        impl PolicyEnv for FixtureEnv {
+            fn var(&self, _name: &str) -> Option<String> {
+                None
+            }
+            fn read_file(&self, _path: &std::path::Path) -> Option<String> {
+                None
+            }
+            fn target_os(&self) -> Option<TargetOs> {
+                Some(TargetOs::Linux)
+            }
+            fn app_dir(&self) -> Option<PathBuf> {
+                Some(PathBuf::from("/home/u/.local/db-modeling.app"))
+            }
+            fn canonicalize(&self, path: &std::path::Path) -> Option<PathBuf> {
+                Some(path.to_path_buf())
+            }
+            fn is_writable(&self, _dir: &std::path::Path) -> bool {
+                true
+            }
+        }
+
+        struct FixtureTransport;
+        impl Transport for FixtureTransport {
+            fn get(
+                &self,
+                url: &str,
+                _etag: Option<&str>,
+                _max: u64,
+            ) -> Result<Fetched, TransportError> {
+                let bytes = match url {
+                    MANIFEST_URL => {
+                        include_bytes!("../../updater/tests/fixtures/latest.json").to_vec()
+                    }
+                    MANIFEST_SIGNATURE_URL => {
+                        include_bytes!("../../updater/tests/fixtures/latest.json.sig").to_vec()
+                    }
+                    other => panic!("url inesperada: {other}"),
+                };
+                Ok(Fetched::Body { bytes, etag: None })
+            }
+            fn download(
+                &self,
+                _url: &str,
+                dest: &std::path::Path,
+                _max: u64,
+            ) -> Result<(), TransportError> {
+                // O SHA-256 de `"tarball fictício do linux\n"` é o da fixture `latest.json`.
+                std::fs::write(dest, "tarball fictício do linux\n").unwrap();
+                Ok(())
+            }
+        }
+
+        struct UnlimitedSpace;
+        impl updater_net::fetch::FreeSpace for UnlimitedSpace {
+            fn available(&self, _dir: &std::path::Path) -> std::io::Result<u64> {
+                Ok(u64::MAX)
+            }
+        }
+
+        struct CountingInstaller(Arc<AtomicUsize>);
+        impl Installer for CountingInstaller {
+            fn is_supported(&self) -> bool {
+                true
+            }
+            fn install(
+                &self,
+                _update: &updater_net::round::VerifiedUpdate,
+            ) -> Result<(), InstallError> {
+                self.0.fetch_add(1, Ordering::SeqCst);
+                Ok(())
+            }
+        }
+
+        let test_pub = include_str!("../../updater/tests/fixtures/test-public-key.txt").trim();
+        let keys = KeySet::Custom(vec![test_pub.to_owned()]);
+        let dir = tempfile::tempdir().expect("tempdir");
+
+        let make_ready = |cache_sub: &str| {
+            let shared = Shared::new(Availability::Enabled, true);
+            let cache = dir.path().join(cache_sub);
+            let etags = MemoryEtagStore::new();
+            let services = Services {
+                transport: &FixtureTransport,
+                env: &FixtureEnv,
+                state: &shared.state,
+                etags: &etags,
+                free_space: &UnlimitedSpace,
+                keys: &keys,
+            };
+            let current = parse_version("0.3.0").unwrap();
+            let outcome = run_round(
+                &services,
+                &RoundParams {
+                    cache_dir: &cache,
+                    current_version: &current,
+                    platform: Some(PlatformKey::LinuxX86_64),
+                    auto_update: true,
+                    trigger: Trigger::Manual,
+                    now: SystemTime::now(),
+                },
+            );
+            let RoundOutcome::Ready(update) = outcome else {
+                panic!("esperava Ready, veio {outcome:?}");
+            };
+            (shared, update)
+        };
+
+        // (a) Caminho feliz: recheck passa, instalador é chamado e update-notice.txt é gravado.
+        let (shared_ok, update_ok) = make_ready("cache-ok");
+        let calls = Arc::new(AtomicUsize::new(0));
+        let config_dir = dir.path().join("config");
+        std::fs::create_dir_all(&config_dir).unwrap();
+        install_in(
+            &shared_ok,
+            &CountingInstaller(Arc::clone(&calls)),
+            update_ok,
+            Some(&config_dir),
+        );
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        assert_eq!(
+            view_of(lock(&shared_ok.state).status(), None),
+            UpdateView::Restart("0.4.0".to_owned())
+        );
+        let saved = crate::update_notice::take(&config_dir, "0.4.0").expect("aviso gravado");
+        assert_eq!(saved.version, "0.4.0");
+
+        // (b) Artefato adulterado entre o download e a instalação: recheck barra antes do instalador.
+        let (shared_bad, update_bad) = make_ready("cache-bad");
+        std::fs::write(update_bad.path(), b"adulterado-depois-do-download").unwrap();
+        let calls_bad = Arc::new(AtomicUsize::new(0));
+        install_in(
+            &shared_bad,
+            &CountingInstaller(Arc::clone(&calls_bad)),
+            update_bad,
+            Some(&config_dir),
+        );
+        assert_eq!(calls_bad.load(Ordering::SeqCst), 0);
+        assert_eq!(
+            view_of(lock(&shared_bad.state).status(), None),
+            UpdateView::Failed
+        );
+        assert!(crate::update_notice::take(&config_dir, "0.4.0").is_none());
     }
 }

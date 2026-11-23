@@ -1165,13 +1165,13 @@ impl Shell {
                             div()
                                 .flex()
                                 .flex_col()
-                                .gap(px(2.))
-                                .pt(px(10.))
-                                .pb(px(4.))
+                                .gap(px(crate::constants::UPDATE_PREF_SECTION_GAP_PX))
+                                .pt(px(crate::constants::UPDATE_PREF_SECTION_PT_PX))
+                                .pb(px(crate::constants::UPDATE_PREF_SECTION_PB_PX))
                                 .child(
                                     div()
-                                        .px(px(8.))
-                                        .pb(px(4.))
+                                        .px(px(crate::constants::UPDATE_PREF_HEADER_PAD_X_PX))
+                                        .pb(px(crate::constants::UPDATE_PREF_HEADER_PB_PX))
                                         .child(label(crate::i18n::t("ATUALIZAÇÕES"), "")),
                                 )
                                 .child(toggle(

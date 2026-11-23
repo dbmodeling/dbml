@@ -671,7 +671,8 @@ impl Shell {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
-        let auto_update = crate::settings::load().auto_update;
+        let prefs = crate::settings::load();
+        let auto_update = prefs.auto_update;
         let mut this = Self {
             project: None,
             files: Vec::new(),
@@ -679,20 +680,15 @@ impl Shell {
             active: 0,
             untitled: 0,
             pane: Pane::Schema,
-            sidebar_open: crate::harness::var("DBM_SIDEBAR").is_some()
-                || crate::settings::load().sidebar_open,
+            sidebar_open: crate::harness::var("DBM_SIDEBAR").is_some() || prefs.sidebar_open,
             editor_open: crate::harness::var("DBM_EDITOR").is_some(),
             code_only: false,
-            inspector_open: crate::harness::var("DBM_INSPECTOR").is_some()
-                || crate::settings::load().inspector_open,
+            inspector_open: crate::harness::var("DBM_INSPECTOR").is_some() || prefs.inspector_open,
             mode,
             translucent,
-            lang_pref: crate::settings::load().lang,
-            widths: {
-                let p = crate::settings::load();
-                (p.sidebar_w, p.editor_w, p.inspector_w)
-            },
-            col_type_w: crate::settings::load().col_type_w,
+            lang_pref: prefs.lang,
+            widths: (prefs.sidebar_w, prefs.editor_w, prefs.inspector_w),
+            col_type_w: prefs.col_type_w,
             last_summary: None,
             editing: None,
             palette: cx.new(|cx| CommandState::new(window, cx)),
@@ -701,8 +697,8 @@ impl Shell {
             subs: Vec::new(),
             connect_dialog: None,
             dragging_window: false,
-            ui_scale: crate::settings::load().ui_scale,
-            inspector_auto_hide: crate::settings::load().inspector_auto_hide,
+            ui_scale: prefs.ui_scale,
+            inspector_auto_hide: prefs.inspector_auto_hide,
             restoring_session: false,
             suppress_history: false,
             import_dialect: sql_import::SqlDialect::Postgres,
@@ -725,8 +721,8 @@ impl Shell {
             loading: 0,
             loose_files: (PathBuf::new(), Vec::new()),
             preselect: crate::harness::var("DBM_SELECT"),
-            onboarding_done: crate::settings::load().onboarding_done,
-            last_seen_version: crate::settings::load().last_seen_version,
+            onboarding_done: prefs.onboarding_done,
+            last_seen_version: prefs.last_seen_version,
             tour_step: None,
             tour_bounds: guide_ui::TourBoundsMap::default(),
             auto_update,

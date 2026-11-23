@@ -133,7 +133,7 @@ jobs:
           rust="$(has '^(crates/|\.cargo/|Cargo\.(toml|lock)$|rust-toolchain\.toml$|\.github/workflows/ci\.yml$)')"
           web="$(has '^(packages/|vscode-extension/|scripts/(build|check)-web-assets\.sh$)')"
           [ "$rust" = "true" ] && web=true
-          scripts="$(has '^(scripts/|\.github/)|(^|/)package(-lock)?\.json$')"
+          scripts="$(has '^(scripts/|\.github/|crates/updater/)|(^|/)package(-lock)?\.json$')"
           { echo "rust=$rust"; echo "web=$web"; echo "scripts=$scripts"; } | tee -a "$GITHUB_OUTPUT"
 
       - name: Workflow actions pinned by SHA
@@ -217,6 +217,10 @@ jobs:
 
       - name: Test suite (cargo test)
         run: cargo test --locked --workspace
+
+      - name: Verify release binary has no test hooks (updater-net)
+        if: runner.os == 'Linux'
+        run: cargo test --locked -p updater-net --release --test release_has_no_hook
 
       # Already part of the workspace run above; kept explicit so the Windows-only helper
       # (Restart Manager, "Updating..." window, jobs with rollback) has its own named step.

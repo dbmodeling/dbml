@@ -171,7 +171,12 @@ fn validate_extracted(extract: &Path) -> Result<PathBuf, LinuxInstallError> {
     let app_dir = extract.join(LINUX_APP_DIR_NAME);
     let is_real = |path: &Path, want_dir: bool| {
         std::fs::symlink_metadata(path).is_ok_and(|meta| {
-            !meta.file_type().is_symlink() && if want_dir { meta.is_dir() } else { meta.is_file() }
+            !meta.file_type().is_symlink()
+                && if want_dir {
+                    meta.is_dir()
+                } else {
+                    meta.is_file()
+                }
         })
     };
     if !is_real(&app_dir, true) {

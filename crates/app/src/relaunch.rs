@@ -64,10 +64,13 @@ pub fn clean_exe_path(path: &Path) -> PathBuf {
 /// Por que o relançamento não aconteceu.
 #[derive(Debug)]
 pub enum RelaunchError {
-    /// Plataforma sem relançamento por este caminho (Windows usa o helper do ticket 05).
+    /// Plataforma sem relançamento por este caminho (ou helper ausente em build de dev no Windows).
     #[cfg_attr(
-        not(windows),
-        expect(dead_code, reason = "só o Windows devolve Unsupported até o ticket 05")
+        not(any(windows, test)),
+        expect(
+            dead_code,
+            reason = "só o Windows e os testes de install_windows devolvem Unsupported"
+        )
     )]
     Unsupported,
     /// Não foi possível localizar o executável ou iniciar o processo.

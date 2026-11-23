@@ -2,7 +2,7 @@
 
 ## Bounded Contexts
 
-Single context (`db_modeling`): visual modeling of relational schemas over DBML files, separated into core crates without UI dependencies (`schema`, `dbml-syntax`, `dbml-analysis`, `dbml-edit`, `sql-import`, `layout`, `dbml-wasm`) and interactive targets (`app` in GPUI, `cli` in Rust + Wasm, `vscode-extension`, and `packages/canvas-web`).
+Single context (`db_modeling`): visual modeling of relational schemas over DBML files, separated into core crates without UI dependencies (`schema`, `dbml-syntax`, `dbml-analysis`, `dbml-edit`, `sql-import`, `layout`, `updater`, `dbml-wasm`) and interactive targets (`app` in GPUI, `cli` in Rust + Wasm, `vscode-extension`, and `packages/canvas-web`).
 
 ## Ubiquitous Language
 

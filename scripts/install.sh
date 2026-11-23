@@ -73,12 +73,18 @@ resolve_tag() {
     fi
     local tag
     tag="$(curl -fsSL "https://api.github.com/repos/${REPO}/releases/latest" \
-        | sed -n 's/.*"tag_name"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -n 1)"
-    if [ -z "$tag" ]; then
-        echo "Não foi possível descobrir a última release de ${REPO}." >&2
-        return 1
-    fi
-    echo "$tag"
+        | tr ',' '\n' \
+        | sed -n 's/.*"tag_name"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' \
+        | head -n 1)"
+    case "$tag" in
+        v[0-9]*.[0-9]*.[0-9]*)
+            echo "$tag"
+            ;;
+        *)
+            echo "Não foi possível descobrir a última release de ${REPO}." >&2
+            return 1
+            ;;
+    esac
 }
 
 # Baixa `nome` da release `tag` para `destino` e verifica o SHA-256; apaga o arquivo se falhar.
@@ -154,6 +160,11 @@ install_user_bundle() {
     if ! tar -xzf "$tarball" -C "$stage" --no-same-owner; then
         rm -rf "$stage"
         echo "Não foi possível extrair ${tarball}." >&2
+        return 1
+    fi
+    if [ -n "$(find "$stage" -type l -print -quit)" ]; then
+        rm -rf "$stage"
+        echo "Tarball inválido: contém links simbólicos não permitidos." >&2
         return 1
     fi
     if [ ! -f "${stage}/${APP_BUNDLE}/bin/${APP_NAME}" ]; then

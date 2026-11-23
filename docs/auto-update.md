@@ -73,11 +73,11 @@ falha em `Checking` ou `Downloading` não toca no disco e a mantém.
 |---|---|---|---|
 | Artefato | `db-modeling-windows-setup.exe` | `db-modeling-macos-arm64.dmg` | `db-modeling-linux-x86_64.tar.gz` |
 | Onde atualiza | a pasta do app (`{app}`), instalação **por usuário** | o bundle em execução (`DB Modeling.app`) | `<prefixo>/db-modeling.app` |
-| Como instala | instalador Inno com `/verysilent /update=true /nocloseapplications /norestart`, que grava em `{app}\install` e cria `{app}\updates\versions.txt` | `hdiutil attach -nobrowse -readonly -plist -mountroot <tmp privado>`, `rsync -av --delete --exclude "Icon?"` do `.app` montado sobre o bundle, `hdiutil detach -force` sempre | `tar -xzf ... --no-same-owner` em diretório privado e `rsync -av --delete db-modeling.app <prefixo>/` |
+| Como instala | instalador Inno com `/verysilent /update=true /nocloseapplications /norestart`, que grava em `{app}\install` e cria `{app}\updates\versions.txt` | `hdiutil attach -nobrowse -readonly -plist -mountroot <updates/db-modeling-update-pid>`, `rsync -av --delete --exclude "Icon?"` do `.app` montado sobre o bundle, `hdiutil detach -force` sempre | `tar -xzf ... --no-same-owner` em diretório privado, recusa qualquer symlink e roda `rsync -av --no-links --delete db-modeling.app <prefixo>/` |
 | Quem faz a troca final | o **helper** (`tools\auto_update_helper.exe`) | o próprio `rsync` | o próprio `rsync` |
-| Verificação extra | Authenticode do instalador (SignPath, pelo SO) | `codesign --verify --deep --strict` e Team ID do manifesto, **só** se o manifesto traz `team_id` (build assinado) | confere que o tarball traz `db-modeling.app/bin/db-modeling` antes de tocar no prefixo |
+| Verificação extra | Authenticode do instalador (SignPath, pelo SO) | `codesign --verify --deep --strict` e Team ID do manifesto, **só** se o manifesto traz `team_id` (build assinado) | confere que o tarball traz `db-modeling.app/bin/db-modeling` e zero symlinks antes de tocar no prefixo |
 | Reinício | `auto_update_helper.exe --launch true --wait-pid <pid>` e o app sai | processo curto `db-modeling --relaunch-after <pid>`, depois `cx.quit()` | igual ao macOS |
-| Ao sair sem reiniciar | o app roda `auto_update_helper.exe --launch false` e espera | nada (os arquivos já foram trocados) | nada |
+| Ao sair sem reiniciar | o app inicia `auto_update_helper.exe --launch false --wait-pid <pid>` e encerra | nada (os arquivos já foram trocados) | nada |
 | Nunca | UAC nem `/ALLUSERS` | copiar antes de a assinatura passar (quando há `team_id`) | usar root, `sudo`, `pkexec`, `apt` ou `dnf` |
 
 **Windows em detalhe.** O helper cobre `db-modeling.exe`, `dbml.exe`, `icon.ico` e o próprio helper. Antes de trocar,
@@ -418,7 +418,7 @@ também está pendente. O ticket 10 registra executor e data de cada item.
 4. App rodando a partir do `.dmg` (App Translocation) ou com bundle sem escrita: só a explicação, sem download nem
    montagem.
 5. `kill -9` no `rsync` no meio da cópia: ver se o app abre e se o `codesign` ainda passa (risco aceito, igual ao Zed).
-6. Depois de qualquer falha, `hdiutil info` não mostra volume montado e não sobra `db-modeling-update-*` em `/tmp`.
+6. Depois de qualquer falha, `hdiutil info` não mostra volume montado e não sobra `db-modeling-update-*` em `~/Library/Caches/db-modeling/updates`.
 7. Formato real da saída de `hdiutil attach -plist`, `codesign -dv` e `rsync`; a flag `-readonly` do `attach`; o spawn
    direto do executável no relançamento.
 8. Compilar `cargo clippy -p app --all-targets -- -D warnings` no macOS (primeira vez que `install_macos.rs` roda com
@@ -446,9 +446,7 @@ por plataforma antes de publicar.
 
 Conferidas na leitura do código em 2026-11-23. O spec é `.scratch/auto-update-desktop/spec.md`.
 
-1. **Privacidade: SO e arquitetura não saem.** O spec diz que saem "versão, SO e arquitetura". O código envia só o
-   `User-Agent: db-modeling-updater/<versão>` (SO e arquitetura nunca são enviados, pois o cliente escolhe a
-   plataforma localmente). É mais restritivo; o texto do spec e da constante `USER_AGENT_PREFIX` deveriam refletir isso.
+1. ~~**Privacidade: SO e arquitetura não saem.**~~ Resolvido: o código envia só `User-Agent: db-modeling-updater/<versão>`, e a doc-string de `USER_AGENT_PREFIX` e o `spec.md` foram alinhados a isso.
 2. **Sem atalho de teclado próprio.** O spec (seção 3) diz "toda ação tem atalho e entrada na command palette".
    `CheckForUpdates`, `RestartToUpdate` e `ToggleAutoUpdate` têm entrada na paleta e (a primeira) no menu, mas
    `binding` vazio no catálogo. O princípio do projeto ("acessível por teclado") é atendido pela paleta e pelo foco,

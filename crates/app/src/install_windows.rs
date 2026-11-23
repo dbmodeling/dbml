@@ -1,3 +1,10 @@
+#![cfg_attr(
+    not(windows),
+    allow(
+        dead_code,
+        reason = "compilado em cfg(test) no Linux para validar tipos e lógica sem depender do runner Windows"
+    )
+)]
 //! Instalador do Windows (ticket 05; modelo do Zed). **Não verificado no Windows.**
 //!
 //! Fluxo: o instalador Inno verificado roda em silêncio com `/update=true` e instala em
@@ -198,6 +205,12 @@ pub fn relaunch_via_helper() -> Result<(), RelaunchError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn windows_installer_declara_suporte_e_sem_layout_nao_tem_pendencia() {
+        assert!(WindowsInstaller.is_supported());
+        assert_eq!(WindowsInstaller.pending_version(), None);
+    }
 
     #[test]
     fn relaunch_sem_helper_no_layout_retorna_unsupported() {

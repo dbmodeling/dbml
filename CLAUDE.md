@@ -19,7 +19,7 @@ Workspace multi-crate integrado e funcional:
 - `dbml-syntax` & `dbml-analysis`: CST Rowan sem perdas, helpers compartilhados (`unquote`, `child_tokens`, `descendant_tokens`) e linter/autocomplete semântico.
 - `dbml-edit`: patches textuais mínimos sobre o buffer (`Patch`, `EditError`).
 - `layout`: auto-layout em camadas/clusterizado (Sugiyama), roteamento ortogonal de arestas e métricas/paleta canônicas compartilhadas (`CARD_W`, `HEADER_H`, `ROW_H`, `GROUP_PAD`, `TABLE_COLORS`, `compute_diagram_positions`).
-- `updater` (em andamento): núcleo puro do auto-update do Desktop (manifesto, política, estado, verificação minisign); spec em `.scratch/auto-update-desktop/`.
+- `updater`: núcleo puro do auto-update do Desktop (manifesto, política, estado, verificação minisign, trava, agendamento); `updater-net` (transporte `ureq` + `rustls`, política de URL, `ETag`, download verificado e rodada completa) e `auto-update-helper` (binário do Windows com Restart Manager e jobs reversíveis); spec em `.scratch/auto-update-desktop/` e guia em `docs/auto-update.md`.
 - `dbml-wasm`: compilação Wasm (`wasm32-unknown-unknown`) e ponte UTF-16 (`LineIndex`) para Web e VS Code.
 - `cli` (`dbml-cli`): utilitário CLI e servidor Axum/WebSocket local com assets embutidos e escrita atômica.
 - `app`: aplicação desktop GPUI modularizada (`shell/mod.rs`, `shell/panels.rs`, `canvas.rs`, `canvas_geom.rs`, `session.rs`, `settings.rs`).
@@ -93,7 +93,7 @@ comandos, e palavras-chave estruturais do OpenSpec.
 - **Desktop:** `gpui-kit` =0.8.0 (→ `gpui-pre` =0.3.9, `gpui-component` =0.8.0), `logos` 0.16.1, `rowan` 0.17.0, `petgraph` 0.8.3, `kurbo` 0.13.1, `resvg` 0.48.1, `tiny-skia` 0.12.0.
 - **Web & Wasm:** `wasm-bindgen` 0.2.129, `serde-wasm-bindgen` 0.6, `axum` 0.8, `tokio` 1.x, `tokio-tungstenite` 0.29, `rust-embed` 8.x.
 - **Frontend:** TypeScript 5.7, Vite 6.x, Vitest 5.x, esbuild 0.25.
-- **Auto-update (Desktop):** modelo do Zed, manifesto assinado com minisign; cliente `ureq` com `rustls` (versão exata fixada ao implementar). Spec em `.scratch/auto-update-desktop/`.
+- **Auto-update (Desktop):** modelo do Zed, manifesto assinado com minisign (`minisign-verify` =0.3.0, `sha2` =0.11.1, `semver` =1.0.28); cliente `ureq` =3.5.2 com `rustls-native-certs` =0.8.5, `url` =2.5.9, `fs4` =1.1.0 e `windows-sys` =0.61.2. Spec em `.scratch/auto-update-desktop/`.
 - A API do GPUI muda muito: consultar o código-fonte da versão fixada (docs.rs / repositório) em vez de confiar em exemplos antigos.
 
 ## Comandos Rápidos

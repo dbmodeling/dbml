@@ -107,7 +107,7 @@ fn revert(
                 // aborta sem sobrescrever old\
                 return Err(io::Error::new(
                     io::ErrorKind::AlreadyExists,
-                    format!("estado ambíguo para {file}: old\\, live e install\\ coexistem"),
+                    format!("estado ambíguo para {file:?}: old\\, live e install\\ coexistem"),
                 ));
             }
             if let Some(parent) = staged.parent() {
@@ -251,9 +251,9 @@ mod tests {
     #[test]
     fn coexistencia_de_old_live_e_install_aborta_reversao_sem_perder_old() {
         let fixture = Fixture::new();
-        let backup = fixture.layout.backup(crate::constants::APP_FILE);
+        let backup = fixture.layout.backup(crate::constants::CLI_FILE);
         std::fs::create_dir_all(backup.parent().unwrap()).unwrap();
-        std::fs::write(&backup, "backup:db-modeling.exe").unwrap();
+        std::fs::write(&backup, "backup:dbml.exe").unwrap();
         let result = recover(
             &fixture.layout,
             &RealFs,
@@ -261,9 +261,6 @@ mod tests {
             &mut |_| {},
         );
         assert!(result.is_err());
-        assert_eq!(
-            std::fs::read_to_string(&backup).unwrap(),
-            "backup:db-modeling.exe"
-        );
+        assert_eq!(std::fs::read_to_string(&backup).unwrap(), "backup:dbml.exe");
     }
 }
