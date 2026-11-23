@@ -37,7 +37,7 @@ jobs:
 
     steps:
       - name: Checkout do repositório
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Instalar Toolchain Rust (alvo wasm32)
         uses: dtolnay/rust-toolchain@39008827e6b4319a349e9a42dfc90579dd25f1ca # stable
@@ -69,7 +69,7 @@ jobs:
           sudo apt-get install -y binaryen
 
       - name: Configurar Node.js
-        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 24
           cache: npm
@@ -88,7 +88,7 @@ jobs:
         run: ./scripts/check-web-assets.sh
 
       - name: Upload do bundle web
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: web-bundle
           path: crates/cli/web
@@ -105,14 +105,14 @@ jobs:
 
     steps:
       - name: Checkout do repositório
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Usar o bundle web reconstruído a partir da tag
         shell: bash
         run: find crates/cli/web -mindepth 1 -delete
 
       - name: Baixar o bundle web
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: web-bundle
           path: crates/cli/web
@@ -162,7 +162,7 @@ jobs:
           cp ../scripts/install.sh db-modeling-install.sh
 
       - name: Upload dos artefatos Linux
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: artifacts-linux
           path: dist/*
@@ -184,14 +184,14 @@ jobs:
 
     steps:
       - name: Checkout do repositório
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Usar o bundle web reconstruído a partir da tag
         shell: bash
         run: find crates/cli/web -mindepth 1 -delete
 
       - name: Baixar o bundle web
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: web-bundle
           path: crates/cli/web
@@ -237,7 +237,7 @@ jobs:
       - name: Enviar o instalador para assinatura (SignPath)
         if: env.SIGN_WINDOWS == 'true'
         id: upload-unsigned
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: windows-installer-unsigned
           path: dist/db-modeling-windows-setup.exe
@@ -247,7 +247,7 @@ jobs:
       # quando a assinatura está configurada.
       - name: Assinar o instalador (SignPath)
         if: env.SIGN_WINDOWS == 'true'
-        uses: signpath/github-action-submit-signing-request@c92b958760219087e01f8d67a1669ed57afe2627 # v2
+        uses: signpath/github-action-submit-signing-request@4a84eb4ad763290f059275786f2deed97c2c672b # v3.1
         with:
           api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
           organization-id: ${{ vars.SIGNPATH_ORGANIZATION_ID }}
@@ -269,7 +269,7 @@ jobs:
           cp dist/db-modeling-windows-setup.exe "dist/db-modeling-windows-x86_64.exe"
 
       - name: Upload dos artefatos Windows
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: artifacts-windows
           path: dist/*
@@ -295,14 +295,14 @@ jobs:
 
     steps:
       - name: Checkout do repositório
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Usar o bundle web reconstruído a partir da tag
         shell: bash
         run: find crates/cli/web -mindepth 1 -delete
 
       - name: Baixar o bundle web
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: web-bundle
           path: crates/cli/web
@@ -361,7 +361,7 @@ jobs:
           cp $(ls db-modeling-*-arm64.pkg | head -n 1) db-modeling-macos-setup.pkg
 
       - name: Upload dos artefatos macOS
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: artifacts-macos
           path: |
@@ -382,25 +382,25 @@ jobs:
 
     steps:
       - name: Checkout do repositório
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Criar pasta consolidada de distribuição
         run: mkdir -p release-dist
 
       - name: Baixar artefatos Linux
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: artifacts-linux
           path: release-dist
 
       - name: Baixar artefatos Windows
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: artifacts-windows
           path: release-dist
 
       - name: Baixar artefatos macOS
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: artifacts-macos
           path: release-dist
@@ -428,7 +428,7 @@ jobs:
           echo "tag=${tag}" >> "$GITHUB_OUTPUT"
 
       - name: Criar Release no GitHub
-        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2
+        uses: softprops/action-gh-release@8a0cd651e5b2365bd640854a3fa5dfc70e4875f3 # v3.0.4
         with:
           tag_name: ${{ steps.tag_info.outputs.tag }}
           files: release-dist/*
