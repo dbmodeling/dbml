@@ -17,10 +17,14 @@
 //!
 //! **Não verificado no Windows/macOS** (ambiente de desenvolvimento é Linux).
 
+#[cfg(any(unix, test))]
 use std::path::{Path, PathBuf};
+#[cfg(any(unix, test))]
 use std::time::Duration;
 
-use crate::constants::{ARG_RELAUNCH_AFTER, DELETED_EXE_SUFFIX};
+use crate::constants::ARG_RELAUNCH_AFTER;
+#[cfg(any(unix, test))]
+use crate::constants::DELETED_EXE_SUFFIX;
 #[cfg(unix)]
 use crate::constants::{RELAUNCH_POLL_INTERVAL_MS, RELAUNCH_WAIT_TIMEOUT_SECS};
 
@@ -54,6 +58,7 @@ pub fn parse_args(args: &[String]) -> Args {
 /// No Linux, `current_exe()` devolve `<caminho> (deleted)` se o binário foi substituído por um
 /// `rsync` enquanto o app rodava (justamente o caso da atualização): o caminho real é o anterior
 /// ao sufixo.
+#[cfg(any(unix, test))]
 #[must_use]
 pub fn clean_exe_path(path: &Path) -> PathBuf {
     path.to_str()
@@ -150,13 +155,6 @@ pub fn pid_alive(pid: u32) -> bool {
         .stderr(std::process::Stdio::null())
         .status()
         .is_ok_and(|status| status.success())
-}
-
-/// Outras plataformas não usam este caminho (o Windows tem o helper do ticket 05).
-#[cfg(not(any(target_os = "linux", target_os = "macos")))]
-#[must_use]
-pub fn pid_alive(_pid: u32) -> bool {
-    false
 }
 
 /// Lado do app que sai: inicia `<exe> --relaunch-after <pid>`, destacado do app (sem stdio e em

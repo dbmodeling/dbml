@@ -79,11 +79,8 @@ pub const KEY_PROGRAM_FILES: &str =
 pub const KEY_TRANSLOCATION: &str = "Mova o app para a pasta Aplicativos para atualizar";
 pub const KEY_NOT_WRITABLE: &str = "Sem permissão de escrita na pasta do app; atualize manualmente";
 /// Linux: o executável não está no layout do tarball (`<prefixo>/db-modeling.app/bin/db-modeling`).
-pub const KEY_LINUX_NOT_TARBALL: &str =
-    "Só a instalação pelo install.sh se atualiza sozinha; atualize manualmente";
-/// Linux: o tarball está num prefixo de sistema (`/usr`, `/var`...), que só os pacotes mexem.
-pub const KEY_LINUX_SYSTEM_PREFIX: &str =
-    "Instalado numa pasta do sistema; atualize pelo gerenciador de pacotes ou pelo install.sh";
+#[cfg(any(target_os = "linux", test))]
+pub use crate::constants::{KEY_LINUX_NOT_TARBALL, KEY_LINUX_SYSTEM_PREFIX};
 
 /// O que o controle da title bar mostra agora.
 #[derive(Debug, Clone, PartialEq, Eq)]

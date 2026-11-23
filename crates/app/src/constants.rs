@@ -209,6 +209,7 @@ pub const RELAUNCH_POLL_INTERVAL_MS: u64 = 100;
 #[cfg(unix)]
 pub const RELAUNCH_WAIT_TIMEOUT_SECS: u64 = 30;
 /// Sufixo que o Linux acrescenta a `current_exe()` quando o binário foi substituído (rsync).
+#[cfg(any(unix, test))]
 pub const DELETED_EXE_SUFFIX: &str = " (deleted)";
 
 /// Linux (ticket 07): pasta do app dentro do tarball e do prefixo do usuário (`db-modeling.app`).
@@ -254,6 +255,14 @@ pub const LINUX_STDERR_MAX_CHARS: usize = 400;
 #[cfg(target_os = "linux")]
 pub const LINUX_MISSING_TOOL_HINT: &str =
     "instale com o gerenciador de pacotes (ex.: sudo apt install rsync, sudo dnf install rsync)";
+/// Linux: chaves `i18n` do motivo de não atualizar quando o executável não está no layout do
+/// tarball ou está num prefixo de sistema.
+#[cfg(any(target_os = "linux", test))]
+pub const KEY_LINUX_NOT_TARBALL: &str =
+    "Só a instalação pelo install.sh se atualiza sozinha; atualize manualmente";
+#[cfg(any(target_os = "linux", test))]
+pub const KEY_LINUX_SYSTEM_PREFIX: &str =
+    "Instalado numa pasta do sistema; atualize pelo gerenciador de pacotes ou pelo install.sh";
 /// Diretório de processos do Linux (existência de `/proc/<pid>` = processo vivo).
 #[cfg(target_os = "linux")]
 pub const PROC_DIR: &str = "/proc";

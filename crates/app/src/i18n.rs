@@ -1072,11 +1072,11 @@ const TRANSLATIONS: &[(&str, &str)] = &[
         "No write permission on the app folder; update manually",
     ),
     (
-        crate::updater_ui::KEY_LINUX_NOT_TARBALL,
+        "Só a instalação pelo install.sh se atualiza sozinha; atualize manualmente",
         "Only the install.sh installation updates itself; update manually",
     ),
     (
-        crate::updater_ui::KEY_LINUX_SYSTEM_PREFIX,
+        "Instalado numa pasta do sistema; atualize pelo gerenciador de pacotes ou pelo install.sh",
         "Installed in a system folder; update with the package manager or install.sh",
     ),
     (
