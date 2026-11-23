@@ -1,36 +1,53 @@
-//! Instalador Linux (ticket 07), no modelo do Zed: `tar` do tarball verificado em um diretório
-//! privado e `rsync -av --delete db-modeling.app` para o prefixo do usuário (`~/.local`).
+//! Instalador Linux, no modelo do Zed, para as três formas de instalação do app:
 //!
-//! - **Nunca usa root**, `sudo`, `pkexec`, `apt` ou `dnf`. Pasta sem permissão de escrita faz o
-//!   `rsync` falhar e a falha vira "Falha ao atualizar" (via [`InstallError::Failed`]).
-//! - **Onde instala:** o prefixo é derivado do executável em uso: só instala quando ele está em
+//! - **Tarball / `install.sh`** (ticket 07): `tar` do tarball verificado em um diretório privado e
+//!   `rsync -av --delete db-modeling.app` para o prefixo do usuário (`~/.local`). Sem root: pasta
+//!   sem permissão de escrita faz o `rsync` falhar e a falha vira "Falha ao atualizar" (via
+//!   [`InstallError::Failed`]).
+//! - **`.deb` e `.rpm`**: o pacote verificado (SHA-256 + minisign, pelo `updater-net`) é instalado
+//!   por cima com `pkexec dpkg -i <arquivo>` / `pkexec dnf install -y <arquivo>`. **O `pkexec` é o
+//!   único caminho privilegiado**: o polkit abre o diálogo de senha do próprio sistema e o app
+//!   nunca vê a senha. Sem `pkexec` no `PATH` o instalador fica "indisponível" e a UI orienta
+//!   baixar o pacote na página de Releases. Nada passa por shell: cada argumento é um item do
+//!   [`Command`].
+//!
+//! - **Como detecta:** [`detect_install_kind`] olha o executável em uso. Se está em
 //!   `<prefixo>/db-modeling.app/bin/db-modeling` (layout do tarball; `current_exe()` pode terminar
-//!   em ` (deleted)` depois de uma atualização, tratado por [`clean_exe_path`]). Qualquer outro
-//!   caminho (build de desenvolvimento, `/usr/bin` de pacote) é "indisponível": não baixa nem
-//!   copia nada, porque o `rsync` iria para um lugar que o processo em execução não usa.
+//!   em ` (deleted)` depois de uma atualização, tratado por [`clean_exe_path`]) é tarball. Senão,
+//!   `dpkg -S <exe>` (pacote `db-modeling`) indica `.deb` e `rpm -qf <exe>` indica `.rpm`. Qualquer
+//!   outro caminho (build de desenvolvimento) é "indisponível": não baixa nem copia nada, porque a
+//!   atualização iria para um lugar que o processo em execução não usa.
 //! - `.desktop`, ícones e o symlink `~/.local/bin/db-modeling` são do `install.sh`; o updater só
 //!   troca a pasta `db-modeling.app` inteira (o `--delete` só age dentro dela).
 //!
-//! A lógica pura (prefixo, comandos) é testada sem tocar o disco; a execução real é testada em
-//! diretório temporário com `tar` e `rsync` reais (os testes pulam se faltarem).
+//! A lógica pura (detecção, comandos) é testada sem tocar o disco; a execução real do tarball é
+//! testada em diretório temporário com `tar` e `rsync` reais (os testes pulam se faltarem).
 
-use std::ffi::OsString;
+use std::ffi::{OsStr, OsString};
+use std::os::unix::fs::PermissionsExt as _;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::sync::OnceLock;
 
-use updater::platform::PlatformKey;
+use updater::platform::{PackageFormat, PlatformKey};
 use updater_net::private_dir::ensure_private_dir;
 use updater_net::round::VerifiedUpdate;
 
 use crate::constants::{
-    LINUX_APP_DIR_NAME, LINUX_BIN_DIR_NAME, LINUX_EXE_NAME, LINUX_EXTRACT_DIR_NAME,
-    LINUX_MISSING_TOOL_HINT, LINUX_RSYNC_ARCHIVE_FLAGS, LINUX_RSYNC_BIN, LINUX_RSYNC_DELETE_FLAG,
-    LINUX_RSYNC_NO_LINKS_FLAG, LINUX_STDERR_MAX_CHARS, LINUX_SYSTEM_PREFIXES, LINUX_TAR_BIN,
-    LINUX_TAR_DEST_FLAG, LINUX_TAR_EXTRACT_FLAGS, LINUX_TAR_NO_SAME_OWNER_FLAG,
+    ENV_PATH, LINUX_APP_DIR_NAME, LINUX_BIN_DIR_NAME, LINUX_DNF_ASSUME_YES_FLAG, LINUX_DNF_BIN,
+    LINUX_DNF_INSTALL_ARG, LINUX_DPKG_ARCH_SEPARATOR, LINUX_DPKG_BIN, LINUX_DPKG_INSTALL_FLAG,
+    LINUX_DPKG_OWNER_FLAG, LINUX_DPKG_OWNER_SEPARATOR, LINUX_DPKG_OWNERS_SEPARATOR, LINUX_EXE_NAME,
+    LINUX_EXTRACT_DIR_NAME, LINUX_MISSING_TOOL_HINT, LINUX_PACKAGE_NAME, LINUX_PKEXEC_BIN,
+    LINUX_RPM_BIN, LINUX_RPM_NAME_FORMAT, LINUX_RPM_OWNER_FLAG, LINUX_RPM_QUERYFORMAT_FLAG,
+    LINUX_RSYNC_ARCHIVE_FLAGS, LINUX_RSYNC_BIN, LINUX_RSYNC_DELETE_FLAG, LINUX_RSYNC_NO_LINKS_FLAG,
+    LINUX_STDERR_MAX_CHARS, LINUX_SYSTEM_PREFIXES, LINUX_TAR_BIN, LINUX_TAR_DEST_FLAG,
+    LINUX_TAR_EXTRACT_FLAGS, LINUX_TAR_NO_SAME_OWNER_FLAG, UNIX_EXEC_BITS,
 };
 use crate::relaunch::clean_exe_path;
 use crate::update_install::{InstallError, Installer};
-use crate::updater_ui::{KEY_LINUX_NOT_TARBALL, KEY_LINUX_SYSTEM_PREFIX, KEY_UNSUPPORTED_PLATFORM};
+use crate::updater_ui::{
+    KEY_LINUX_NO_PKEXEC, KEY_LINUX_NOT_TARBALL, KEY_LINUX_SYSTEM_PREFIX, KEY_UNSUPPORTED_PLATFORM,
+};
 
 /// Por que a instalação no prefixo do usuário não aconteceu.
 #[derive(Debug, PartialEq, Eq)]
@@ -56,8 +73,12 @@ pub enum LinuxInstallError {
     InvalidArtifact(String),
     /// Erro de E/S ao preparar o diretório de extração.
     Io(String),
-    /// O artefato verificado não é o de Linux `x86_64`.
+    /// O artefato verificado não é o da forma de instalação em uso (tarball, `.deb` ou `.rpm`).
     WrongPlatform,
+    /// Instalação por pacote sem `pkexec` no `PATH`: só dá para baixar e instalar à mão.
+    PkexecMissing,
+    /// O caminho do pacote baixado não é absoluto (o `dnf` o trataria como nome de pacote).
+    RelativePackagePath(PathBuf),
 }
 
 impl std::fmt::Display for LinuxInstallError {
@@ -87,7 +108,15 @@ impl std::fmt::Display for LinuxInstallError {
             },
             Self::InvalidArtifact(reason) => write!(f, "tarball inválido: {reason}"),
             Self::Io(error) => write!(f, "diretório de extração: {error}"),
-            Self::WrongPlatform => f.write_str("o artefato verificado não é de Linux x86_64"),
+            Self::WrongPlatform => {
+                f.write_str("o artefato verificado não é o da forma de instalação em uso")
+            }
+            Self::PkexecMissing => f.write_str(
+                "`pkexec` não encontrado: baixe o pacote na página de Releases e instale manualmente",
+            ),
+            Self::RelativePackagePath(path) => {
+                write!(f, "caminho do pacote não é absoluto: {}", path.display())
+            }
         }
     }
 }
@@ -133,6 +162,141 @@ pub fn rsync_command(app_dir: &Path, prefix: &Path) -> CommandSpec {
             dest,
         ],
     }
+}
+
+/// Consulta de dono do executável no `.deb`: `dpkg -S <exe>`.
+#[must_use]
+pub fn dpkg_query_command(exe: &Path) -> CommandSpec {
+    CommandSpec {
+        program: LINUX_DPKG_BIN,
+        args: vec![LINUX_DPKG_OWNER_FLAG.into(), exe.into()],
+    }
+}
+
+/// Consulta de dono do executável no `.rpm`: `rpm -qf --queryformat %{NAME} <exe>`.
+#[must_use]
+pub fn rpm_query_command(exe: &Path) -> CommandSpec {
+    CommandSpec {
+        program: LINUX_RPM_BIN,
+        args: vec![
+            LINUX_RPM_OWNER_FLAG.into(),
+            LINUX_RPM_QUERYFORMAT_FLAG.into(),
+            LINUX_RPM_NAME_FORMAT.into(),
+            exe.into(),
+        ],
+    }
+}
+
+/// Instalação do pacote baixado com privilégio: `pkexec dpkg -i <deb>` ou
+/// `pkexec dnf install -y <rpm>`. O arquivo vai como um único argumento (sem shell).
+#[must_use]
+pub fn package_install_command(format: PackageFormat, package: &Path) -> CommandSpec {
+    let args = match format {
+        PackageFormat::Deb => vec![
+            LINUX_DPKG_BIN.into(),
+            LINUX_DPKG_INSTALL_FLAG.into(),
+            package.into(),
+        ],
+        PackageFormat::Rpm => vec![
+            LINUX_DNF_BIN.into(),
+            LINUX_DNF_INSTALL_ARG.into(),
+            LINUX_DNF_ASSUME_YES_FLAG.into(),
+            package.into(),
+        ],
+    };
+    CommandSpec {
+        program: LINUX_PKEXEC_BIN,
+        args,
+    }
+}
+
+/// A saída do `dpkg -S` (`pacote[:arq][, outro]: caminho`) lista o pacote do app como dono?
+#[must_use]
+pub fn dpkg_owner_is_app(stdout: &str) -> bool {
+    stdout
+        .lines()
+        .filter_map(|line| line.split_once(LINUX_DPKG_OWNER_SEPARATOR))
+        .flat_map(|(owners, _path)| owners.split(LINUX_DPKG_OWNERS_SEPARATOR))
+        .filter_map(|owner| owner.split(LINUX_DPKG_ARCH_SEPARATOR).next())
+        .any(|name| name == LINUX_PACKAGE_NAME)
+}
+
+/// A saída do `rpm -qf --queryformat %{NAME}` é o nome do pacote do app?
+#[must_use]
+pub fn rpm_owner_is_app(stdout: &str) -> bool {
+    stdout.lines().any(|name| name.trim() == LINUX_PACKAGE_NAME)
+}
+
+/// Como o app em execução foi instalado.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum InstallKind {
+    /// Layout do tarball / `install.sh`, com o prefixo do usuário.
+    Tarball(PathBuf),
+    /// Pacote do sistema (`.deb` ou `.rpm`).
+    Package(PackageFormat),
+}
+
+impl InstallKind {
+    /// Chave do artefato correspondente no manifesto.
+    #[must_use]
+    pub fn platform_key(&self) -> PlatformKey {
+        match self {
+            Self::Tarball(_) => PlatformKey::LinuxX86_64,
+            Self::Package(format) => PlatformKey::LinuxX86_64.for_package(*format),
+        }
+    }
+}
+
+/// Descobre como o executável `exe` foi instalado. `query` roda um comando de consulta e devolve
+/// o `stdout` se ele terminou com sucesso (injetável: os testes não executam nada).
+///
+/// # Errors
+/// [`LinuxInstallError::SystemPrefix`] para o layout do tarball em prefixo de sistema;
+/// [`LinuxInstallError::NotTarballLayout`] se não é tarball nem pertence a um pacote do app.
+pub fn detect_install_kind(
+    exe: &Path,
+    query: &dyn Fn(&CommandSpec) -> Option<String>,
+) -> Result<InstallKind, LinuxInstallError> {
+    let clean = match resolve_prefix(exe) {
+        Ok(prefix) => return Ok(InstallKind::Tarball(prefix)),
+        Err(LinuxInstallError::NotTarballLayout(clean)) => clean,
+        Err(other) => return Err(other),
+    };
+    if query(&dpkg_query_command(&clean)).is_some_and(|out| dpkg_owner_is_app(&out)) {
+        return Ok(InstallKind::Package(PackageFormat::Deb));
+    }
+    if query(&rpm_query_command(&clean)).is_some_and(|out| rpm_owner_is_app(&out)) {
+        return Ok(InstallKind::Package(PackageFormat::Rpm));
+    }
+    Err(LinuxInstallError::NotTarballLayout(clean))
+}
+
+/// Executa `spec` sem shell e devolve o `stdout` se saiu com sucesso (programa ausente, falha ou
+/// saída que não é UTF-8 viram `None`).
+fn query_stdout(spec: &CommandSpec) -> Option<String> {
+    let output = Command::new(spec.program)
+        .args(&spec.args)
+        .stdin(Stdio::null())
+        .stderr(Stdio::null())
+        .output()
+        .ok()?;
+    output
+        .status
+        .success()
+        .then(|| String::from_utf8_lossy(&output.stdout).into_owned())
+}
+
+/// `program` é um arquivo executável em algum diretório de `path` (formato do `PATH`)?
+fn program_in_path(program: &str, path: &OsStr) -> bool {
+    std::env::split_paths(path).any(|dir| {
+        std::fs::metadata(dir.join(program))
+            .is_ok_and(|meta| meta.is_file() && meta.permissions().mode() & UNIX_EXEC_BITS != 0)
+    })
+}
+
+/// O `pkexec` está disponível neste ambiente?
+fn pkexec_available() -> bool {
+    std::env::var_os(ENV_PATH).is_some_and(|path| program_in_path(LINUX_PKEXEC_BIN, &path))
 }
 
 /// Prefixo de instalação (a pasta que contém `db-modeling.app`) a partir do executável em uso.
@@ -284,57 +448,99 @@ pub fn install_artifact(
     run(&rsync_command(&app_dir, prefix))
 }
 
-/// Instalador Linux por tarball. Deriva o prefixo do executável em uso.
-#[derive(Debug, Default, Clone, Copy)]
-pub struct LinuxInstaller;
+/// Instala o pacote verificado por cima do instalado, com `pkexec` (o polkit pede a senha).
+/// Não verifica o SHA-256 (o controlador já chamou `recheck`).
+///
+/// # Errors
+/// [`LinuxInstallError::RelativePackagePath`] se o caminho não é absoluto;
+/// [`LinuxInstallError::PkexecMissing`] sem `pkexec` no `PATH`; falhas de [`run`].
+pub fn install_package(format: PackageFormat, package: &Path) -> Result<(), LinuxInstallError> {
+    if !package.is_absolute() {
+        return Err(LinuxInstallError::RelativePackagePath(
+            package.to_path_buf(),
+        ));
+    }
+    run(&package_install_command(format, package)).map_err(|error| match error {
+        LinuxInstallError::MissingTool(LINUX_PKEXEC_BIN) => LinuxInstallError::PkexecMissing,
+        other => other,
+    })
+}
+
+/// Instalador Linux: tarball (`tar` + `rsync`) ou pacote (`pkexec`), conforme a instalação em uso.
+/// A detecção roda uma vez (consulta `dpkg`/`rpm`) e fica guardada.
+#[derive(Debug, Default)]
+pub struct LinuxInstaller {
+    kind: OnceLock<Result<InstallKind, LinuxInstallError>>,
+}
 
 impl LinuxInstaller {
-    fn prefix() -> Result<PathBuf, LinuxInstallError> {
-        let exe =
-            std::env::current_exe().map_err(|error| LinuxInstallError::Io(error.to_string()))?;
-        resolve_prefix(&exe)
+    fn kind(&self) -> &Result<InstallKind, LinuxInstallError> {
+        self.kind.get_or_init(|| {
+            let exe = std::env::current_exe()
+                .map_err(|error| LinuxInstallError::Io(error.to_string()))?;
+            detect_install_kind(&exe, &query_stdout)
+        })
     }
 }
 
-/// Chave `i18n` do motivo de não atualizar, para o erro de [`resolve_prefix`]: diz se é o layout
-/// (build de desenvolvimento, `/usr/bin` sem arquivo de explicação) ou um prefixo de sistema.
+/// Chave `i18n` do motivo de não atualizar, para o erro de [`detect_install_kind`]: diz se é o
+/// layout (build de desenvolvimento), um prefixo de sistema ou a falta do `pkexec`.
 #[must_use]
 pub fn unsupported_note_for(error: &LinuxInstallError) -> &'static str {
     match error {
         LinuxInstallError::NotTarballLayout(_) => KEY_LINUX_NOT_TARBALL,
         LinuxInstallError::SystemPrefix(_) => KEY_LINUX_SYSTEM_PREFIX,
+        LinuxInstallError::PkexecMissing => KEY_LINUX_NO_PKEXEC,
         _ => KEY_UNSUPPORTED_PLATFORM,
     }
 }
 
 impl Installer for LinuxInstaller {
     fn is_supported(&self) -> bool {
-        Self::prefix().is_ok()
+        match self.kind() {
+            Ok(InstallKind::Tarball(_)) => true,
+            Ok(InstallKind::Package(_)) => pkexec_available(),
+            Err(_) => false,
+        }
     }
 
     fn unsupported_note(&self) -> &'static str {
-        Self::prefix().map_or_else(
-            |error| unsupported_note_for(&error),
-            |_| KEY_UNSUPPORTED_PLATFORM,
-        )
+        match self.kind() {
+            Err(error) => unsupported_note_for(error),
+            Ok(InstallKind::Package(_)) if !pkexec_available() => KEY_LINUX_NO_PKEXEC,
+            Ok(_) => KEY_UNSUPPORTED_PLATFORM,
+        }
+    }
+
+    fn platform(&self) -> Option<PlatformKey> {
+        match self.kind() {
+            Ok(kind) => Some(kind.platform_key()),
+            Err(_) => PlatformKey::current(),
+        }
     }
 
     fn install(&self, update: &VerifiedUpdate) -> Result<(), InstallError> {
-        if update.platform() != PlatformKey::LinuxX86_64 {
-            return Err(InstallError::Failed(
-                LinuxInstallError::WrongPlatform.to_string(),
-            ));
+        let failed = |error: LinuxInstallError| InstallError::Failed(error.to_string());
+        let kind = self
+            .kind()
+            .as_ref()
+            .map_err(|error| InstallError::Failed(error.to_string()))?;
+        if update.platform() != kind.platform_key() {
+            return Err(failed(LinuxInstallError::WrongPlatform));
         }
-        let prefix = Self::prefix().map_err(|error| InstallError::Failed(error.to_string()))?;
-        install_artifact(update.path(), update.updates_dir(), &prefix)
-            .map_err(|error| InstallError::Failed(error.to_string()))
+        match kind {
+            InstallKind::Tarball(prefix) => {
+                install_artifact(update.path(), update.updates_dir(), prefix)
+            }
+            InstallKind::Package(format) => install_package(*format, update.path()),
+        }
+        .map_err(failed)
     }
 }
 
 #[cfg(test)]
 mod tests {
     use std::fs;
-    use std::os::unix::fs::PermissionsExt as _;
 
     use super::*;
 
@@ -502,6 +708,235 @@ mod tests {
                 !FORBIDDEN_PROGRAMS.iter().any(|bad| *bad == arg)
             }));
         }
+    }
+
+    /// Consulta falsa: devolve a saída de cada programa (ou `None` = falhou/ausente).
+    fn fake_query(
+        dpkg: Option<&str>,
+        rpm: Option<&str>,
+    ) -> impl Fn(&CommandSpec) -> Option<String> {
+        let dpkg = dpkg.map(str::to_owned);
+        let rpm = rpm.map(str::to_owned);
+        move |spec| match spec.program {
+            "dpkg" => dpkg.clone(),
+            "rpm" => rpm.clone(),
+            other => panic!("consulta inesperada: {other}"),
+        }
+    }
+
+    #[test]
+    fn dpkg_reconhece_o_pacote_dono_do_executavel() {
+        for out in [
+            "db-modeling: /usr/bin/db-modeling\n",
+            "db-modeling:amd64: /usr/bin/db-modeling\n",
+            "outro, db-modeling: /usr/bin/db-modeling\n",
+        ] {
+            assert!(dpkg_owner_is_app(out), "{out}");
+        }
+        for out in [
+            "",
+            "dpkg-query: no path found matching pattern /usr/bin/db-modeling\n",
+            "db-modeling-extra: /usr/bin/db-modeling\n",
+            "outro: /usr/bin/db-modeling\n",
+            "outro: /usr/share/db-modeling: x\n",
+        ] {
+            assert!(!dpkg_owner_is_app(out), "{out}");
+        }
+    }
+
+    #[test]
+    fn rpm_reconhece_o_pacote_dono_do_executavel() {
+        assert!(rpm_owner_is_app("db-modeling"));
+        assert!(rpm_owner_is_app("db-modeling\n"));
+        assert!(!rpm_owner_is_app(""));
+        assert!(!rpm_owner_is_app("db-modeling-extra"));
+        assert!(!rpm_owner_is_app("file /x is not owned by any package"));
+    }
+
+    #[test]
+    fn deteccao_prefere_o_layout_do_tarball() {
+        let query = fake_query(Some("db-modeling: x"), None);
+        assert_eq!(
+            detect_install_kind(Path::new(HOME_EXE), &query).unwrap(),
+            InstallKind::Tarball(PathBuf::from("/home/u/.local"))
+        );
+    }
+
+    #[test]
+    fn deteccao_acha_deb_e_rpm_pelo_dono_do_executavel() {
+        let exe = Path::new("/usr/bin/db-modeling");
+        assert_eq!(
+            detect_install_kind(
+                exe,
+                &fake_query(Some("db-modeling: /usr/bin/db-modeling"), None)
+            )
+            .unwrap(),
+            InstallKind::Package(PackageFormat::Deb)
+        );
+        assert_eq!(
+            detect_install_kind(exe, &fake_query(None, Some("db-modeling"))).unwrap(),
+            InstallKind::Package(PackageFormat::Rpm)
+        );
+        // `(deleted)` depois da troca do arquivo não atrapalha
+        let deleted = format!(
+            "/usr/bin/db-modeling{}",
+            crate::constants::DELETED_EXE_SUFFIX
+        );
+        assert_eq!(
+            detect_install_kind(Path::new(&deleted), &fake_query(None, Some("db-modeling")))
+                .unwrap(),
+            InstallKind::Package(PackageFormat::Rpm)
+        );
+    }
+
+    #[test]
+    fn deteccao_consulta_o_caminho_limpo() {
+        let seen = std::cell::RefCell::new(Vec::new());
+        let query = |spec: &CommandSpec| {
+            seen.borrow_mut().push(spec.args.clone());
+            None
+        };
+        let deleted = format!(
+            "/usr/bin/db-modeling{}",
+            crate::constants::DELETED_EXE_SUFFIX
+        );
+        let _ = detect_install_kind(Path::new(&deleted), &query);
+        let seen = seen.into_inner();
+        assert_eq!(seen.len(), 2, "dpkg e rpm");
+        assert!(
+            seen.iter()
+                .all(|args| args.last().unwrap() == "/usr/bin/db-modeling")
+        );
+    }
+
+    #[test]
+    fn deteccao_sem_dono_nem_layout_e_indisponivel() {
+        let query = fake_query(None, None);
+        for exe in ["/usr/bin/db-modeling", "/home/u/proj/target/release/app"] {
+            assert!(
+                matches!(
+                    detect_install_kind(Path::new(exe), &query),
+                    Err(LinuxInstallError::NotTarballLayout(_))
+                ),
+                "{exe}"
+            );
+        }
+        // saída que não é do app (outro pacote dono)
+        assert!(
+            detect_install_kind(
+                Path::new("/usr/bin/db-modeling"),
+                &fake_query(Some("outro: /usr/bin/db-modeling"), Some("outro"))
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn prefixo_de_sistema_nao_consulta_pacotes() {
+        let query = |_: &CommandSpec| -> Option<String> { panic!("não deve consultar") };
+        assert!(matches!(
+            detect_install_kind(Path::new("/usr/db-modeling.app/bin/db-modeling"), &query),
+            Err(LinuxInstallError::SystemPrefix(_))
+        ));
+    }
+
+    #[test]
+    fn consultas_de_dono_sao_dpkg_s_e_rpm_qf_sem_shell() {
+        let exe = Path::new("/usr/bin/db-modeling");
+        let dpkg = dpkg_query_command(exe);
+        assert_eq!(dpkg.program, "dpkg");
+        assert_eq!(dpkg.args, ["-S", "/usr/bin/db-modeling"]);
+        let rpm = rpm_query_command(exe);
+        assert_eq!(rpm.program, "rpm");
+        assert_eq!(
+            rpm.args,
+            ["-qf", "--queryformat", "%{NAME}", "/usr/bin/db-modeling"]
+        );
+    }
+
+    #[test]
+    fn instalacao_de_pacote_usa_pkexec_com_argumentos_separados() {
+        let deb = package_install_command(
+            PackageFormat::Deb,
+            Path::new("/home/u/.cache/db-modeling/updates/a b; rm -rf x.deb"),
+        );
+        assert_eq!(deb.program, "pkexec");
+        assert_eq!(
+            deb.args,
+            [
+                "dpkg",
+                "-i",
+                "/home/u/.cache/db-modeling/updates/a b; rm -rf x.deb"
+            ]
+        );
+        let rpm = package_install_command(
+            PackageFormat::Rpm,
+            Path::new("/home/u/.cache/db-modeling/updates/db-modeling.rpm"),
+        );
+        assert_eq!(rpm.program, "pkexec");
+        assert_eq!(
+            rpm.args,
+            [
+                "dnf",
+                "install",
+                "-y",
+                "/home/u/.cache/db-modeling/updates/db-modeling.rpm"
+            ]
+        );
+    }
+
+    #[test]
+    fn plataforma_do_manifesto_segue_a_forma_de_instalacao() {
+        assert_eq!(
+            InstallKind::Tarball(PathBuf::from("/x")).platform_key(),
+            PlatformKey::LinuxX86_64
+        );
+        assert_eq!(
+            InstallKind::Package(PackageFormat::Deb).platform_key(),
+            PlatformKey::LinuxX86_64Deb
+        );
+        assert_eq!(
+            InstallKind::Package(PackageFormat::Rpm).platform_key(),
+            PlatformKey::LinuxX86_64Rpm
+        );
+    }
+
+    #[test]
+    fn programa_no_path_exige_arquivo_executavel() {
+        let dir = tempfile::tempdir().unwrap();
+        let other = tempfile::tempdir().unwrap();
+        let tool = dir.path().join("pkexec");
+        fs::write(&tool, "#!/bin/sh\n").unwrap();
+        fs::set_permissions(&tool, fs::Permissions::from_mode(0o755)).unwrap();
+        let path = std::env::join_paths([other.path(), dir.path()]).unwrap();
+        assert!(program_in_path("pkexec", &path));
+        assert!(!program_in_path("outro", &path));
+        // sem bit de execução não conta
+        fs::set_permissions(&tool, fs::Permissions::from_mode(0o644)).unwrap();
+        assert!(!program_in_path("pkexec", &path));
+        // pasta com o nome do programa não conta
+        fs::create_dir(other.path().join("dnf")).unwrap();
+        assert!(!program_in_path("dnf", &path));
+        assert!(!program_in_path("pkexec", OsStr::new("")));
+    }
+
+    #[test]
+    fn pacote_com_caminho_relativo_e_recusado() {
+        let error = install_package(PackageFormat::Deb, Path::new("rel/a.deb")).unwrap_err();
+        assert!(matches!(error, LinuxInstallError::RelativePackagePath(_)));
+    }
+
+    #[test]
+    fn mensagens_de_pacote_orientam_a_pagina_de_releases() {
+        assert!(
+            LinuxInstallError::PkexecMissing
+                .to_string()
+                .contains("Releases")
+        );
+        assert_eq!(
+            unsupported_note_for(&LinuxInstallError::PkexecMissing),
+            KEY_LINUX_NO_PKEXEC
+        );
     }
 
     #[test]

@@ -32,6 +32,10 @@ pub const PLATFORM_WINDOWS_X86_64: &str = "windows-x86_64";
 pub const PLATFORM_MACOS_AARCH64: &str = "macos-aarch64";
 /// Chave de plataforma: Linux `x86_64`.
 pub const PLATFORM_LINUX_X86_64: &str = "linux-x86_64";
+/// Chave de plataforma: Linux `x86_64` instalado por `.deb`.
+pub const PLATFORM_LINUX_X86_64_DEB: &str = "linux-x86_64-deb";
+/// Chave de plataforma: Linux `x86_64` instalado por `.rpm`.
+pub const PLATFORM_LINUX_X86_64_RPM: &str = "linux-x86_64-rpm";
 /// Valor de `std::env::consts::OS` para Windows.
 pub const OS_WINDOWS: &str = "windows";
 /// Valor de `std::env::consts::OS` para macOS.
@@ -45,10 +49,8 @@ pub const ARCH_AARCH64: &str = "aarch64";
 
 // --- Política ----------------------------------------------------------------------------------
 
-/// Variável de ambiente com a explicação de desativação (override do usuário/empacotador).
+/// Variável de ambiente com a explicação de desativação (opt-out manual do usuário/empacotador).
 pub const ENV_UPDATE_EXPLANATION: &str = "DBM_UPDATE_EXPLANATION";
-/// Arquivo instalado pelos `.deb`/`.rpm` com a explicação de desativação.
-pub const UPDATE_EXPLANATION_FILE: &str = "/usr/lib/db-modeling/update-explanation";
 /// Variáveis que apontam para `%ProgramFiles%` no Windows.
 pub const ENV_PROGRAM_FILES: [&str; 3] = ["ProgramFiles", "ProgramFiles(x86)", "ProgramW6432"];
 /// Marcador de App Translocation do macOS no caminho do bundle.

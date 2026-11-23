@@ -16,7 +16,8 @@ set -euo pipefail
 readonly DEFAULT_RELEASE_REPO="dbmodeling/dbml"
 readonly MANIFEST_FILE_NAME="latest.json"
 readonly SIGNATURE_FILE_NAME="latest.json.sig"
-readonly EXPECTED_PLATFORM_COUNT=3
+# windows, macos, linux (tarball), linux-deb e linux-rpm
+readonly EXPECTED_PLATFORM_COUNT=5
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # shellcheck source=lib/update-public-key.sh

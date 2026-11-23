@@ -2,7 +2,7 @@
   "name": "dbmodeling-vscode",
   "displayName": "DB Modeling",
   "description": "Visual and bidirectional relational database modeling with DBML in VS Code",
-  "version": "0.4.0",
+  "version": "0.4.1",
   "type": "module",
   "publisher": "dbmodeling",
   "license": "PolyForm-Noncommercial-1.0.0",

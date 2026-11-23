@@ -324,9 +324,6 @@ impl PolicyEnv for FakeEnv {
     fn var(&self, name: &str) -> Option<String> {
         self.vars.get(name).cloned()
     }
-    fn read_file(&self, _path: &Path) -> Option<String> {
-        None
-    }
     fn target_os(&self) -> Option<TargetOs> {
         Some(TargetOs::Linux)
     }

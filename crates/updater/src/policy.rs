@@ -10,8 +10,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::constants::{
     APP_TRANSLOCATION_MARKER, ENV_PROGRAM_FILES, ENV_UPDATE_EXPLANATION, MACOS_BUNDLE_EXE_DEPTH,
-    MACOS_BUNDLE_EXTENSION, NORMALIZED_PATH_SEPARATOR, UPDATE_EXPLANATION_FILE,
-    VERBATIM_PATH_PREFIX, WINDOWS_PATH_SEPARATOR, WRITE_PROBE_PREFIX,
+    MACOS_BUNDLE_EXTENSION, NORMALIZED_PATH_SEPARATOR, VERBATIM_PATH_PREFIX,
+    WINDOWS_PATH_SEPARATOR, WRITE_PROBE_PREFIX,
 };
 use crate::platform::TargetOs;
 
@@ -20,8 +20,6 @@ use crate::platform::TargetOs;
 pub enum DisabledReason {
     /// Texto vindo de `DBM_UPDATE_EXPLANATION` (override do usuário/empacotador).
     Env(String),
-    /// Texto do arquivo `/usr/lib/db-modeling/update-explanation` (`.deb`/`.rpm`).
-    File(String),
     /// SO ou arquitetura sem política de atualização conhecida.
     UnsupportedPlatform,
     /// Não foi possível determinar o executável/diretório do app (Windows) ou o bundle `.app`
@@ -39,8 +37,6 @@ pub enum DisabledReason {
 pub trait PolicyEnv {
     /// Valor de uma variável de ambiente.
     fn var(&self, name: &str) -> Option<String>;
-    /// Conteúdo de um arquivo de texto, se existir e for legível.
-    fn read_file(&self, path: &Path) -> Option<String>;
     /// Sistema operacional em execução.
     fn target_os(&self) -> Option<TargetOs>;
     /// Diretório do app (Windows: pasta do executável) ou bundle `.app` (macOS). `None` quando
@@ -95,10 +91,6 @@ static PROBE_COUNTER: AtomicU64 = AtomicU64::new(0);
 impl PolicyEnv for SystemEnv {
     fn var(&self, name: &str) -> Option<String> {
         std::env::var(name).ok()
-    }
-
-    fn read_file(&self, path: &Path) -> Option<String> {
-        fs::read_to_string(path).ok()
     }
 
     fn target_os(&self) -> Option<TargetOs> {
@@ -177,23 +169,17 @@ fn under_program_files(env: &dyn PolicyEnv, dir: &Path) -> bool {
 }
 
 /// Razão de desativação, na ordem de precedência:
-/// 1. variável `DBM_UPDATE_EXPLANATION`;
-/// 2. arquivo `/usr/lib/db-modeling/update-explanation`;
-/// 3. SO desconhecido, ou local do app indeterminado (Windows/macOS): falha fechada;
-/// 4. Windows com o app sob `%ProgramFiles%` ou sem escrita;
-/// 5. macOS com o bundle em App Translocation ou sem escrita no diretório pai do bundle.
+/// 1. variável `DBM_UPDATE_EXPLANATION` (opt-out manual; os pacotes `.deb`/`.rpm` não instalam
+///    mais arquivo de explicação, eles se atualizam como as demais instalações);
+/// 2. SO desconhecido, ou local do app indeterminado (Windows/macOS): falha fechada;
+/// 3. Windows com o app sob `%ProgramFiles%` ou sem escrita;
+/// 4. macOS com o bundle em App Translocation ou sem escrita no diretório pai do bundle.
 ///
 /// `None` significa que o ambiente permite atualizar.
 #[must_use]
 pub fn disabled_reason(env: &dyn PolicyEnv) -> Option<DisabledReason> {
     if let Some(text) = env.var(ENV_UPDATE_EXPLANATION).and_then(|t| non_blank(&t)) {
         return Some(DisabledReason::Env(text));
-    }
-    if let Some(text) = env
-        .read_file(Path::new(UPDATE_EXPLANATION_FILE))
-        .and_then(|t| non_blank(&t))
-    {
-        return Some(DisabledReason::File(text));
     }
     let Some(os) = env.target_os() else {
         return Some(DisabledReason::UnsupportedPlatform);
@@ -240,7 +226,6 @@ mod tests {
     /// Ambiente falso: nada toca o sistema real.
     struct FakeEnv {
         vars: HashMap<String, String>,
-        files: HashMap<PathBuf, String>,
         canonical: HashMap<PathBuf, PathBuf>,
         os: Option<TargetOs>,
         app_dir: Option<PathBuf>,
@@ -252,7 +237,6 @@ mod tests {
         fn new(os: TargetOs) -> Self {
             Self {
                 vars: HashMap::new(),
-                files: HashMap::new(),
                 canonical: HashMap::new(),
                 os: Some(os),
                 app_dir: None,
@@ -263,12 +247,6 @@ mod tests {
 
         fn var(mut self, k: &str, v: &str) -> Self {
             self.vars.insert(k.into(), v.into());
-            self
-        }
-
-        fn file(mut self, text: &str) -> Self {
-            self.files
-                .insert(PathBuf::from(UPDATE_EXPLANATION_FILE), text.into());
             self
         }
 
@@ -291,9 +269,6 @@ mod tests {
     impl PolicyEnv for FakeEnv {
         fn var(&self, name: &str) -> Option<String> {
             self.vars.get(name).cloned()
-        }
-        fn read_file(&self, path: &Path) -> Option<String> {
-            self.files.get(path).cloned()
         }
         fn target_os(&self) -> Option<TargetOs> {
             self.os
@@ -329,46 +304,6 @@ mod tests {
     fn variavel_vazia_e_ignorada() {
         let env = FakeEnv::new(TargetOs::Linux).var("DBM_UPDATE_EXPLANATION", "   ");
         assert_eq!(disabled_reason(&env), None);
-    }
-
-    #[test]
-    fn arquivo_de_explicacao_desativa() {
-        let env = FakeEnv::new(TargetOs::Linux).file("Atualize via apt\n");
-        assert_eq!(
-            disabled_reason(&env),
-            Some(DisabledReason::File("Atualize via apt".into()))
-        );
-    }
-
-    #[test]
-    fn arquivo_vazio_e_ignorado() {
-        assert_eq!(
-            disabled_reason(&FakeEnv::new(TargetOs::Linux).file("\n")),
-            None
-        );
-    }
-
-    #[test]
-    fn variavel_tem_precedencia_sobre_arquivo() {
-        let env = FakeEnv::new(TargetOs::Linux)
-            .file("do arquivo")
-            .var("DBM_UPDATE_EXPLANATION", "da variável");
-        assert_eq!(
-            disabled_reason(&env),
-            Some(DisabledReason::Env("da variável".into()))
-        );
-    }
-
-    #[test]
-    fn arquivo_tem_precedencia_sobre_windows_program_files() {
-        let env = FakeEnv::new(TargetOs::Windows)
-            .file("do arquivo")
-            .var("ProgramFiles", r"C:\Program Files")
-            .app(r"C:\Program Files\DB Modeling");
-        assert_eq!(
-            disabled_reason(&env),
-            Some(DisabledReason::File("do arquivo".into()))
-        );
     }
 
     #[test]
@@ -561,12 +496,7 @@ mod tests {
     }
 
     #[test]
-    fn sistema_le_variavel_e_arquivo() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let file = dir.path().join("explicacao");
-        fs::write(&file, "texto").expect("escrever");
-        assert_eq!(SystemEnv.read_file(&file).as_deref(), Some("texto"));
-        assert_eq!(SystemEnv.read_file(&dir.path().join("nao-existe")), None);
+    fn sistema_le_variavel() {
         assert_eq!(SystemEnv.var("DBM_VARIAVEL_QUE_NAO_EXISTE_NUNCA"), None);
     }
 

@@ -2,7 +2,8 @@
 
 use crate::constants::{
     ARCH_AARCH64, ARCH_X86_64, OS_LINUX, OS_MACOS, OS_WINDOWS, PLATFORM_LINUX_X86_64,
-    PLATFORM_MACOS_AARCH64, PLATFORM_WINDOWS_X86_64,
+    PLATFORM_LINUX_X86_64_DEB, PLATFORM_LINUX_X86_64_RPM, PLATFORM_MACOS_AARCH64,
+    PLATFORM_WINDOWS_X86_64,
 };
 
 /// Sistema operacional suportado pelo updater (usado também pela política).
@@ -35,6 +36,15 @@ impl TargetOs {
     }
 }
 
+/// Formato de pacote do sistema com o qual o app foi instalado no Linux.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PackageFormat {
+    /// `.deb` (Debian/Ubuntu).
+    Deb,
+    /// `.rpm` (Fedora).
+    Rpm,
+}
+
 /// Plataforma com artefato de atualização publicado no manifesto.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum PlatformKey {
@@ -42,12 +52,18 @@ pub enum PlatformKey {
     WindowsX86_64,
     /// `macos-aarch64`.
     MacosAarch64,
-    /// `linux-x86_64`.
+    /// `linux-x86_64` (tarball / `install.sh`).
     LinuxX86_64,
+    /// `linux-x86_64-deb` (pacote `.deb`, Debian/Ubuntu).
+    LinuxX86_64Deb,
+    /// `linux-x86_64-rpm` (pacote `.rpm`, Fedora).
+    LinuxX86_64Rpm,
 }
 
 impl PlatformKey {
-    /// Plataforma desta compilação (`None` em combinações sem artefato, como macOS Intel).
+    /// Plataforma desta compilação (`None` em combinações sem artefato, como macOS Intel). No
+    /// Linux devolve o tarball; quem sabe como o app foi instalado (`.deb`/`.rpm`) escolhe a
+    /// variante com [`PlatformKey::for_package`].
     #[must_use]
     pub fn current() -> Option<Self> {
         Self::detect(std::env::consts::OS, std::env::consts::ARCH)
@@ -64,6 +80,17 @@ impl PlatformKey {
         }
     }
 
+    /// Variante de pacote da mesma plataforma: `Deb`/`Rpm` só existem em Linux `x86_64`; as demais
+    /// chaves não têm variante e voltam como estão.
+    #[must_use]
+    pub fn for_package(self, package: PackageFormat) -> Self {
+        match (self, package) {
+            (Self::LinuxX86_64, PackageFormat::Deb) => Self::LinuxX86_64Deb,
+            (Self::LinuxX86_64, PackageFormat::Rpm) => Self::LinuxX86_64Rpm,
+            (other, _) => other,
+        }
+    }
+
     /// Chave textual usada em `platforms` do manifesto.
     #[must_use]
     pub fn as_str(self) -> &'static str {
@@ -71,6 +98,8 @@ impl PlatformKey {
             Self::WindowsX86_64 => PLATFORM_WINDOWS_X86_64,
             Self::MacosAarch64 => PLATFORM_MACOS_AARCH64,
             Self::LinuxX86_64 => PLATFORM_LINUX_X86_64,
+            Self::LinuxX86_64Deb => PLATFORM_LINUX_X86_64_DEB,
+            Self::LinuxX86_64Rpm => PLATFORM_LINUX_X86_64_RPM,
         }
     }
 }
@@ -108,6 +137,30 @@ mod tests {
         assert_eq!(PlatformKey::WindowsX86_64.as_str(), "windows-x86_64");
         assert_eq!(PlatformKey::MacosAarch64.as_str(), "macos-aarch64");
         assert_eq!(PlatformKey::LinuxX86_64.as_str(), "linux-x86_64");
+        assert_eq!(PlatformKey::LinuxX86_64Deb.as_str(), "linux-x86_64-deb");
+        assert_eq!(PlatformKey::LinuxX86_64Rpm.as_str(), "linux-x86_64-rpm");
+    }
+
+    #[test]
+    fn pacote_escolhe_a_variante_linux() {
+        let linux = PlatformKey::LinuxX86_64;
+        assert_eq!(
+            linux.for_package(PackageFormat::Deb),
+            PlatformKey::LinuxX86_64Deb
+        );
+        assert_eq!(
+            linux.for_package(PackageFormat::Rpm),
+            PlatformKey::LinuxX86_64Rpm
+        );
+        // fora do Linux não há variante
+        assert_eq!(
+            PlatformKey::WindowsX86_64.for_package(PackageFormat::Deb),
+            PlatformKey::WindowsX86_64
+        );
+        assert_eq!(
+            PlatformKey::MacosAarch64.for_package(PackageFormat::Rpm),
+            PlatformKey::MacosAarch64
+        );
     }
 
     #[test]

@@ -233,7 +233,7 @@ checksum = "330a5ed07fa54e4702c9d6c4174f74427fc0ef6e214bbd677ae50a5099946470"
 
 [[package]]
 name = "app"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "anyhow",
  "atomic-write",
@@ -529,7 +529,7 @@ checksum = "1505bd5d3d116872e7271a6d4e16d81d0c8570876c8de68093a09ac269d8aac0"
 
 [[package]]
 name = "atomic-write"
-version = "0.4.0"
+version = "0.4.1"
 
 [[package]]
 name = "atspi"
@@ -570,7 +570,7 @@ dependencies = [
 
 [[package]]
 name = "auto-update-helper"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "tempfile",
  "windows-sys 0.61.2",
@@ -1561,7 +1561,7 @@ checksum = "be1e0bca6c3637f992fc1cc7cbc52a78c1ef6db076dbf1059c4323d6a2048376"
 
 [[package]]
 name = "db-introspect"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "dbml-analysis",
  "percent-encoding",
@@ -1578,7 +1578,7 @@ dependencies = [
 
 [[package]]
 name = "dbml-analysis"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "dbml-syntax",
  "insta",
@@ -1590,7 +1590,7 @@ dependencies = [
 
 [[package]]
 name = "dbml-cli"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "anyhow",
  "atomic-write",
@@ -1621,7 +1621,7 @@ dependencies = [
 
 [[package]]
 name = "dbml-edit"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "dbml-analysis",
  "dbml-syntax",
@@ -1633,7 +1633,7 @@ dependencies = [
 
 [[package]]
 name = "dbml-syntax"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "insta",
  "logos",
@@ -1643,7 +1643,7 @@ dependencies = [
 
 [[package]]
 name = "dbml-wasm"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "db-introspect",
  "dbml-analysis",
@@ -1704,7 +1704,7 @@ dependencies = [
 
 [[package]]
 name = "diagram-export"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "jpeg-encoder",
  "layout",
@@ -3998,7 +3998,7 @@ dependencies = [
 
 [[package]]
 name = "layout"
-version = "0.4.0"
+version = "0.4.1"
 
 [[package]]
 name = "lazy_static"
@@ -6366,7 +6366,7 @@ dependencies = [
 
 [[package]]
 name = "schema"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "serde",
  "serde_json",
@@ -6874,7 +6874,7 @@ dependencies = [
 
 [[package]]
 name = "sql-import"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "dbml-analysis",
  "insta",
@@ -7893,7 +7893,7 @@ checksum = "8ecb6da28b8a351d773b68d5825ac39017e680750f980f3a1a85cd8dd28a47c1"
 
 [[package]]
 name = "updater"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "minisign-verify",
  "semver",
@@ -7908,7 +7908,7 @@ dependencies = [
 
 [[package]]
 name = "updater-net"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "fs4",
  "minisign",

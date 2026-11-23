@@ -305,7 +305,10 @@ impl Controller {
     pub fn start(auto_update: bool) -> Self {
         let installer = platform_installer();
         let availability = Availability::decide(disabled_reason(&SystemEnv), installer.as_ref());
-        Self::spawn(availability, auto_update, installer, net_runner)
+        let platform = installer.platform();
+        Self::spawn(availability, auto_update, installer, move || {
+            net_runner(platform)
+        })
     }
 
     fn spawn(
@@ -554,7 +557,7 @@ fn remember_for_next_start(update: &updater_net::round::VerifiedUpdate, dir: &st
 
 /// Runner de produção: rede real (`ureq` + `rustls`), `ETag` em memória, chaves embutidas.
 /// Construído na própria thread do updater (carregar as raízes do sistema não toca a UI).
-fn net_runner() -> Runner {
+fn net_runner(platform: Option<PlatformKey>) -> Runner {
     let transport = UreqTransport::new(&TransportConfig::from_environment());
     let etags = MemoryEtagStore::new();
     let keys = KeySet::from_environment();
@@ -595,7 +598,7 @@ fn net_runner() -> Runner {
             &RoundParams {
                 cache_dir,
                 current_version: current,
-                platform: PlatformKey::current(),
+                platform,
                 auto_update,
                 trigger,
                 now: SystemTime::now(),
@@ -852,7 +855,7 @@ mod tests {
     #[test]
     fn manual_desativado_mostra_a_razao_sem_pedir_rodada() {
         let shared = Shared::new(
-            Availability::Disabled(DisabledReason::File("use o apt".to_owned())),
+            Availability::Disabled(DisabledReason::Env("use o apt".to_owned())),
             true,
         );
         shared.check_now();
@@ -1059,9 +1062,6 @@ mod tests {
         struct FixtureEnv;
         impl PolicyEnv for FixtureEnv {
             fn var(&self, _name: &str) -> Option<String> {
-                None
-            }
-            fn read_file(&self, _path: &std::path::Path) -> Option<String> {
                 None
             }
             fn target_os(&self) -> Option<TargetOs> {
