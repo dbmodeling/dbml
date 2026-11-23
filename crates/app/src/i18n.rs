@@ -1024,6 +1024,86 @@ const TRANSLATIONS: &[(&str, &str)] = &[
     ("Criar tabela associativa", "Create junction table"),
     ("TABELA ASSOCIATIVA", "JUNCTION TABLE"),
     ("Criar", "Create"),
+    // auto-update (title bar, paleta, configurações)
+    (crate::updater_ui::KEY_CHECKING, "Checking for updates…"),
+    (crate::updater_ui::KEY_DOWNLOADING, "Downloading update…"),
+    (crate::updater_ui::KEY_INSTALLING, "Installing update…"),
+    (crate::updater_ui::KEY_UP_TO_DATE, "Up to date"),
+    (crate::updater_ui::KEY_RESTART, "Restart to update"),
+    (
+        crate::updater_ui::KEY_RESTART_ARIA,
+        "Restart to update to version {}",
+    ),
+    (crate::updater_ui::KEY_FAILED, "Update failed"),
+    (
+        crate::updater_ui::KEY_FAILED_ARIA,
+        "Update failed. Activate to try again",
+    ),
+    (
+        crate::updater_ui::KEY_RESTART_FAILED,
+        "Restart failed. Open the app again",
+    ),
+    (
+        crate::updater_ui::KEY_ANOTHER_INSTANCE,
+        "Another window is already checking for updates",
+    ),
+    (
+        crate::updater_ui::KEY_DISABLED_ARIA,
+        "Updates disabled: {}. Activate to open the Releases page",
+    ),
+    (
+        crate::updater_ui::KEY_UNSUPPORTED_PLATFORM,
+        "Automatic updates are not available on this platform",
+    ),
+    (
+        crate::updater_ui::KEY_UNKNOWN_LOCATION,
+        "Could not locate the app installation; update manually",
+    ),
+    (
+        crate::updater_ui::KEY_PROGRAM_FILES,
+        "Installed for all users; update by downloading the new installer",
+    ),
+    (
+        crate::updater_ui::KEY_TRANSLOCATION,
+        "Move the app to the Applications folder to update",
+    ),
+    (
+        crate::updater_ui::KEY_NOT_WRITABLE,
+        "No write permission on the app folder; update manually",
+    ),
+    (
+        "Só a instalação pelo install.sh se atualiza sozinha; atualize manualmente",
+        "Only the install.sh installation updates itself; update manually",
+    ),
+    (
+        "Instalado numa pasta do sistema; atualize pelo gerenciador de pacotes ou pelo install.sh",
+        "Installed in a system folder; update with the package manager or install.sh",
+    ),
+    (
+        crate::constants::RELAUNCH_MANUAL_HINT,
+        "The new version is already installed. Open DB Modeling again from the applications menu.",
+    ),
+    (
+        crate::constants::RELAUNCH_USAGE,
+        "Internal usage: db-modeling --relaunch-after <pid>",
+    ),
+    ("Verificar atualizações", "Check for updates"),
+    (
+        "Alternar atualização automática",
+        "Toggle automatic updates",
+    ),
+    ("Atualizar automaticamente", "Update automatically"),
+    (
+        "Baixa e instala novas versões em segundo plano",
+        "Downloads and installs new versions in the background",
+    ),
+    ("ATUALIZAÇÕES", "UPDATES"),
+    ("Ver Releases", "View Releases"),
+    ("Atualizado para {}", "Updated to {}"),
+    (
+        "Clique para ver as notas da versão",
+        "Click to see the release notes",
+    ),
 ];
 
 pub fn t(text: &'static str) -> &'static str {
@@ -1071,7 +1151,17 @@ mod tests {
             assert!(keys.insert(pt));
             assert_ne!(*en, "");
         }
-        for key in ["Arquivo", "Editar", "Propriedades", "Claro", "Translúcido"] {
+        for key in [
+            "Arquivo",
+            "Editar",
+            "Propriedades",
+            "Claro",
+            "Translúcido",
+            "Verificar atualizações",
+            crate::updater_ui::KEY_RESTART,
+            crate::updater_ui::KEY_FAILED,
+            crate::updater_ui::KEY_NOT_WRITABLE,
+        ] {
             assert_ne!(translate(Lang::En, key), key);
             assert_eq!(translate(Lang::PtBr, key), key);
         }

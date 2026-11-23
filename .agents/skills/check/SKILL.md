@@ -9,6 +9,7 @@ Rode na raiz do repositório, nesta ordem, e **não pare na primeira falha**: ro
 ```bash
 cargo fmt --all -- --check
 cargo clippy --workspace --all-targets -- -D warnings
+./scripts/check-cross-targets.sh
 cargo test --workspace
 (cd packages/canvas-web && npm test)
 ```

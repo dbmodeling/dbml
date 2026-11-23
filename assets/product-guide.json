@@ -81,6 +81,35 @@
   ],
   "releases": [
     {
+      "version": "0.4.0",
+      "date": "2026-11-23",
+      "highlights": [
+        {
+          "kind": "added",
+          "title": {
+            "pt": "Atualização automática do App Desktop",
+            "en": "Automatic Desktop App updates"
+          },
+          "detail": {
+            "pt": "O app verifica novas versões ao abrir e a cada hora, baixa, valida a assinatura minisign e o SHA-256 em segundo plano e exibe 'Reiniciar para atualizar' na barra de título.",
+            "en": "The app checks for new versions on startup and every hour, downloads and verifies minisign signatures and SHA-256 in the background, and shows 'Restart to update' in the title bar."
+          },
+          "action": "check-for-updates"
+        },
+        {
+          "kind": "added",
+          "title": {
+            "pt": "Instalação de usuário no Linux sem sudo",
+            "en": "Rootless user installation on Linux"
+          },
+          "detail": {
+            "pt": "O install.sh agora instala por padrão em ~/.local/db-modeling.app com atalho .desktop, ícones e atualização automática integrada.",
+            "en": "install.sh now installs by default into ~/.local/db-modeling.app with desktop entry, icons, and built-in automatic updates."
+          }
+        }
+      ]
+    },
+    {
       "version": "0.3.4",
       "date": "2026-11-22",
       "highlights": [

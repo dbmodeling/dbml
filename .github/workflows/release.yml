@@ -19,6 +19,8 @@ env:
   CARGO_TERM_COLOR: always
   # Manter igual a `channel` em rust-toolchain.toml.
   RUST_TOOLCHAIN: "1.99.1"
+  # Versão exata do rsign2 (minisign) que assina o manifesto de auto-update (job `publish`).
+  RSIGN2_VERSION: "0.6.7"
 
 # Assinatura (veja SECURITY.md):
 #   Repository variable  SIGNING_REQUIRED=true  => o build FALHA se os segredos de assinatura
@@ -152,6 +154,11 @@ jobs:
       - name: Gerar pacote Fedora / RHEL (.rpm)
         run: ./scripts/build-fedora.sh
 
+      # Tarball de usuário (instalado em ~/.local pelo install.sh e pelo auto-update). Já sai com o
+      # nome canônico em dist/ e entra no SHA256SUMS.txt do job `publish`.
+      - name: Gerar tarball de usuário (db-modeling-linux-x86_64.tar.gz)
+        run: ./scripts/build-linux-tarball.sh
+
       - name: Criar aliases com nomes canônicos e anexar script universal
         run: |
           cd dist
@@ -208,18 +215,8 @@ jobs:
           shared-key: "release-windows"
           save-if: false
 
-      - name: Compilar executáveis release (App Desktop + CLI Web Server)
-        run: cargo build --locked --release -p app -p dbml-cli
-
-      - name: Compilar Instalador Oficial com Wizard (Inno Setup)
-        shell: bash
-        run: |
-          choco install innosetup --no-progress -y
-          mkdir -p dist
-          VERSION="$(cargo pkgid -p app | cut -d# -f2 | cut -d: -f2 2>/dev/null || sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)"
-          echo "VERSION=${VERSION}" >> "$GITHUB_ENV"
-          # Compila o assistente de instalação profissional com o ISCC
-          "/c/Program Files (x86)/Inno Setup 6/ISCC.exe" //DAppVersion="${VERSION}" scripts/windows/installer.iss
+      - name: Compilar executáveis release (App Desktop + CLI Web Server + helper de atualização)
+        run: cargo build --locked --release -p app -p dbml-cli -p auto-update-helper
 
       - name: Verificar configuração de assinatura
         shell: bash
@@ -231,8 +228,48 @@ jobs:
             echo "::error::SIGNING_REQUIRED=true, mas os segredos/variáveis do SignPath não estão configurados."
             exit 1
           else
-            echo "::warning::Assinatura SignPath não configurada: o instalador do Windows sairá NÃO assinado."
+            echo "::warning::Assinatura SignPath não configurada: o helper e o instalador do Windows sairão NÃO assinados."
           fi
+
+      # O helper é assinado ANTES de ser embutido no instalador (o Inno copia o .exe já assinado);
+      # depois o instalador inteiro é assinado de novo, mais abaixo.
+      - name: Enviar o helper de atualização para assinatura (SignPath)
+        if: env.SIGN_WINDOWS == 'true'
+        id: upload-helper-unsigned
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: windows-helper-unsigned
+          path: target/release/auto_update_helper.exe
+          retention-days: 1
+
+      - name: Assinar o helper de atualização (SignPath)
+        if: env.SIGN_WINDOWS == 'true'
+        uses: signpath/github-action-submit-signing-request@c92b958760219087e01f8d67a1669ed57afe2627 # v2
+        with:
+          api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
+          organization-id: ${{ vars.SIGNPATH_ORGANIZATION_ID }}
+          project-slug: ${{ vars.SIGNPATH_PROJECT_SLUG }}
+          signing-policy-slug: ${{ vars.SIGNPATH_SIGNING_POLICY_SLUG }}
+          github-artifact-id: ${{ steps.upload-helper-unsigned.outputs.artifact-id }}
+          wait-for-completion: true
+          output-artifact-directory: signed-helper
+
+      - name: Substituir o helper pelo assinado (antes do Inno embuti-lo)
+        if: env.SIGN_WINDOWS == 'true'
+        shell: bash
+        run: |
+          test -f signed-helper/auto_update_helper.exe
+          cp -f signed-helper/auto_update_helper.exe target/release/auto_update_helper.exe
+
+      - name: Compilar Instalador Oficial com Wizard (Inno Setup)
+        shell: bash
+        run: |
+          choco install innosetup --no-progress -y
+          mkdir -p dist
+          VERSION="$(cargo pkgid -p app | cut -d# -f2 | cut -d: -f2 2>/dev/null || sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)"
+          echo "VERSION=${VERSION}" >> "$GITHUB_ENV"
+          # Compila o assistente de instalação profissional com o ISCC
+          "/c/Program Files (x86)/Inno Setup 6/ISCC.exe" //DAppVersion="${VERSION}" scripts/windows/installer.iss
 
       - name: Enviar o instalador para assinatura (SignPath)
         if: env.SIGN_WINDOWS == 'true'
@@ -282,6 +319,10 @@ jobs:
     name: Build macOS (.dmg e .pkg)
     needs: web-bundle
     runs-on: macos-latest
+    # `signed=true` só quando o build saiu assinado/notarizado; o `publish` usa isso para só
+    # gravar `team_id` no manifesto de auto-update nesse caso.
+    outputs:
+      signed: ${{ steps.signing.outputs.signed }}
     env:
       MACOS_APP_CERT_P12: ${{ secrets.MACOS_APP_CERT_P12 }}
       MACOS_INSTALLER_CERT_P12: ${{ secrets.MACOS_INSTALLER_CERT_P12 }}
@@ -322,6 +363,7 @@ jobs:
       # Importa os certificados Developer ID num keychain temporário (nunca no log).
       # Sem segredos: segue sem assinar, a menos que SIGNING_REQUIRED=true.
       - name: Preparar assinatura (keychain temporário)
+        id: signing
         shell: bash
         run: |
           if [ -n "${MACOS_APP_CERT_P12}" ] && [ -n "${MACOS_INSTALLER_CERT_P12}" ] \
@@ -341,6 +383,7 @@ jobs:
             security list-keychains -d user -s "${keychain}" login.keychain-db
             rm -f "${RUNNER_TEMP}/app.p12" "${RUNNER_TEMP}/installer.p12"
             echo "MACOS_SIGNING_REQUIRED=1" >> "$GITHUB_ENV"
+            echo "signed=true" >> "$GITHUB_OUTPUT"
           elif [ "${SIGNING_REQUIRED}" = "true" ]; then
             echo "::error::SIGNING_REQUIRED=true, mas os certificados/credenciais de notarização da Apple não estão configurados."
             exit 1
@@ -426,12 +469,122 @@ jobs:
             exit 1
           fi
           echo "tag=${tag}" >> "$GITHUB_OUTPUT"
+          # Canal único `stable`: só vMAJOR.MINOR.PATCH puro ganha manifesto de auto-update e vira
+          # `latest`. Tags com sufixo (-rc.1, +build) saem como pré-release, sem manifesto.
+          if printf '%s' "$tag" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+$'; then
+            echo "stable=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "stable=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::Tag '${tag}' é pré-release: sem latest.json e fora do 'latest'."
+          fi
 
-      - name: Criar Release no GitHub
+      # --- Manifesto de auto-update (só tags estáveis) -------------------------------------------
+      # rsign2 fixado em versão exata (RSIGN2_VERSION) e instalado com `cargo install --locked`:
+      # o crates.io é imutável por versão e o --locked usa o Cargo.lock publicado da crate. O
+      # binário fica em cache (mesma chave = mesma versão); o `--version` abaixo confere o que
+      # foi restaurado. O cache fica fora de `rust-cache` para não depender da chave do build.
+      - name: Cache do rsign2
+        id: rsign_cache
+        if: steps.tag_info.outputs.stable == 'true'
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: ~/.cargo/bin/rsign
+          key: rsign2-${{ runner.os }}-${{ env.RSIGN2_VERSION }}
+
+      - name: Instalar rsign2 (versão exata)
+        if: steps.tag_info.outputs.stable == 'true' && steps.rsign_cache.outputs.cache-hit != 'true'
+        # Fora do checkout: o rust-toolchain.toml do repositório não puxa o toolchain do projeto.
+        working-directory: ${{ runner.temp }}
+        run: cargo install --locked --version "${RSIGN2_VERSION}" rsign2
+
+      - name: Conferir a versão do rsign2
+        if: steps.tag_info.outputs.stable == 'true'
+        run: |
+          actual="$(rsign --version)"
+          if [ "${actual}" != "rsign2 ${RSIGN2_VERSION}" ]; then
+            echo "::error::rsign inesperado: '${actual}' (esperado 'rsign2 ${RSIGN2_VERSION}')."
+            exit 1
+          fi
+
+      # Falha se faltar ativo, se tag/Cargo.toml divergirem ou se a tag tiver sufixo.
+      # `team_id` só entra quando o build do macOS saiu assinado.
+      - name: Gerar o manifesto de atualização (latest.json)
+        if: steps.tag_info.outputs.stable == 'true'
+        env:
+          RELEASE_TAG: ${{ steps.tag_info.outputs.tag }}
+          RELEASE_DIST_DIR: release-dist
+          MANIFEST_OUTPUT: release-manifest/latest.json
+          MACOS_TEAM_ID: ${{ needs.build-macos.outputs.signed == 'true' && secrets.APPLE_TEAM_ID || '' }}
+        run: |
+          ./scripts/generate-update-manifest.sh
+          # Mostra o manifesto sem `team_id` (vem de segredo e o log o mascararia de qualquer forma).
+          jq 'del(.platforms[].team_id)' release-manifest/latest.json
+
+      # minisign PREHASHED (`rsign sign` padrão, sem -l). Falha se UPDATER_SIGNING_KEY faltar ou se
+      # a assinatura não validar com a chave pública primária embutida no cliente.
+      - name: Assinar o manifesto (minisign)
+        if: steps.tag_info.outputs.stable == 'true'
+        env:
+          UPDATER_SIGNING_KEY: ${{ secrets.UPDATER_SIGNING_KEY }}
+        run: ./scripts/sign-update-manifest.sh release-manifest/latest.json
+
+      # --- Publicação atômica: rascunho -> verificação -> publicar (último passo) -----------------
+      # `latest/download/latest.json` só passa a existir quando a Release deixa de ser rascunho,
+      # e isso só acontece depois de todos os ativos estarem lá e verificados.
+      - name: Criar Release como RASCUNHO no GitHub
+        id: release
         uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2
         with:
           tag_name: ${{ steps.tag_info.outputs.tag }}
-          files: release-dist/*
+          files: |
+            release-dist/*
+            release-manifest/latest.json
+            release-manifest/latest.json.sig
+          fail_on_unmatched_files: ${{ steps.tag_info.outputs.stable == 'true' }}
           generate_release_notes: true
-          draft: false
-          prerelease: false
+          draft: true
+          prerelease: ${{ steps.tag_info.outputs.stable != 'true' }}
+
+      # Baixa do RASCUNHO (por ID: /releases/tags/<tag> não enxerga rascunhos) exatamente o que
+      # os usuários baixariam e confere assinatura (chave pública primária), URLs e SHA-256.
+      - name: Verificar o rascunho (assinatura, URLs e SHA-256)
+        if: steps.tag_info.outputs.stable == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_ID: ${{ steps.release.outputs.id }}
+        run: |
+          set -euo pipefail
+          check_dir="${RUNNER_TEMP}/draft-check"
+          mkdir -p "${check_dir}"
+          assets="$(gh api --paginate "repos/${GITHUB_REPOSITORY}/releases/${RELEASE_ID}/assets" --jq '.[] | [.id, .name] | @tsv')"
+          fetch() {
+            local id
+            id="$(awk -F'\t' -v n="$1" '$2 == n { print $1; exit }' <<< "${assets}")"
+            if [ -z "${id}" ]; then
+              echo "::error::Ativo '$1' ausente no rascunho."
+              exit 1
+            fi
+            gh api -H "Accept: application/octet-stream" "repos/${GITHUB_REPOSITORY}/releases/assets/${id}" > "${check_dir}/$1"
+          }
+          fetch latest.json
+          fetch latest.json.sig
+          fetch SHA256SUMS.txt
+          for name in $(jq -r '.platforms[].url | split("/") | last' "${check_dir}/latest.json"); do
+            fetch "${name}"
+          done
+          ./scripts/verify-update-manifest.sh "${check_dir}"
+
+      # ÚLTIMO passo: o rascunho vira público e (só se estável) passa a ser o `latest`.
+      - name: Publicar a Release (último passo)
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_ID: ${{ steps.release.outputs.id }}
+          STABLE: ${{ steps.tag_info.outputs.stable }}
+        run: |
+          set -euo pipefail
+          make_latest=false
+          if [ "${STABLE}" = "true" ]; then
+            make_latest=true
+          fi
+          gh api --method PATCH "repos/${GITHUB_REPOSITORY}/releases/${RELEASE_ID}" \
+            -F draft=false -f make_latest="${make_latest}"

@@ -3,19 +3,22 @@ resolver = "2"
 members = [
     "crates/core/*",
     "crates/atomic-write",
+    "crates/auto-update-helper",
     "crates/app",
     "crates/cli",
     "crates/dbml-wasm",
     "crates/db-introspect",
     "crates/diagram-export",
     "crates/sql-import",
+    "crates/updater",
+    "crates/updater-net",
 ]
 exclude = ["fuzz"]
 
 [workspace.package]
 edition = "2024"
 rust-version = "1.99"
-version = "0.3.4"
+version = "0.4.0"
 license = "PolyForm-Noncommercial-1.0.0"
 publish = false
 
@@ -30,6 +33,9 @@ atomic-write = { path = "crates/atomic-write" }
 diagram-export = { path = "crates/diagram-export" }
 sql-import = { path = "crates/sql-import" }
 db-introspect = { path = "crates/db-introspect" }
+updater = { path = "crates/updater" }
+updater-net = { path = "crates/updater-net" }
+auto-update-helper = { path = "crates/auto-update-helper" }
 
 # Parsing & CST
 logos = "=0.16.1"
@@ -62,7 +68,21 @@ opener = "0.7"
 wasm-bindgen = "0.2"
 serde-wasm-bindgen = "0.6"
 
+# Auto-update (crates/updater)
+semver = "=1.0.28"
+sha2 = "=0.11.1"
+minisign-verify = "=0.3.0"
+
+# Auto-update: rede (crates/updater-net)
+ureq = { version = "=3.5.2", default-features = false, features = ["rustls"] }
+rustls-native-certs = "=0.8.5"
+url = "=2.5.9"
+fs4 = { version = "=1.1.0", default-features = false, features = ["sync"] }
+windows-sys = "=0.61.2"
+minisign = "=0.10.0"
+
 # Dev / Testing
+tempfile = "=3.27.0"
 insta = "=1.49.0"
 proptest = "=1.12.0"
 
