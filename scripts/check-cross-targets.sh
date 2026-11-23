@@ -88,6 +88,44 @@ if errors:
     for err in errors:
         print(f"❌ {err}", file=sys.stderr)
     sys.exit(1)
+
+# Valida que a seção [Code] de scripts/windows/installer.iss não contém comentários `{ ... }`
+# aninhando `{` (em Pascal Script do Inno Setup, `{ ... }` fecha no primeiro `}` e quebra o ISCC).
+iss_path = pathlib.Path("scripts/windows/installer.iss")
+if iss_path.exists():
+    in_code = False
+    in_brace = False
+    for lineno, line in enumerate(iss_path.read_text(encoding="utf-8").splitlines(), 1):
+        stripped = line.strip()
+        if stripped.startswith("[") and stripped.endswith("]"):
+            in_code = stripped.lower() == "[code]"
+            in_brace = False
+            continue
+        if not in_code:
+            continue
+        # Ignora comentários de linha `//` fora de `{ ... }`
+        i = 0
+        in_str = False
+        while i < len(line):
+            ch = line[i]
+            if not in_brace:
+                if not in_str and line[i:i+2] == "//":
+                    break
+                if ch == "'":
+                    in_str = not in_str
+                elif not in_str and ch == "{":
+                    in_brace = True
+            else:
+                if ch == "{":
+                    print(
+                        f"❌ {iss_path}:{lineno}: comentário Pascal `{{ ... }}` contém `{{` aninhado "
+                        f"(use comentários `//` em [Code] para não quebrar o Inno Setup).",
+                        file=sys.stderr,
+                    )
+                    sys.exit(1)
+                elif ch == "}":
+                    in_brace = False
+            i += 1
 PY
 
 echo "✓ Validação multiplataforma local concluída sem erros."
