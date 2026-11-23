@@ -89,7 +89,7 @@ mod windows_acl {
             ConvertStringSecurityDescriptorToSecurityDescriptorW(
                 sddl.as_ptr(),
                 SDDL_REVISION_1,
-                &mut descriptor,
+                &raw mut descriptor,
                 ptr::null_mut(),
             )
         };
@@ -111,7 +111,12 @@ mod windows_acl {
         // SAFETY: `descriptor` é válido (acabou de ser convertido) e os três ponteiros de saída
         // apontam para variáveis locais.
         let got = unsafe {
-            GetSecurityDescriptorDacl(descriptor, &mut present, &mut dacl, &mut defaulted)
+            GetSecurityDescriptorDacl(
+                descriptor,
+                &raw mut present,
+                &raw mut dacl,
+                &raw mut defaulted,
+            )
         };
         if got == 0 || present == 0 || dacl.is_null() {
             return Err(io::Error::other("DACL ausente no descritor de segurança"));
