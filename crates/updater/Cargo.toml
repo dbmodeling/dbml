@@ -21,6 +21,14 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
 
+[target.'cfg(windows)'.dependencies]
+# ACL do diretório de updates e downloads (somente Windows; ver `lock.rs`).
+windows-sys = { workspace = true, features = [
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_Security_Authorization",
+] }
+
 [dev-dependencies]
 # Auto-dependência: habilita o fake de `Transport` nos testes de `tests/`.
 updater = { workspace = true, features = ["testing"] }

@@ -118,14 +118,6 @@ pub const PART_EXTENSION: &str = "part";
 #[cfg(unix)]
 pub const PART_FILE_UNIX_MODE: u32 = 0o600;
 
-// --- Windows -----------------------------------------------------------------------------------
-
-/// SDDL do diretório de downloads: DACL protegida (`P`, não herda) com controle total para o dono
-/// do objeto (`OW`, Owner Rights) e para `SY` (`SYSTEM`), herdado por subpastas e arquivos
-/// (`OICI`). Não verificado em Windows (ver `private_dir`).
-#[cfg(windows)]
-pub const DIR_ACL_SDDL: &str = "D:P(A;OICI;FA;;;OW)(A;OICI;FA;;;SY)";
-
 // --- Gancho de teste (só debug ou feature `harness`) -------------------------------------------
 
 /// Variável com a origem (esquema + host + porta) que substitui a do GitHub; só em debug ou

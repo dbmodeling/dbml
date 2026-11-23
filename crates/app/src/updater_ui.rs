@@ -80,7 +80,10 @@ pub const KEY_TRANSLOCATION: &str = "Mova o app para a pasta Aplicativos para at
 pub const KEY_NOT_WRITABLE: &str = "Sem permissão de escrita na pasta do app; atualize manualmente";
 /// Linux: o executável não está no layout do tarball (`<prefixo>/db-modeling.app/bin/db-modeling`).
 #[cfg(any(target_os = "linux", test))]
-pub use crate::constants::{KEY_LINUX_NOT_TARBALL, KEY_LINUX_SYSTEM_PREFIX};
+pub use crate::constants::KEY_LINUX_NOT_TARBALL;
+/// Linux: o tarball está num prefixo de sistema (`/usr`, `/var`...), que só os pacotes mexem.
+#[cfg(target_os = "linux")]
+pub use crate::constants::KEY_LINUX_SYSTEM_PREFIX;
 
 /// O que o controle da title bar mostra agora.
 #[derive(Debug, Clone, PartialEq, Eq)]

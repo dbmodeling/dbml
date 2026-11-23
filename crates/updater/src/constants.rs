@@ -100,6 +100,10 @@ pub const LOCK_FILE_NAME: &str = "lock";
 pub const UPDATES_DIR_UNIX_MODE: u32 = 0o700;
 /// Prefixo do arquivo temporário usado para descobrir o uid efetivo do processo.
 pub const OWNER_PROBE_PREFIX: &str = ".dbm-owner-probe-";
+/// SDDL do diretório de updates no Windows: DACL protegida (`P`, não herda) com controle total
+/// para o dono do objeto (`OW`) e para `SY` (`SYSTEM`), herdado por subpastas e arquivos (`OICI`).
+#[cfg(windows)]
+pub const DIR_ACL_SDDL: &str = "D:P(A;OICI;FA;;;OW)(A;OICI;FA;;;SY)";
 
 // --- Agendamento -------------------------------------------------------------------------------
 

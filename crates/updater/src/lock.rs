@@ -39,7 +39,11 @@ pub fn ensure_updates_dir(cache_dir: &Path) -> io::Result<PathBuf> {
     Ok(dir)
 }
 
-/// Cria `dir` (o pai precisa existir) e, em Unix, recusa symlinks, confere o UID do dono e força `0700`.
+/// Cria `dir` (o pai precisa existir) privado ao usuário atual e o força privado se já existia.
+///
+/// - Unix: recusa symlinks, confere o UID do dono e força modo `0700`.
+/// - Windows: DACL protegida (sem herdar do pai) que só concede acesso total ao dono do objeto
+///   (`OW`, o usuário que o criou) e ao `SYSTEM`.
 ///
 /// # Errors
 /// Erro de E/S ao criar o diretório, ou `PermissionDenied` se for symlink ou pertencer a outro usuário.
@@ -51,7 +55,100 @@ pub fn ensure_private_unix_dir(dir: &Path) -> io::Result<()> {
     }
     #[cfg(unix)]
     unix_private::make_private(dir)?;
+    #[cfg(windows)]
+    windows_acl::restrict_to_current_user(dir)?;
     Ok(())
+}
+
+/// ACL restrita ao usuário no Windows (`D:P(A;OICI;FA;;;OW)(A;OICI;FA;;;SY)`), por FFI com `windows-sys`.
+#[cfg(windows)]
+#[allow(unsafe_code)]
+mod windows_acl {
+    use std::io;
+    use std::os::windows::ffi::OsStrExt;
+    use std::path::Path;
+    use std::ptr;
+
+    use crate::constants::DIR_ACL_SDDL;
+    use windows_sys::Win32::Foundation::{ERROR_SUCCESS, LocalFree};
+    use windows_sys::Win32::Security::Authorization::{
+        ConvertStringSecurityDescriptorToSecurityDescriptorW, SDDL_REVISION_1, SE_FILE_OBJECT,
+        SetNamedSecurityInfoW,
+    };
+    use windows_sys::Win32::Security::{
+        ACL, DACL_SECURITY_INFORMATION, GetSecurityDescriptorDacl,
+        PROTECTED_DACL_SECURITY_INFORMATION, PSECURITY_DESCRIPTOR,
+    };
+
+    fn wide(text: &str) -> Vec<u16> {
+        std::ffi::OsStr::new(text)
+            .encode_wide()
+            .chain(std::iter::once(0))
+            .collect()
+    }
+
+    pub(super) fn restrict_to_current_user(dir: &Path) -> io::Result<()> {
+        let sddl = wide(DIR_ACL_SDDL);
+        let path: Vec<u16> = dir.as_os_str().encode_wide().chain(Some(0)).collect();
+        let mut descriptor: PSECURITY_DESCRIPTOR = ptr::null_mut();
+        // SAFETY: `sddl` termina em NUL e vive durante a chamada; `descriptor` é um ponteiro de
+        // saída válido que recebe memória alocada pelo sistema (liberada com `LocalFree`).
+        let converted = unsafe {
+            ConvertStringSecurityDescriptorToSecurityDescriptorW(
+                sddl.as_ptr(),
+                SDDL_REVISION_1,
+                &raw mut descriptor,
+                ptr::null_mut(),
+            )
+        };
+        if converted == 0 {
+            return Err(io::Error::last_os_error());
+        }
+        let result = apply(&path, descriptor);
+        // SAFETY: `descriptor` veio de `ConvertStringSecurityDescriptor...` e não é usado depois.
+        unsafe {
+            LocalFree(descriptor);
+        }
+        result
+    }
+
+    fn apply(path: &[u16], descriptor: PSECURITY_DESCRIPTOR) -> io::Result<()> {
+        let mut present = 0;
+        let mut defaulted = 0;
+        let mut dacl: *mut ACL = ptr::null_mut();
+        // SAFETY: `descriptor` é válido (acabou de ser convertido) e os três ponteiros de saída
+        // apontam para variáveis locais.
+        let got = unsafe {
+            GetSecurityDescriptorDacl(
+                descriptor,
+                &raw mut present,
+                &raw mut dacl,
+                &raw mut defaulted,
+            )
+        };
+        if got == 0 || present == 0 || dacl.is_null() {
+            return Err(io::Error::other("DACL ausente no descritor de segurança"));
+        }
+        // SAFETY: `path` termina em NUL; `dacl` aponta para dentro de `descriptor`, ainda vivo.
+        let status = unsafe {
+            SetNamedSecurityInfoW(
+                path.as_ptr(),
+                SE_FILE_OBJECT,
+                DACL_SECURITY_INFORMATION | PROTECTED_DACL_SECURITY_INFORMATION,
+                ptr::null_mut(),
+                ptr::null_mut(),
+                dacl,
+                ptr::null(),
+            )
+        };
+        if status == ERROR_SUCCESS {
+            Ok(())
+        } else {
+            Err(io::Error::from_raw_os_error(
+                i32::try_from(status).unwrap_or(i32::MAX),
+            ))
+        }
+    }
 }
 
 #[cfg(unix)]

@@ -260,7 +260,7 @@ pub const LINUX_MISSING_TOOL_HINT: &str =
 #[cfg(any(target_os = "linux", test))]
 pub const KEY_LINUX_NOT_TARBALL: &str =
     "Só a instalação pelo install.sh se atualiza sozinha; atualize manualmente";
-#[cfg(any(target_os = "linux", test))]
+#[cfg(target_os = "linux")]
 pub const KEY_LINUX_SYSTEM_PREFIX: &str =
     "Instalado numa pasta do sistema; atualize pelo gerenciador de pacotes ou pelo install.sh";
 /// Diretório de processos do Linux (existência de `/proc/<pid>` = processo vivo).
