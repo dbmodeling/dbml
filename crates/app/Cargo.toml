@@ -20,7 +20,9 @@ rust-embed = { workspace = true, features = ["debug-embed"] }
 dbml-edit.workspace = true
 sql-import.workspace = true
 db-introspect.workspace = true
-tokio = { workspace = true, features = ["rt", "time", "net", "io-util"] }
+updater.workspace = true
+updater-net.workspace = true
+tokio = { workspace = true, features = ["rt", "time", "net", "io-util", "sync"] }
 lsp-types.workspace = true
 dbml-syntax.workspace = true
 anyhow.workspace = true
@@ -32,8 +34,16 @@ serde_json.workspace = true
 # Habilita as variáveis DBM_SIZE/DBM_MODE/DBM_SELECT/DBM_PANE... em release (harness de screenshot).
 harness = []
 
+[target.'cfg(windows)'.dependencies]
+# Detecção da instalação pendente, chamada do helper e argumentos (lógica pura, ticket 05).
+auto-update-helper.workspace = true
+
 [build-dependencies]
 embed-resource.workspace = true
+
+[dev-dependencies]
+auto-update-helper.workspace = true
+tempfile.workspace = true
 
 [lints]
 workspace = true

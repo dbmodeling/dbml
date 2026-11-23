@@ -63,7 +63,7 @@ What this script does in order:
    - All visual metadata goes into the sidecar `<file>.dbml.layout.json` with keys sorted deterministically (`BTreeMap` in Rust / sorted keys in TS).
    - Every visual edit on the Canvas or Inspector (renaming a table, changing a column type, creating an FK relation, grouping tables) **must** generate a minimal textual patch via `dbml-edit` (`EditCommand` -> `apply`), preserving user comments and formatting.
 2. **Core Free of UI Dependencies (ADR-0005):**
-   - `schema`, `dbml-syntax`, `dbml-analysis`, `dbml-edit`, `layout`, and `dbml-wasm` must never depend on `gpui`, `tokio`, or OS APIs.
+   - `schema`, `dbml-syntax`, `dbml-analysis`, `dbml-edit`, `layout`, `updater`, and `dbml-wasm` must never depend on `gpui`, `tokio`, or OS APIs.
 3. **Lossless Error Recovery (ADR-0003):**
    - The parser (`dbml-syntax`) must never panic on incomplete input while the user is typing in the editor.
 4. **Zero Magic Strings & Zero Magic Numbers (Backend, Frontend & Extension):**

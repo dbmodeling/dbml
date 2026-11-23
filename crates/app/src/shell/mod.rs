@@ -7,6 +7,7 @@
 mod connect_dialog;
 pub(crate) mod guide_ui;
 mod panels;
+mod updates;
 
 use crate::actions::{self, *};
 use crate::canvas::{Diagram, DiagramEvent, Tool};
@@ -220,6 +221,14 @@ pub struct Shell {
     tour_step: Option<usize>,
     /// bounds reais medidos pelo layout do GPUI para cada alvo do tour
     tour_bounds: guide_ui::TourBoundsMap,
+    /// atualização automática (preferência `auto_update`)
+    auto_update: bool,
+    /// controlador do auto-update (thread própria; a UI só lê o estado e pede checagens)
+    updates: crate::auto_update::Controller,
+    /// espera mudanças de estado do updater (canal `watch`, sem polling)
+    update_observer: Option<Task<()>>,
+    /// some com "Atualizado" depois de 4 s
+    update_dismiss: Option<Task<()>>,
 }
 
 impl Focusable for Shell {
@@ -444,6 +453,12 @@ fn action_icon(action: &dyn Action, group: &str) -> IconName {
         IconName::ArrowRight
     } else if action.partial_eq(&PrevTab) {
         IconName::ArrowLeft
+    } else if action.partial_eq(&CheckForUpdates) {
+        IconName::RefreshCw
+    } else if action.partial_eq(&RestartToUpdate) {
+        IconName::RotateCw
+    } else if action.partial_eq(&ToggleAutoUpdate) {
+        IconName::ArrowDown
     } else if action.partial_eq(&ShowFiles) {
         IconName::Folder
     } else if action.partial_eq(&ShowSchema) {
@@ -656,6 +671,8 @@ impl Shell {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
+        let prefs = crate::settings::load();
+        let auto_update = prefs.auto_update;
         let mut this = Self {
             project: None,
             files: Vec::new(),
@@ -663,20 +680,15 @@ impl Shell {
             active: 0,
             untitled: 0,
             pane: Pane::Schema,
-            sidebar_open: crate::harness::var("DBM_SIDEBAR").is_some()
-                || crate::settings::load().sidebar_open,
+            sidebar_open: crate::harness::var("DBM_SIDEBAR").is_some() || prefs.sidebar_open,
             editor_open: crate::harness::var("DBM_EDITOR").is_some(),
             code_only: false,
-            inspector_open: crate::harness::var("DBM_INSPECTOR").is_some()
-                || crate::settings::load().inspector_open,
+            inspector_open: crate::harness::var("DBM_INSPECTOR").is_some() || prefs.inspector_open,
             mode,
             translucent,
-            lang_pref: crate::settings::load().lang,
-            widths: {
-                let p = crate::settings::load();
-                (p.sidebar_w, p.editor_w, p.inspector_w)
-            },
-            col_type_w: crate::settings::load().col_type_w,
+            lang_pref: prefs.lang,
+            widths: (prefs.sidebar_w, prefs.editor_w, prefs.inspector_w),
+            col_type_w: prefs.col_type_w,
             last_summary: None,
             editing: None,
             palette: cx.new(|cx| CommandState::new(window, cx)),
@@ -685,8 +697,8 @@ impl Shell {
             subs: Vec::new(),
             connect_dialog: None,
             dragging_window: false,
-            ui_scale: crate::settings::load().ui_scale,
-            inspector_auto_hide: crate::settings::load().inspector_auto_hide,
+            ui_scale: prefs.ui_scale,
+            inspector_auto_hide: prefs.inspector_auto_hide,
             restoring_session: false,
             suppress_history: false,
             import_dialect: sql_import::SqlDialect::Postgres,
@@ -709,11 +721,16 @@ impl Shell {
             loading: 0,
             loose_files: (PathBuf::new(), Vec::new()),
             preselect: crate::harness::var("DBM_SELECT"),
-            onboarding_done: crate::settings::load().onboarding_done,
-            last_seen_version: crate::settings::load().last_seen_version,
+            onboarding_done: prefs.onboarding_done,
+            last_seen_version: prefs.last_seen_version,
             tour_step: None,
             tour_bounds: guide_ui::TourBoundsMap::default(),
+            auto_update,
+            updates: crate::auto_update::Controller::start(auto_update),
+            update_observer: None,
+            update_dismiss: None,
         };
+        this.update_observer = Some(this.spawn_update_observer(window, cx));
         this.disk_watcher = Some(Self::spawn_disk_watcher(window, cx));
         this.handoff_poll = Some(Self::spawn_handoff_poll(window, cx));
         // DBM_PANE: painel inicial (usado pelo harness de screenshot)
@@ -730,7 +747,10 @@ impl Shell {
         this.adopt_recovery(window, cx);
         let entity = cx.entity().downgrade();
         window.defer(cx, move |window, cx| {
-            let _ = entity.update(cx, |this, cx| this.maybe_start_guide(window, cx));
+            let _ = entity.update(cx, |this, cx| {
+                this.maybe_start_guide(window, cx);
+                Self::announce_update(window, cx);
+            });
         });
         this
     }
@@ -1080,11 +1100,13 @@ impl Shell {
         }
         self.recovery_active = true;
         self.publish_recovery(cx);
-        window.push_notification(
-            crate::i18n::t("{} aba(s) com edições não salvas foram recuperadas de uma sessão que terminou de forma inesperada.")
-                .replace("{}", &count.to_string()),
-            cx,
-        );
+        window.defer(cx, move |window, cx| {
+            window.push_notification(
+                crate::i18n::t("{} aba(s) com edições não salvas foram recuperadas de uma sessão que terminou de forma inesperada.")
+                    .replace("{}", &count.to_string()),
+                cx,
+            );
+        });
     }
 
     fn open_path(&mut self, path: PathBuf, window: &mut Window, cx: &mut Context<Self>) {
@@ -2811,8 +2833,19 @@ impl Shell {
     // ---- ações: janela ----
 
     fn quit(&mut self, _: &Quit, window: &mut Window, cx: &mut Context<Self>) {
+        self.request_exit(updates::ExitKind::Quit, window, cx);
+    }
+
+    /// Sai (ou reinicia para atualizar) passando pelo fluxo de alterações não salvas: documento
+    /// sujo nunca é perdido sem confirmação, e a sessão é gravada antes de sair.
+    fn request_exit(
+        &mut self,
+        kind: updates::ExitKind,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         if !self.docs.iter().any(|d| d.dirty) {
-            cx.quit();
+            self.finish_exit(kind, cx);
             return;
         }
         let shell = cx.entity();
@@ -2848,9 +2881,12 @@ impl Shell {
                                         .ghost()
                                         .small()
                                         .label(crate::i18n::t("Descartar alterações"))
-                                        .on_click(|_, window, cx| {
-                                            window.close_dialog(cx);
-                                            cx.quit();
+                                        .on_click({
+                                            let shell_discard = shell.clone();
+                                            move |_, window, cx| {
+                                                window.close_dialog(cx);
+                                                shell_discard.update(cx, |s, cx| s.finish_exit(kind, cx));
+                                            }
                                         }),
                                 )
                                 .child(
@@ -2860,7 +2896,7 @@ impl Shell {
                                         .label(crate::i18n::t("Salvar tudo e sair"))
                                         .on_click(move |_, window, cx| {
                                             window.close_dialog(cx);
-                                            shell_save.update(cx, |s, cx| s.save_next_and_quit(window, cx));
+                                            shell_save.update(cx, |s, cx| s.save_next_and_exit(kind, window, cx));
                                         }),
                                 ),
                         ),
@@ -2869,15 +2905,20 @@ impl Shell {
         });
     }
 
-    fn save_next_and_quit(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    fn save_next_and_exit(
+        &mut self,
+        kind: updates::ExitKind,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let Some(i) = self.docs.iter().position(|doc| doc.dirty) else {
-            cx.quit();
+            self.finish_exit(kind, cx);
             return;
         };
         let doc = &self.docs[i];
         if let Some(path) = doc.path.clone() {
             if self.write(i, path, window, cx) {
-                self.save_next_and_quit(window, cx);
+                self.save_next_and_exit(kind, window, cx);
             }
             return;
         }
@@ -2893,7 +2934,7 @@ impl Shell {
                 if let Some(i) = this.doc_index(&editor)
                     && this.write(i, path, window, cx)
                 {
-                    this.save_next_and_quit(window, cx);
+                    this.save_next_and_exit(kind, window, cx);
                 }
             })
             .ok();
@@ -2904,6 +2945,7 @@ impl Shell {
     fn open_palette(&mut self, _: &OpenPalette, window: &mut Window, cx: &mut Context<Self>) {
         let state = self.palette.clone();
         let connect_open = self.connect_dialog_open();
+        let restart_ready = self.updates.restart_ready().is_some();
         let shell = cx.entity();
         // tabelas e colunas do documento ativo; só entram na lista quando há busca digitada
         let tables: Vec<(String, Vec<String>)> = self.doc().map_or_else(Vec::new, |d| {
@@ -2933,7 +2975,7 @@ impl Shell {
                     let mut acts: Vec<Vec<Box<dyn Action>>> = Vec::new();
                     for e in actions::catalog() {
                         if e.action.partial_eq(&OpenPalette)
-                            || !actions::palette_lists(&e, connect_open)
+                            || !actions::palette_lists(&e, connect_open, restart_ready)
                         {
                             continue;
                         }
@@ -4073,6 +4115,7 @@ impl Shell {
             inspector_open: self.inspector_open,
             onboarding_done: self.onboarding_done,
             last_seen_version: self.last_seen_version.clone(),
+            auto_update: self.auto_update,
         });
     }
 
@@ -4469,6 +4512,9 @@ pub fn register_global_actions(win: AnyWindowHandle, shell: &Entity<Shell>, cx: 
         ZoomOutUi => zoom_out_ui,
         ResetUiZoom => reset_ui_zoom,
         ToggleAutoCollapseInspector => toggle_auto_collapse_inspector,
+        CheckForUpdates => check_for_updates,
+        RestartToUpdate => restart_to_update,
+        ToggleAutoUpdate => toggle_auto_update,
     );
 }
 
@@ -4798,6 +4844,9 @@ impl Render for Shell {
             .on_action(cx.listener(Self::zoom_out_ui))
             .on_action(cx.listener(Self::reset_ui_zoom))
             .on_action(cx.listener(Self::toggle_auto_collapse_inspector))
+            .on_action(cx.listener(Self::check_for_updates))
+            .on_action(cx.listener(Self::restart_to_update))
+            .on_action(cx.listener(Self::toggle_auto_update))
             .size_full()
             .font_family(FONT)
             .text_color(g.text)

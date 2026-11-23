@@ -15,6 +15,8 @@
 | R9 | Mermaid `erDiagram` tem sintaxe restrita (nomes, tipos com parênteses, cardinalidades) | Export Mermaid inválido | Sanitização determinística; validar com `mmdc` nos testes; listar perdas no painel de export |
 | R10 | Diferenças Windows × Ubuntu (DPI/escala fracionária, fontes, IME, Wayland vs X11, clipboard de imagem) | Bugs específicos de plataforma | Testes manuais nos dois alvos a cada fase; CI nos dois |
 | R11 | GPUI não expõe árvore de acessibilidade ao SO: o app desktop é opaco para leitores de tela (NVDA, Orca, VoiceOver) | Usuários de tecnologia assistiva no desktop | Documentado em [05-ux.md](05-ux.md#acessibilidade-e-limitação-conhecida-app-desktop); manter teclado completo e `role`/`aria_label`; indicar CLI Web e extensão VS Code como alternativas; acompanhar o suporte upstream a cada upgrade do GPUI |
+| R12 | Auto-update do desktop: o código de Windows (`win.rs`, `install_windows.rs`) e de macOS (`install_macos.rs`) nunca compilou nem rodou no ambiente de desenvolvimento (Linux); o `rsync` do macOS é feito sobre o app em execução | Atualização que falha ou deixa o app inconsistente | Núcleo e lógica dos instaladores testados headless; matriz de teste manual em [auto-update.md](auto-update.md#testes-manuais-pendentes); risco do `rsync` aceito no [ADR 0010](../openspec/adr/0010-auto-update-desktop.md) |
+| R13 | Perda ou vazamento das chaves minisign do manifesto | Usuários já instalados deixam de receber atualização (as duas perdidas) ou aceitam manifesto forjado (privada vazada) | Duas chaves públicas embutidas, reserva só offline; procedimento em [auto-update.md](auto-update.md#rotação-e-backup-das-chaves) |
 
 ## Decidido
 - Nome: **DB Modeling**.

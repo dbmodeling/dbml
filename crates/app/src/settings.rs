@@ -19,6 +19,8 @@ pub struct Settings {
     pub inspector_open: bool,
     pub onboarding_done: bool,
     pub last_seen_version: Option<String>,
+    /// Atualização automática do app (`auto_update`); padrão ligada.
+    pub auto_update: bool,
 }
 
 impl Default for Settings {
@@ -37,6 +39,7 @@ impl Default for Settings {
             inspector_open: true,
             onboarding_done: false,
             last_seen_version: None,
+            auto_update: true,
         }
     }
 }
@@ -119,6 +122,10 @@ fn parse(text: &str) -> Settings {
                     s.last_seen_version = Some(v.to_string());
                 }
             }
+            Some((crate::constants::SETTING_AUTO_UPDATE, v)) => {
+                // tolerante: só "false" desliga; qualquer outro valor mantém o padrão (ligado)
+                s.auto_update = v.trim() != "false";
+            }
             _ => {}
         }
     }
@@ -142,7 +149,7 @@ fn serialize(s: &Settings) -> String {
             format!("{}={v}\n", crate::constants::SETTING_LAST_SEEN_VERSION)
         });
     format!(
-        "{lang}mode={mode}\ntranslucent={translucent}\nsidebar_w={}\neditor_w={}\ninspector_w={}\ncol_type_w={}\nui_scale={:.2}\ninspector_auto_hide={}\nsidebar_open={}\ninspector_open={}\n{}={}\n{last_seen}",
+        "{lang}mode={mode}\ntranslucent={translucent}\nsidebar_w={}\neditor_w={}\ninspector_w={}\ncol_type_w={}\nui_scale={:.2}\ninspector_auto_hide={}\nsidebar_open={}\ninspector_open={}\n{}={}\n{}={}\n{last_seen}",
         s.sidebar_w.round(),
         s.editor_w.round(),
         s.inspector_w.round(),
@@ -153,6 +160,8 @@ fn serialize(s: &Settings) -> String {
         s.inspector_open,
         crate::constants::SETTING_ONBOARDING_DONE,
         s.onboarding_done,
+        crate::constants::SETTING_AUTO_UPDATE,
+        s.auto_update,
     )
 }
 
@@ -200,6 +209,24 @@ mod tests {
         assert!(again.mode == Some(Mode::Dark));
         assert_eq!(again.translucent, Some(true));
         assert!(!saved.contains("translucent_cards"));
+    }
+
+    #[test]
+    fn auto_update_defaults_to_true_and_roundtrips() {
+        assert!(Settings::default().auto_update);
+        assert!(parse("").auto_update);
+        assert!(parse("auto_update=true\n").auto_update);
+        assert!(!parse("auto_update=false\n").auto_update);
+        // valor desconhecido (arquivo editado à mão) não desliga as atualizações
+        assert!(parse("auto_update=talvez\n").auto_update);
+        assert!(parse("auto_update=\n").auto_update);
+        let off = serialize(&Settings {
+            auto_update: false,
+            ..Settings::default()
+        });
+        assert!(off.contains("auto_update=false"));
+        assert!(!parse(&off).auto_update);
+        assert!(parse(&serialize(&Settings::default())).auto_update);
     }
 
     #[test]

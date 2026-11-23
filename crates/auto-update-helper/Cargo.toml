@@ -1,0 +1,33 @@
+[package]
+name = "auto-update-helper"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+description = "Helper do auto-update do App Desktop no Windows: troca os arquivos em jobs com rollback (modelo `auto_update_helper` do Zed). A lógica é pura e roda em qualquer SO; só o binário é do Windows."
+
+[lib]
+name = "auto_update_helper"
+
+[[bin]]
+# Nome fixo: o instalador (`installer.iss`) e o app procuram `tools\auto_update_helper.exe`.
+name = "auto_update_helper"
+path = "src/main.rs"
+doc = false
+
+[target.'cfg(windows)'.dependencies]
+# Restart Manager, espera por PID, janela "Atualizando…" e MessageBox (somente Windows).
+windows-sys = { workspace = true, features = [
+    "Win32_Foundation",
+    "Win32_Globalization",
+    "Win32_System_RestartManager",
+    "Win32_System_Threading",
+    "Win32_UI_WindowsAndMessaging",
+] }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+
+[lints]
+workspace = true

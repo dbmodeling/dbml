@@ -1,0 +1,38 @@
+[package]
+name = "updater"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+description = "Núcleo puro do auto-update do App Desktop (manifesto, política, verificação, estados, trava)."
+
+[features]
+# Expõe o fake de `Transport` para testes de integração (desta e de outras crates).
+testing = []
+# Gancho de teste de verificação (lista de chaves injetável); nunca em release.
+harness = []
+
+[dependencies]
+semver = { workspace = true }
+sha2 = { workspace = true }
+minisign-verify = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+
+[target.'cfg(windows)'.dependencies]
+# ACL do diretório de updates e downloads (somente Windows; ver `lock.rs`).
+windows-sys = { workspace = true, features = [
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_Security_Authorization",
+] }
+
+[dev-dependencies]
+# Auto-dependência: habilita o fake de `Transport` nos testes de `tests/`.
+updater = { workspace = true, features = ["testing"] }
+tempfile = { workspace = true }
+
+[lints]
+workspace = true
