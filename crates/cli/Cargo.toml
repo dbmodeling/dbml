@@ -24,7 +24,7 @@ anyhow.workspace = true
 tracing.workspace = true
 colored.workspace = true
 opener.workspace = true
-getrandom = "0.3"
+getrandom = "0.4"
 schema.workspace = true
 dbml-syntax.workspace = true
 dbml-analysis.workspace = true
@@ -39,5 +39,5 @@ diagram-export = { path = "../diagram-export", default-features = false }
 workspace = true
 
 [dev-dependencies]
-rusqlite = { version = "=0.42.0", features = ["bundled"] }
-tokio-tungstenite = "0.29"
+rusqlite = { version = "=0.43.0", features = ["bundled"] }
+tokio-tungstenite = "0.30"

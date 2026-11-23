@@ -12,7 +12,7 @@ schema.workspace = true
 layout.workspace = true
 atomic-write.workspace = true
 diagram-export.workspace = true
-base64 = "0.22"
+base64 = "0.23"
 dbml-analysis.workspace = true
 # Embeds icons in debug builds too (otherwise rust-embed reads from disk using the
 # Linux path, which does not exist in cross-built Windows .exe binaries).
