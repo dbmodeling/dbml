@@ -1087,11 +1087,13 @@ mod tests {
                 _max: u64,
             ) -> Result<Fetched, TransportError> {
                 let bytes = match url {
-                    MANIFEST_URL => {
-                        include_bytes!("../../updater/tests/fixtures/latest.json").to_vec()
-                    }
+                    MANIFEST_URL => include_str!("../../updater/tests/fixtures/latest.json")
+                        .replace("\r\n", "\n")
+                        .into_bytes(),
                     MANIFEST_SIGNATURE_URL => {
-                        include_bytes!("../../updater/tests/fixtures/latest.json.sig").to_vec()
+                        include_str!("../../updater/tests/fixtures/latest.json.sig")
+                            .replace("\r\n", "\n")
+                            .into_bytes()
                     }
                     other => panic!("url inesperada: {other}"),
                 };

@@ -628,7 +628,7 @@ mod tests {
         fn run(&self, program: &str, args: &[OsString]) -> io::Result<CmdOutput> {
             let text: Vec<String> = args
                 .iter()
-                .map(|a| a.to_string_lossy().into_owned())
+                .map(|a| a.to_string_lossy().replace('\\', "/"))
                 .collect();
             self.calls
                 .borrow_mut()
@@ -654,7 +654,7 @@ mod tests {
         }
 
         fn is_dir(&self, path: &Path) -> bool {
-            self.app_exists && path == Path::new(APP)
+            self.app_exists && path.to_string_lossy().replace('\\', "/") == APP
         }
 
         fn create_private_dir(&self, path: &Path) -> io::Result<()> {

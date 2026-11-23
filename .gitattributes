@@ -1,0 +1,2 @@
+# Signed updater fixtures must preserve exact LF bytes across platforms (Windows checkout CRLF breaks Ed25519 signatures).
+crates/updater/tests/fixtures/* text eol=lf
