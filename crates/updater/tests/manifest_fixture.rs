@@ -2,7 +2,7 @@
 //!
 //! As fixtures em `tests/fixtures/` são a saída do script para o `release-dist` fictício de
 //! `scripts/tests/update_manifest_test.sh` (que confere, byte a byte, que o script ainda gera o
-//! mesmo texto). Aqui validamos o outro lado: `Manifest::parse` + `asset_for` nas 3 plataformas.
+//! mesmo texto). Aqui validamos o outro lado: `Manifest::parse` + `asset_for` nas 5 plataformas.
 
 #![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
 
@@ -19,6 +19,8 @@ const NOTES_URL: &str = "https://github.com/dbmodeling/dbml/releases/tag/v0.4.0"
 const ASSET_WINDOWS: &str = "db-modeling-windows-setup.exe";
 const ASSET_MACOS: &str = "db-modeling-macos-arm64.dmg";
 const ASSET_LINUX: &str = "db-modeling-linux-x86_64.tar.gz";
+const ASSET_LINUX_DEB: &str = "db-modeling-linux-amd64.deb";
+const ASSET_LINUX_RPM: &str = "db-modeling-linux-x86_64.rpm";
 
 fn parse(text: &str) -> Manifest {
     Manifest::parse(text.as_bytes())
@@ -36,16 +38,18 @@ fn manifesto_gerado_e_aceito_pelo_parser_do_cliente() {
     assert_eq!(manifest.schema, SUPPORTED_MANIFEST_SCHEMA);
     assert_eq!(manifest.version, FIXTURE_VERSION);
     assert_eq!(manifest.notes_url, NOTES_URL);
-    assert_eq!(manifest.platforms.len(), 3);
+    assert_eq!(manifest.platforms.len(), 5);
 }
 
 #[test]
-fn asset_for_aceita_as_tres_plataformas_com_url_e_sha_do_script() {
+fn asset_for_aceita_as_cinco_plataformas_com_url_e_sha_do_script() {
     let manifest = parse(FIXTURE_SIGNED_MACOS);
     for (platform, asset) in [
         (PlatformKey::WindowsX86_64, ASSET_WINDOWS),
         (PlatformKey::MacosAarch64, ASSET_MACOS),
         (PlatformKey::LinuxX86_64, ASSET_LINUX),
+        (PlatformKey::LinuxX86_64Deb, ASSET_LINUX_DEB),
+        (PlatformKey::LinuxX86_64Rpm, ASSET_LINUX_RPM),
     ] {
         let found = manifest
             .asset_for(platform)
@@ -60,7 +64,12 @@ fn team_id_so_existe_no_macos_do_build_assinado() {
     let signed = parse(FIXTURE_SIGNED_MACOS);
     let mac = signed.asset_for(PlatformKey::MacosAarch64).unwrap();
     assert_eq!(mac.team_id.as_deref(), Some(FIXTURE_TEAM_ID));
-    for platform in [PlatformKey::WindowsX86_64, PlatformKey::LinuxX86_64] {
+    for platform in [
+        PlatformKey::WindowsX86_64,
+        PlatformKey::LinuxX86_64,
+        PlatformKey::LinuxX86_64Deb,
+        PlatformKey::LinuxX86_64Rpm,
+    ] {
         assert_eq!(signed.asset_for(platform).unwrap().team_id, None);
     }
 
@@ -69,6 +78,8 @@ fn team_id_so_existe_no_macos_do_build_assinado() {
         PlatformKey::WindowsX86_64,
         PlatformKey::MacosAarch64,
         PlatformKey::LinuxX86_64,
+        PlatformKey::LinuxX86_64Deb,
+        PlatformKey::LinuxX86_64Rpm,
     ] {
         let found = unsigned.asset_for(platform).unwrap();
         assert_eq!(found.team_id, None, "{}", platform.as_str());

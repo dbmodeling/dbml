@@ -550,7 +550,7 @@ function __wbg_get_imports() {
             const ret = Object.entries(arg0);
             return ret;
         },
-        __wbg_error_3b2ceb0d3dc4709b: function(arg0, arg1) {
+        __wbg_error_6055155cf35735cc: function(arg0, arg1) {
             console.error(getStringFromWasm0(arg0, arg1));
         },
         __wbg_get_658f6698067d9515: function() { return handleError(function (arg0, arg1) {

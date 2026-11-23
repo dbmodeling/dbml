@@ -125,11 +125,17 @@ manual) e a UI mostra o texto no lugar da ação, com o link para as Releases. O
 (`updater::policy::disabled_reason`; a primeira que valer ganha):
 
 1. Variável **`DBM_UPDATE_EXPLANATION`** (não vazia): override do usuário ou do empacotador; o valor é o texto mostrado.
-2. Arquivo **`/usr/lib/db-modeling/update-explanation`** (não vazio), instalado pelos `.deb`/`.rpm`; um app aberto pelo
-   `.desktop` não herda variável de ambiente de pacote, por isso existe o arquivo. O texto atual é "Instalado pelo
-   gerenciador de pacotes; atualize com apt/dnf" e aparece sem tradução.
-3. Sistema operacional ou arquitetura sem política conhecida.
-4. Linux: nenhuma razão de ambiente (a decisão é o layout do tarball, descrito acima).
+2. Sistema operacional ou arquitetura sem política conhecida.
+3. Linux: nenhuma razão de ambiente. A decisão é o tipo de instalação, descrito abaixo. Até a v0.4.0 os `.deb`/`.rpm`
+   instalavam `/usr/lib/db-modeling/update-explanation`, que desligava o updater; os pacotes novos não o trazem mais
+   (quem tem a v0.4.0 roda `scripts/migrate-package.sh` uma vez).
+
+**Linux por `.deb`/`.rpm`.** Se o executável não está no layout do tarball nem em prefixo de sistema recusado, o app
+consulta `dpkg -S <exe>` e depois `rpm -qf <exe>`. Achando o pacote, usa a plataforma `linux-x86_64-deb` ou
+`linux-x86_64-rpm` do manifesto, baixa e verifica (sha256 + minisign) e instala com `pkexec dpkg -i <arquivo>` ou
+`pkexec dnf install -y <arquivo>`; o polkit pede a senha e o app nunca a vê. Sem `pkexec` no PATH o updater fica
+indisponível e a UI aponta a página de Releases. Limites conhecidos: o `dpkg -i` não resolve dependências novas, e o
+arquivo baixado fica no cache do usuário até o root o ler (janela de TOCTOU a decidir no code-review).
 5. Windows ou macOS com o local do app indeterminável (macOS: binário fora de um `.app`). A política **falha fechada**.
 6. **Windows** com o diretório do app sob `%ProgramFiles%` (`ProgramFiles`, `ProgramFiles(x86)` ou `ProgramW6432`).
 7. **macOS** com o bundle sob App Translocation (`/AppTranslocation/` no caminho).
@@ -344,7 +350,7 @@ Texto para colar nas notas da Release `v0.4.0`:
 | Instalador Windows | `crates/app/src/install_windows.rs` + `scripts/windows/installer.iss` | Roda o Inno em `/update=true`, reconcilia restos, chama o helper. |
 | Instalador macOS | `crates/app/src/install_macos.rs` | `hdiutil`, `codesign`/Team ID e `rsync`. |
 | Instalador Linux | `crates/app/src/install_linux.rs`, `scripts/build-linux-tarball.sh`, `scripts/install.sh` | `tar` + `rsync` no prefixo do usuário; o `install.sh` instala o tarball por padrão (sem `sudo`) e `--system` instala `.deb`/`.rpm`. |
-| Explicação dos pacotes | `scripts/linux/update-explanation` (instalado em `/usr/lib/db-modeling/update-explanation` pelo `build-deb.sh` e `build-fedora.sh`) | Desliga o auto-update nas instalações de pacote. |
+| Migração dos pacotes | `scripts/migrate-package.sh` | Roda uma vez em quem tem `.deb`/`.rpm` da v0.4.0: baixa o pacote novo, confere o sha256 e instala por cima. |
 | Preferência | `crates/app/src/settings.rs` (`auto_update`) | Interruptor persistido. |
 | Release | `.github/workflows/release.yml`, `ci.yml` | Gera o tarball, assina o helper e o instalador e, no job `publish`, gera, assina e confere `latest.json`/`latest.json.sig` numa Release rascunho antes de publicar (`scripts/{generate,sign,verify}-update-manifest.sh`). **Nunca rodou no Actions.** |
 
@@ -433,8 +439,9 @@ também está pendente. O ticket 10 registra executor e data de cada item.
 5. App sem `rsync` instalado e com prefixo de outro dono: "Falha ao atualizar".
 6. O binário do tarball roda nas duas famílias (bibliotecas de sistema).
 7. O passo novo do `release.yml` (tarball) no runner real.
-8. `.deb`: construir com `dpkg-deb` (não existe na máquina de desenvolvimento) e conferir
-   `/usr/lib/db-modeling/update-explanation`.
+8. `.deb`: construir com `dpkg-deb` (não existe na máquina de desenvolvimento) e conferir que
+   `/usr/lib/db-modeling/update-explanation` **não** está no pacote; instalar um `.deb`/`.rpm` antigo e atualizar pelo
+   app (ou por `scripts/migrate-package.sh`) com `pkexec` real.
 9. Rodar `shellcheck` nos scripts (não estava instalado).
 
 ### Ensaio de rollout (ticket 10)

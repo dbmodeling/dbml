@@ -145,7 +145,9 @@ mod tests {
               "platforms": {{
                 "windows-x86_64": {{ "url": "{url}", "sha256": "{sha}" }},
                 "macos-aarch64": {{ "url": "{url}", "sha256": "{sha}", "team_id": "ABCDE12345" }},
-                "linux-x86_64": {{ "url": "{url}", "sha256": "{sha}" }}
+                "linux-x86_64": {{ "url": "{url}", "sha256": "{sha}" }},
+                "linux-x86_64-deb": {{ "url": "{url}", "sha256": "{sha}" }},
+                "linux-x86_64-rpm": {{ "url": "{url}", "sha256": "{sha}" }}
               }}
             }}"#
         )
@@ -165,11 +167,40 @@ mod tests {
     fn interpreta_manifesto_valido() {
         let m = parsed();
         assert_eq!(m.version, "0.4.0");
-        assert_eq!(m.platforms.len(), 3);
+        assert_eq!(m.platforms.len(), 5);
         let mac = m.asset_for(PlatformKey::MacosAarch64).expect("mac");
         assert_eq!(mac.team_id.as_deref(), Some("ABCDE12345"));
         let linux = m.asset_for(PlatformKey::LinuxX86_64).expect("linux");
         assert_eq!(linux.team_id, None);
+        assert!(m.asset_for(PlatformKey::LinuxX86_64Deb).is_ok());
+        assert!(m.asset_for(PlatformKey::LinuxX86_64Rpm).is_ok());
+    }
+
+    #[test]
+    fn manifesto_antigo_sem_pacotes_continua_valido() {
+        let old = format!(
+            r#"{{
+              "schema": 1,
+              "version": "0.4.0",
+              "notes_url": "https://github.com/dbmodeling/dbml/releases/tag/v0.4.0",
+              "platforms": {{
+                "linux-x86_64": {{ "url": "{}", "sha256": "{SHA}" }}
+              }}
+            }}"#,
+            good_url()
+        );
+        let m = Manifest::parse(old.as_bytes())
+            .expect("json válido")
+            .expect("schema 1");
+        assert!(m.asset_for(PlatformKey::LinuxX86_64).is_ok());
+        assert!(matches!(
+            m.asset_for(PlatformKey::LinuxX86_64Deb),
+            Err(ManifestError::MissingPlatform("linux-x86_64-deb"))
+        ));
+        assert!(matches!(
+            m.asset_for(PlatformKey::LinuxX86_64Rpm),
+            Err(ManifestError::MissingPlatform("linux-x86_64-rpm"))
+        ));
     }
 
     #[test]

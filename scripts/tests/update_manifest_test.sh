@@ -21,6 +21,8 @@ readonly TEAM_ID="ABCDE12345"
 readonly ASSET_WINDOWS="db-modeling-windows-setup.exe"
 readonly ASSET_MACOS="db-modeling-macos-arm64.dmg"
 readonly ASSET_LINUX="db-modeling-linux-x86_64.tar.gz"
+readonly ASSET_LINUX_DEB="db-modeling-linux-amd64.deb"
+readonly ASSET_LINUX_RPM="db-modeling-linux-x86_64.rpm"
 readonly FIXTURE_SIGNED="latest.json"
 readonly FIXTURE_UNSIGNED="latest-unsigned-macos.json"
 
@@ -36,7 +38,9 @@ mkdir -p "$DIST" "$SANDBOX/tmp"
 printf 'instalador fictício do windows\n' > "$DIST/$ASSET_WINDOWS"
 printf 'imagem fictícia do macos\n' > "$DIST/$ASSET_MACOS"
 printf 'tarball fictício do linux\n' > "$DIST/$ASSET_LINUX"
-printf 'pacote que não entra no manifesto\n' > "$DIST/db-modeling-linux-amd64.deb"
+printf 'pacote deb fictício\n' > "$DIST/$ASSET_LINUX_DEB"
+printf 'pacote rpm fictício\n' > "$DIST/$ASSET_LINUX_RPM"
+printf 'script que não entra no manifesto\n' > "$DIST/db-modeling-install.sh"
 
 FAKE_CARGO="$SANDBOX/Cargo.toml"
 printf '[workspace]\nmembers = []\n\n[workspace.package]\nversion = "%s"\nedition = "2021"\n\n[workspace.dependencies]\nfoo = { version = "9.9.9" }\n' "$VERSION" > "$FAKE_CARGO"
@@ -58,6 +62,9 @@ expect_ok  "macos assinado traz team_id"                      jq -e --arg t "$TE
 expect_ok  "schema 1 e versão da tag"                         jq -e --arg v "$VERSION" '.schema == 1 and .version == $v' "$SANDBOX/signed/latest.json"
 expect_ok  "url no formato releases/download/<tag>/<ativo>"   jq -e --arg p "https://github.com/dbmodeling/dbml/releases/download/$TAG/" \
     '.platforms | to_entries | all(.value.url | startswith($p))' "$SANDBOX/signed/latest.json"
+expect_ok  "manifesto traz as 5 plataformas (inclui deb e rpm)" jq -e '.platforms | keys == ["linux-x86_64","linux-x86_64-deb","linux-x86_64-rpm","macos-aarch64","windows-x86_64"]' "$SANDBOX/signed/latest.json"
+expect_ok  "deb e rpm apontam para os ativos reais"           jq -e --arg d "$ASSET_LINUX_DEB" --arg r "$ASSET_LINUX_RPM" \
+    '(.platforms["linux-x86_64-deb"].url | endswith("/" + $d)) and (.platforms["linux-x86_64-rpm"].url | endswith("/" + $r))' "$SANDBOX/signed/latest.json"
 WIN_SHA="$(sha256sum "$DIST/$ASSET_WINDOWS" | awk '{print $1}')"
 expect_ok  "sha256 é o do ativo real"                         jq -e --arg s "$WIN_SHA" '.platforms["windows-x86_64"].sha256 == $s' "$SANDBOX/signed/latest.json"
 expect_ok  "geração não deixa temporários"                    test -z "$(find "$SANDBOX/signed" "$SANDBOX/unsigned" -name '.latest.json.*')"
@@ -67,7 +74,7 @@ expect_err "tag != Cargo.toml (v0.4.1 vs 0.4.0) falha"        gen "v0.4.1" "" "$
 expect_err "divergência não deixa manifesto"                  test -e "$SANDBOX/div/latest.json"
 expect_err "CARGO_PKG_VERSION explícito divergente falha"     env CARGO_PKG_VERSION="0.3.9" RELEASE_TAG="$TAG" RELEASE_DIST_DIR="$DIST" MANIFEST_OUTPUT="$SANDBOX/div2.json" bash "$SCRIPTS/generate-update-manifest.sh"
 expect_ok  "CARGO_PKG_VERSION explícito igual passa"          env CARGO_PKG_VERSION="$VERSION" RELEASE_TAG="$TAG" RELEASE_DIST_DIR="$DIST" MANIFEST_OUTPUT="$SANDBOX/explicit.json" bash "$SCRIPTS/generate-update-manifest.sh"
-for asset in "$ASSET_WINDOWS" "$ASSET_MACOS" "$ASSET_LINUX"; do
+for asset in "$ASSET_WINDOWS" "$ASSET_MACOS" "$ASSET_LINUX" "$ASSET_LINUX_DEB" "$ASSET_LINUX_RPM"; do
     mv "$DIST/$asset" "$SANDBOX/$asset.bak"
     expect_err "ativo ausente ($asset) falha"                 gen "$TAG" "" "$SANDBOX/miss/latest.json"
     : > "$DIST/$asset"
@@ -105,7 +112,7 @@ else
 
     SIGDIR="$SANDBOX/published"
     mkdir -p "$SIGDIR"
-    cp "$DIST/$ASSET_WINDOWS" "$DIST/$ASSET_MACOS" "$DIST/$ASSET_LINUX" "$SIGDIR/"
+    cp "$DIST/$ASSET_WINDOWS" "$DIST/$ASSET_MACOS" "$DIST/$ASSET_LINUX" "$DIST/$ASSET_LINUX_DEB" "$DIST/$ASSET_LINUX_RPM" "$SIGDIR/"
     cp "$SANDBOX/signed/latest.json" "$SIGDIR/latest.json"
 
     sign() { env "$@" UPDATER_PUBLIC_KEY="$TEST_PUB" TMPDIR="$SANDBOX/tmp" bash "$SCRIPTS/sign-update-manifest.sh" "$SIGDIR/latest.json"; }

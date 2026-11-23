@@ -81,6 +81,23 @@
   ],
   "releases": [
     {
+      "version": "0.4.1",
+      "date": "2026-11-23",
+      "highlights": [
+        {
+          "kind": "fixed",
+          "title": {
+            "pt": ".deb e .rpm agora se atualizam sozinhos",
+            "en": ".deb and .rpm installs now update themselves"
+          },
+          "detail": {
+            "pt": "Instalações por pacote deixam de mostrar 'Instalado pelo gerenciador de pacotes' e baixam, verificam e instalam a nova versão via pkexec. Quem tem a 0.4.0 roda scripts/migrate-package.sh uma vez.",
+            "en": "Package installs no longer show 'Installed by the package manager'; they download, verify and install the new version via pkexec. Users on 0.4.0 run scripts/migrate-package.sh once."
+          }
+        }
+      ]
+    },
+    {
       "version": "0.4.0",
       "date": "2026-11-23",
       "highlights": [

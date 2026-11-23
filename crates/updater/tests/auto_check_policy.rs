@@ -9,7 +9,7 @@
 
 use std::path::{Path, PathBuf};
 
-use updater::constants::{ENV_UPDATE_EXPLANATION, MANIFEST_URL, UPDATE_EXPLANATION_FILE};
+use updater::constants::{ENV_UPDATE_EXPLANATION, MANIFEST_URL};
 use updater::platform::TargetOs;
 use updater::policy::{
     DisabledReason, PolicyEnv, disabled_reason, may_check_automatically, may_check_manually,
@@ -51,7 +51,6 @@ fn fake_with_manifest() -> FakeTransport {
 fn all_reasons() -> Vec<DisabledReason> {
     vec![
         DisabledReason::Env("texto".into()),
-        DisabledReason::File("texto".into()),
         DisabledReason::UnsupportedPlatform,
         DisabledReason::UnknownAppLocation,
         DisabledReason::ProgramFiles,
@@ -134,10 +133,6 @@ impl PolicyEnv for EnvWithExplanation {
         (name == ENV_UPDATE_EXPLANATION)
             .then(|| self.0.clone())
             .flatten()
-    }
-    fn read_file(&self, path: &Path) -> Option<String> {
-        assert_eq!(path, Path::new(UPDATE_EXPLANATION_FILE));
-        None
     }
     fn target_os(&self) -> Option<TargetOs> {
         Some(TargetOs::Linux)
