@@ -153,6 +153,7 @@ jobs:
         run: |
           ./scripts/check-web-assets.sh --self-test
           ./scripts/tests/install_test.sh
+          ./scripts/tests/update_manifest_test.sh
 
       - name: Install Rust toolchain (rustfmt)
         uses: dtolnay/rust-toolchain@39008827e6b4319a349e9a42dfc90579dd25f1ca # stable
@@ -216,6 +217,12 @@ jobs:
 
       - name: Test suite (cargo test)
         run: cargo test --locked --workspace
+
+      # Already part of the workspace run above; kept explicit so the Windows-only helper
+      # (Restart Manager, "Updating..." window, jobs with rollback) has its own named step.
+      - name: Auto-update helper tests (Windows only)
+        if: runner.os == 'Windows'
+        run: cargo test --locked -p auto-update-helper
 
   # Also covers dbml-wasm: build-web-assets.sh builds the Wasm (release) and the wasm32 clippy
   # runs here.

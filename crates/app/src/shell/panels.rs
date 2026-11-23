@@ -261,6 +261,7 @@ impl Shell {
                             }))
                     }),
             )
+            .children(self.update_control(g, compact, cx))
             .child(
                 div()
                     .id("palette-pill")
@@ -837,6 +838,10 @@ impl Shell {
     fn appearance_popover(&self, g: &Glass, cx: &mut Context<Self>) -> Popover {
         let g = *g;
         let (mode, ui_scale, auto_hide) = (self.mode, self.ui_scale, self.inspector_auto_hide);
+        let (auto_update, update_note) = (
+            self.auto_update,
+            self.updates.disabled_note().map(|note| note.resolve()),
+        );
         let shell = cx.entity().downgrade();
         let on_open = shell.clone();
         let epoch = self.popover_epoch;
@@ -1155,6 +1160,63 @@ impl Shell {
                                     auto_hide,
                                     Box::new(ToggleAutoCollapseInspector),
                                 )),
+                        )
+                        .child(
+                            div()
+                                .flex()
+                                .flex_col()
+                                .gap(px(2.))
+                                .pt(px(10.))
+                                .pb(px(4.))
+                                .child(
+                                    div()
+                                        .px(px(8.))
+                                        .pb(px(4.))
+                                        .child(label(crate::i18n::t("ATUALIZAÇÕES"), "")),
+                                )
+                                .child(toggle(
+                                    crate::constants::ID_PREF_AUTO_UPDATE,
+                                    crate::i18n::t("Atualizar automaticamente"),
+                                    crate::i18n::t(
+                                        "Baixa e instala novas versões em segundo plano",
+                                    ),
+                                    auto_update,
+                                    Box::new(ToggleAutoUpdate),
+                                ))
+                                // desativada por razão do ambiente: o texto e o link das Releases
+                                // no lugar da ação (nenhum polling)
+                                .children(update_note.clone().map(|note| {
+                                    div()
+                                        .flex()
+                                        .flex_col()
+                                        .gap(px(crate::constants::UPDATE_PREF_NOTE_GAP_PX))
+                                        .px(px(crate::constants::UPDATE_PREF_NOTE_PAD_X_PX))
+                                        .child(
+                                            div()
+                                                .text_size(px(
+                                                    crate::constants::UPDATE_PREF_NOTE_FONT_PX,
+                                                ))
+                                                .text_color(g.text_faint)
+                                                .child(note),
+                                        )
+                                        .child(
+                                            div()
+                                                .id(crate::constants::ID_PREF_UPDATE_RELEASES)
+                                                .role(Role::Link)
+                                                .aria_label(crate::i18n::t("Ver Releases"))
+                                                .focusable()
+                                                .tab_stop(true)
+                                                .cursor_pointer()
+                                                .text_size(px(
+                                                    crate::constants::UPDATE_PREF_NOTE_FONT_PX,
+                                                ))
+                                                .text_color(g.accent)
+                                                .on_click(|_, _, cx| {
+                                                    cx.open_url(crate::constants::RELEASES_URL);
+                                                })
+                                                .child(crate::i18n::t("Ver Releases")),
+                                        )
+                                })),
                         ),
                 )
             })
@@ -5255,6 +5317,11 @@ fn main_menu_items(menu: PopupMenu, window: &mut Window, cx: &mut Context<PopupM
             crate::i18n::t("O que há de novo"),
             Icon::new(IconName::WandSparkles),
             Box::new(ShowWhatsNew),
+        )
+        .menu_with_icon(
+            crate::i18n::t("Verificar atualizações"),
+            Icon::new(IconName::RefreshCw),
+            Box::new(CheckForUpdates),
         )
 }
 

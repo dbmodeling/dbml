@@ -24,6 +24,10 @@ mkdir -p "${STAGE_DIR}/usr/share/icons/hicolor/scalable/apps"
 mkdir -p "${STAGE_DIR}/usr/share/icons/hicolor/256x256/apps"
 mkdir -p "${STAGE_DIR}/usr/share/mime/packages"
 mkdir -p "${STAGE_DIR}/usr/share/doc/${PKG_NAME}"
+mkdir -p "${STAGE_DIR}/usr/lib/${PKG_NAME}"
+
+# Desliga o auto-update do app: quem atualiza é o apt (o app lê este arquivo e mostra o texto).
+install -m 0644 "${ROOT_DIR}/scripts/linux/update-explanation" "${STAGE_DIR}/usr/lib/${PKG_NAME}/update-explanation"
 
 cp "${ROOT_DIR}/target/release/app" "${STAGE_DIR}/usr/bin/${PKG_NAME}"
 strip "${STAGE_DIR}/usr/bin/${PKG_NAME}" || true

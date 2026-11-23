@@ -1,0 +1,20 @@
+{
+  "schema": 1,
+  "version": "0.4.0",
+  "notes_url": "https://github.com/dbmodeling/dbml/releases/tag/v0.4.0",
+  "platforms": {
+    "windows-x86_64": {
+      "url": "https://github.com/dbmodeling/dbml/releases/download/v0.4.0/db-modeling-windows-setup.exe",
+      "sha256": "0f3036ea7092faa37fa74c8c078f3604934c500bd87d37df2d541759ebcc663b"
+    },
+    "macos-aarch64": {
+      "url": "https://github.com/dbmodeling/dbml/releases/download/v0.4.0/db-modeling-macos-arm64.dmg",
+      "sha256": "f15db7b8494f712e282463728df47acd0e3b9e2e1ec43f104f722393cde2c248",
+      "team_id": "ABCDE12345"
+    },
+    "linux-x86_64": {
+      "url": "https://github.com/dbmodeling/dbml/releases/download/v0.4.0/db-modeling-linux-x86_64.tar.gz",
+      "sha256": "f5ef34b6efaa079d94219116fabfd93e58e3ba2ef5664671c5afe3a3262d8b8d"
+    }
+  }
+}

@@ -188,3 +188,174 @@ pub const ID_TOOL_DIFF: &str = "tool-diff";
 pub const TOOL_ISLAND_OFFSET_Y_PX: f32 = -146.0;
 /// Opacidade dos cartões fantasma no minimapa.
 pub const DIFF_MINIMAP_GHOST_ALPHA: f32 = 0.5;
+
+// ---------------------------------------------------------------------------------------------
+// Auto-update (ticket 04 do spec `.scratch/auto-update-desktop`; só o App Desktop).
+// ---------------------------------------------------------------------------------------------
+
+/// Chave da preferência `auto_update` em `settings.txt` (booleana, padrão ligada).
+pub const SETTING_AUTO_UPDATE: &str = "auto_update";
+
+/// Página das Releases (link mostrado quando o auto-update está desativado ou falhou).
+pub const RELEASES_URL: &str = "https://github.com/dbmodeling/dbml/releases/latest";
+
+/// Argumento interno: `db-modeling --relaunch-after <pid>` espera o PID terminar e reabre o app.
+pub const ARG_RELAUNCH_AFTER: &str = "--relaunch-after";
+/// Intervalo entre as conferências de "o PID antigo ainda existe?" no processo de relançamento.
+#[cfg(unix)]
+pub const RELAUNCH_POLL_INTERVAL_MS: u64 = 100;
+/// Quanto o processo de relançamento espera o app antigo sair antes de desistir (o app antigo
+/// travado não deve ganhar uma segunda janela).
+#[cfg(unix)]
+pub const RELAUNCH_WAIT_TIMEOUT_SECS: u64 = 30;
+/// Sufixo que o Linux acrescenta a `current_exe()` quando o binário foi substituído (rsync).
+pub const DELETED_EXE_SUFFIX: &str = " (deleted)";
+
+/// Linux (ticket 07): pasta do app dentro do tarball e do prefixo do usuário (`db-modeling.app`).
+#[cfg(target_os = "linux")]
+pub const LINUX_APP_DIR_NAME: &str = "db-modeling.app";
+/// Linux: subpasta do executável dentro da pasta do app.
+#[cfg(target_os = "linux")]
+pub const LINUX_BIN_DIR_NAME: &str = "bin";
+/// Linux: nome do executável dentro de `bin/`.
+#[cfg(target_os = "linux")]
+pub const LINUX_EXE_NAME: &str = "db-modeling";
+/// Linux: subpasta (dentro do diretório privado de updates) onde o tarball é extraído.
+#[cfg(target_os = "linux")]
+pub const LINUX_EXTRACT_DIR_NAME: &str = "linux-extract";
+/// Linux: programas externos (resolvidos pelo `PATH`; nunca root, `apt`, `dnf` ou `pkexec`).
+#[cfg(target_os = "linux")]
+pub const LINUX_TAR_BIN: &str = "tar";
+#[cfg(target_os = "linux")]
+pub const LINUX_RSYNC_BIN: &str = "rsync";
+/// Linux: argumentos do `tar` (`-xzf <tarball> -C <destino> --no-same-owner`).
+#[cfg(target_os = "linux")]
+pub const LINUX_TAR_EXTRACT_FLAGS: &str = "-xzf";
+#[cfg(target_os = "linux")]
+pub const LINUX_TAR_DEST_FLAG: &str = "-C";
+#[cfg(target_os = "linux")]
+pub const LINUX_TAR_NO_SAME_OWNER_FLAG: &str = "--no-same-owner";
+/// Linux: argumentos do `rsync` (`-av --no-links --delete <app> <prefixo>/`).
+#[cfg(target_os = "linux")]
+pub const LINUX_RSYNC_ARCHIVE_FLAGS: &str = "-av";
+#[cfg(target_os = "linux")]
+pub const LINUX_RSYNC_NO_LINKS_FLAG: &str = "--no-links";
+#[cfg(target_os = "linux")]
+pub const LINUX_RSYNC_DELETE_FLAG: &str = "--delete";
+/// Linux: prefixos de sistema onde o updater nunca instala (só o gerenciador de pacotes).
+#[cfg(target_os = "linux")]
+pub const LINUX_SYSTEM_PREFIXES: &[&str] = &[
+    "/usr", "/bin", "/sbin", "/lib", "/lib64", "/etc", "/var", "/boot", "/snap",
+];
+/// Linux: máximo de caracteres do `stderr` do `tar`/`rsync` copiados para o log.
+#[cfg(target_os = "linux")]
+pub const LINUX_STDERR_MAX_CHARS: usize = 400;
+/// Linux: dica quando o `rsync`/`tar` não existe (só texto; o app nunca instala nada).
+#[cfg(target_os = "linux")]
+pub const LINUX_MISSING_TOOL_HINT: &str =
+    "instale com o gerenciador de pacotes (ex.: sudo apt install rsync, sudo dnf install rsync)";
+/// Diretório de processos do Linux (existência de `/proc/<pid>` = processo vivo).
+#[cfg(target_os = "linux")]
+pub const PROC_DIR: &str = "/proc";
+/// Arquivo de estado de um processo em `/proc/<pid>/stat`.
+#[cfg(target_os = "linux")]
+pub const PROC_STAT_FILE: &str = "stat";
+/// Marcador de processo zumbi em `/proc/<pid>/stat`.
+#[cfg(any(target_os = "linux", test))]
+pub const PROC_STATE_ZOMBIE: &str = "Z";
+/// Comando que testa se um PID existe (`kill -0 <pid>`), usado no macOS (sem `/proc`).
+#[cfg(target_os = "macos")]
+pub const KILL_BIN: &str = "kill";
+/// Argumento de `kill` que só testa a existência do processo.
+#[cfg(target_os = "macos")]
+pub const KILL_PROBE_SIGNAL: &str = "-0";
+/// Instalador do macOS (`install_macos.rs`, ticket 06): comandos, argumentos e marcadores da saída
+/// de `hdiutil`/`codesign`. Compilado no macOS e nos testes (a lógica é pura e roda no Linux).
+#[cfg(any(target_os = "macos", test))]
+pub mod macos_update {
+    /// `hdiutil attach -nobrowse -readonly -plist -mountroot <tmp> <dmg>`.
+    pub const HDIUTIL_BIN: &str = "hdiutil";
+    pub const HDIUTIL_ATTACH: &str = "attach";
+    pub const HDIUTIL_DETACH: &str = "detach";
+    pub const ARG_NOBROWSE: &str = "-nobrowse";
+    pub const ARG_READONLY: &str = "-readonly";
+    pub const ARG_PLIST: &str = "-plist";
+    pub const ARG_MOUNTROOT: &str = "-mountroot";
+    pub const ARG_FORCE: &str = "-force";
+    /// `codesign --verify --deep --strict <app>` e `codesign -d --verbose=4 <app>`.
+    pub const CODESIGN_BIN: &str = "codesign";
+    pub const CODESIGN_VERIFY_ARGS: [&str; 3] = ["--verify", "--deep", "--strict"];
+    pub const CODESIGN_IDENTITY_ARGS: [&str; 2] = ["-d", "--verbose=4"];
+    /// Linha da saída de `codesign -d` com o Team ID, e o valor de um build sem Team ID.
+    pub const TEAM_ID_PREFIX: &str = "TeamIdentifier=";
+    pub const TEAM_ID_NOT_SET: &str = "not set";
+    /// `rsync -av --delete --exclude "Icon?" <origem>/ <destino>/`.
+    pub const RSYNC_BIN: &str = "rsync";
+    pub const RSYNC_ARGS: [&str; 3] = ["-av", "--delete", "--exclude"];
+    pub const RSYNC_EXCLUDE_ICON: &str = "Icon?";
+    /// A barra final faz o `rsync` copiar o conteúdo do bundle, não o bundle dentro do bundle.
+    pub const DIR_TRAILING_SLASH: &str = "/";
+    /// Nome do bundle dentro do `.dmg` (`scripts/build-macos.sh`) e volume padrão do `.dmg`.
+    pub const BUNDLE_NAME: &str = "DB Modeling.app";
+    pub const VOLUME_NAME: &str = "DB Modeling";
+    /// Pasta privada de montagem em `std::env::temp_dir()` (sufixo: PID do app).
+    pub const MOUNT_ROOT_PREFIX: &str = "db-modeling-update-";
+    /// Chaves e marcadores do plist XML devolvido por `hdiutil attach -plist`.
+    pub const PLIST_KEY_MOUNT_POINT: &str = "mount-point";
+    pub const PLIST_KEY_DEV_ENTRY: &str = "dev-entry";
+    pub const PLIST_STRING_OPEN: &str = "<string>";
+    pub const PLIST_STRING_CLOSE: &str = "</string>";
+    /// Tamanho máximo do texto de `stderr` copiado para a mensagem de erro (caracteres).
+    pub const STDERR_MAX_CHARS: usize = 400;
+}
+/// Uso correto do argumento interno (mensagem de `--relaunch-after` sem PID válido).
+pub const RELAUNCH_USAGE: &str = "Uso interno: db-modeling --relaunch-after <pid>";
+/// Códigos de saída do processo curto de relançamento.
+pub const EXIT_CODE_RELAUNCH_FAILED: i32 = 1;
+pub const EXIT_CODE_USAGE: i32 = 2;
+/// Caminho manual quando o relançamento falha: a versão nova já está instalada (log e doc).
+pub const RELAUNCH_MANUAL_HINT: &str =
+    "A versão nova já está instalada. Abra o DB Modeling novamente pelo menu de aplicativos.";
+
+/// Cache do usuário onde o updater baixa (`<cache>/db-modeling/updates/`).
+pub const ENV_LOCALAPPDATA: &str = "LOCALAPPDATA";
+pub const ENV_XDG_CACHE_HOME: &str = "XDG_CACHE_HOME";
+pub const ENV_HOME: &str = "HOME";
+pub const MACOS_CACHES_SUBDIR: &str = "Library/Caches";
+pub const LINUX_CACHE_SUBDIR: &str = ".cache";
+
+/// Arquivo (na pasta de configuração) que liga a instalação ao aviso "Atualizado para X" do
+/// primeiro start depois do reinício: `versão\nurl-das-notas\n`.
+pub const UPDATE_NOTICE_FILE: &str = "update-notice.txt";
+/// Limite de tamanho do arquivo de aviso (arquivo editado à mão/corrompido é ignorado).
+pub const UPDATE_NOTICE_MAX_BYTES: u64 = 2048;
+
+/// Nome da thread do updater (aparece em depuradores e em `ps -L`).
+pub const UPDATER_THREAD_NAME: &str = "dbm-updater";
+/// Cadência do ticker que avisa a UI das mudanças de estado durante uma rodada (ms). Só roda
+/// enquanto há rodada em andamento; fora dela a UI só acorda por evento.
+pub const UPDATE_TICK_MS: u64 = 200;
+/// Salto entre relógio de parede e relógio monotônico que indica suspensão do sistema (s).
+pub const SUSPEND_GAP_SECS: u64 = 30;
+
+/// IDs de UI do controle de atualização (title bar) e da seção em Aparência.
+pub const ID_UPDATE_CONTROL: &str = "update-control";
+pub const ID_PREF_AUTO_UPDATE: &str = "pref-auto-update";
+pub const ID_PREF_UPDATE_RELEASES: &str = "pref-update-releases";
+/// Geometria do controle de atualização na title bar (px).
+pub const UPDATE_CONTROL_H_PX: f32 = 28.0;
+pub const UPDATE_CONTROL_PAD_X_PX: f32 = 10.0;
+pub const UPDATE_CONTROL_GAP_PX: f32 = 6.0;
+pub const UPDATE_CONTROL_RADIUS_PX: f32 = 8.0;
+pub const UPDATE_CONTROL_MAX_W_PX: f32 = 340.0;
+pub const UPDATE_CONTROL_FONT_PX: f32 = 12.0;
+pub const UPDATE_CONTROL_ICON_PX: f32 = 13.0;
+/// Texto de desativação / link da seção "Atualizações" do popover Aparência (px).
+pub const UPDATE_PREF_SECTION_GAP_PX: f32 = 2.0;
+pub const UPDATE_PREF_SECTION_PT_PX: f32 = 10.0;
+pub const UPDATE_PREF_SECTION_PB_PX: f32 = 4.0;
+pub const UPDATE_PREF_HEADER_PAD_X_PX: f32 = 8.0;
+pub const UPDATE_PREF_HEADER_PB_PX: f32 = 4.0;
+pub const UPDATE_PREF_NOTE_FONT_PX: f32 = 11.5;
+pub const UPDATE_PREF_NOTE_PAD_X_PX: f32 = 8.0;
+pub const UPDATE_PREF_NOTE_GAP_PX: f32 = 4.0;

@@ -87,6 +87,9 @@ actions!(
         NextDiffChange,
         PrevDiffChange,
         TogglePasswordVisibility,
+        CheckForUpdates,
+        RestartToUpdate,
+        ToggleAutoUpdate,
     ]
 );
 
@@ -106,9 +109,13 @@ pub const CANVAS: &str = "Canvas";
 /// Contexto do modal "Conectar ao banco": suas ações só existem (atalho e paleta) com ele aberto.
 pub const CONNECT_DB: &str = "ConnectDb";
 
-/// A paleta lista a ação? As do modal de conexão só enquanto ele está aberto.
+/// A paleta lista a ação? As do modal de conexão só enquanto ele está aberto; "Reiniciar para
+/// atualizar" só quando há versão instalada aguardando o reinício.
 #[must_use]
-pub fn palette_lists(entry: &Entry, connect_dialog_open: bool) -> bool {
+pub fn palette_lists(entry: &Entry, connect_dialog_open: bool, restart_ready: bool) -> bool {
+    if entry.action.partial_eq(&RestartToUpdate) {
+        return restart_ready;
+    }
     entry.context != CONNECT_DB || connect_dialog_open
 }
 
@@ -328,6 +335,16 @@ pub fn catalog() -> Vec<Entry> {
         e("ctrl-/", ShowShortcuts, "Ajuda", "Atalhos de teclado"),
         e("", ShowTour, "Ajuda", "Tour guiado"),
         e("", ShowWhatsNew, "Ajuda", "O que há de novo"),
+        // Sem atalho próprio (como Tour e Novidades): todas as três ficam na paleta (Ctrl+K) e no
+        // menu do projeto; "Reiniciar" aparece na paleta e na title bar só com versão pendente.
+        e("", CheckForUpdates, "Ajuda", "Verificar atualizações"),
+        e("", RestartToUpdate, "Ajuda", crate::updater_ui::KEY_RESTART),
+        e(
+            "",
+            ToggleAutoUpdate,
+            "Ajuda",
+            "Alternar atualização automática",
+        ),
         e(
             "",
             ExportSqlPostgres,
@@ -422,8 +439,8 @@ pub fn catalog() -> Vec<Entry> {
 #[cfg(test)]
 mod tests {
     use super::{
-        CONNECT_DB, ConnectDatabase, GROUP_CONNECTION, TogglePasswordVisibility, catalog,
-        palette_lists,
+        CONNECT_DB, CheckForUpdates, ConnectDatabase, GROUP_CONNECTION, RestartToUpdate,
+        ToggleAutoUpdate, TogglePasswordVisibility, catalog, palette_lists,
     };
 
     #[test]
@@ -435,12 +452,36 @@ mod tests {
         assert_eq!(entry.context, CONNECT_DB);
         assert_eq!(entry.group, GROUP_CONNECTION);
         assert!(entry.binding.is_some());
-        assert!(!palette_lists(&entry, false));
-        assert!(palette_lists(&entry, true));
+        assert!(!palette_lists(&entry, false, false));
+        assert!(palette_lists(&entry, true, false));
         let other = catalog()
             .into_iter()
             .find(|e| e.action.partial_eq(&ConnectDatabase))
             .unwrap();
-        assert!(palette_lists(&other, false));
+        assert!(palette_lists(&other, false, false));
+    }
+
+    #[test]
+    fn update_actions_are_in_the_palette_without_conflicting_shortcuts() {
+        for entry in catalog().into_iter().filter(|e| {
+            e.action.partial_eq(&CheckForUpdates)
+                || e.action.partial_eq(&RestartToUpdate)
+                || e.action.partial_eq(&ToggleAutoUpdate)
+        }) {
+            assert_ne!(entry.label, "");
+            assert!(palette_lists(&entry, false, true));
+        }
+        let check = catalog()
+            .into_iter()
+            .find(|e| e.action.partial_eq(&CheckForUpdates))
+            .expect("CheckForUpdates no catálogo");
+        assert_eq!(check.label, "Verificar atualizações");
+        // "Reiniciar" só aparece na paleta quando há versão pendente
+        let restart = catalog()
+            .into_iter()
+            .find(|e| e.action.partial_eq(&RestartToUpdate))
+            .expect("RestartToUpdate no catálogo");
+        assert!(!palette_lists(&restart, false, false));
+        assert!(palette_lists(&restart, false, true));
     }
 }

@@ -19,6 +19,7 @@ Workspace multi-crate integrado e funcional:
 - `dbml-syntax` & `dbml-analysis`: CST Rowan sem perdas, helpers compartilhados (`unquote`, `child_tokens`, `descendant_tokens`) e linter/autocomplete semântico.
 - `dbml-edit`: patches textuais mínimos sobre o buffer (`Patch`, `EditError`).
 - `layout`: auto-layout em camadas/clusterizado (Sugiyama), roteamento ortogonal de arestas e métricas/paleta canônicas compartilhadas (`CARD_W`, `HEADER_H`, `ROW_H`, `GROUP_PAD`, `TABLE_COLORS`, `compute_diagram_positions`).
+- `updater` (em andamento): núcleo puro do auto-update do Desktop (manifesto, política, estado, verificação minisign); spec em `.scratch/auto-update-desktop/`.
 - `dbml-wasm`: compilação Wasm (`wasm32-unknown-unknown`) e ponte UTF-16 (`LineIndex`) para Web e VS Code.
 - `cli` (`dbml-cli`): utilitário CLI e servidor Axum/WebSocket local com assets embutidos e escrita atômica.
 - `app`: aplicação desktop GPUI modularizada (`shell/mod.rs`, `shell/panels.rs`, `canvas.rs`, `canvas_geom.rs`, `session.rs`, `settings.rs`).
@@ -85,13 +86,14 @@ comandos, e palavras-chave estruturais do OpenSpec.
 - Edições da UI viram **patches textuais mínimos** (preservar comentários/formatação).
 - Núcleo desacoplado de UI; crates puras e testáveis headless.
 - Toda ação de UI: acessível por teclado, presente na command palette, sem modal, com undo.
-- **Sincronia obrigatória Desktop + CLI Web + VS Code:** Qualquer mudança em funcionalidades, comandos semânticos ou UX/UI deve ser sincronizada nas 3 modalidades (`crates/app`, `packages/canvas-web` + `crates/cli`, e `vscode-extension` + `crates/dbml-wasm`). Sempre rodar `./scripts/sync-build.sh` após alterações no núcleo ou no `packages/canvas-web`.
+- **Sincronia obrigatória Desktop + CLI Web + VS Code:** Qualquer mudança em funcionalidades, comandos semânticos ou UX/UI deve ser sincronizada nas 3 modalidades (`crates/app`, `packages/canvas-web` + `crates/cli`, e `vscode-extension` + `crates/dbml-wasm`). Sempre rodar `./scripts/sync-build.sh` após alterações no núcleo ou no `packages/canvas-web`. **Exceção:** o auto-update do binário é só do Desktop (a extensão atualiza pelo Marketplace e a CLI pelo `install.sh`); ver `openspec/adr/0010-auto-update-desktop.md`.
 - **Zero magic strings e zero magic numbers (em todo o projeto — backend, frontend e extensão):** Nunca espalhar strings literais (chaves de configuração/storage, comandos IPC/WS, nomes de eventos, variáveis de ambiente, IDs/atributos de UI) nem números mágicos (dimensões em px, limites, timeouts, paddings, margens, debounces) no meio da lógica. Centralizar sempre em constantes nomeadas (`crates/app/src/constants.rs`, `packages/canvas-web/src/constants.ts`, `vscode-extension/src/constants.ts`).
 
 ## Stack (fixar versões exatas)
 - **Desktop:** `gpui-kit` =0.8.0 (→ `gpui-pre` =0.3.9, `gpui-component` =0.8.0), `logos` 0.16.1, `rowan` 0.17.0, `petgraph` 0.8.3, `kurbo` 0.13.1, `resvg` 0.48.1, `tiny-skia` 0.12.0.
 - **Web & Wasm:** `wasm-bindgen` 0.2.129, `serde-wasm-bindgen` 0.6, `axum` 0.8, `tokio` 1.x, `tokio-tungstenite` 0.29, `rust-embed` 8.x.
 - **Frontend:** TypeScript 5.7, Vite 6.x, Vitest 5.x, esbuild 0.25.
+- **Auto-update (Desktop):** modelo do Zed, manifesto assinado com minisign; cliente `ureq` com `rustls` (versão exata fixada ao implementar). Spec em `.scratch/auto-update-desktop/`.
 - A API do GPUI muda muito: consultar o código-fonte da versão fixada (docs.rs / repositório) em vez de confiar em exemplos antigos.
 
 ## Comandos Rápidos

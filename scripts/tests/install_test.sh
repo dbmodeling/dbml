@@ -73,6 +73,62 @@ unset DBML_VERSION
 curl() { echo '{"message": "Not Found"}'; }
 expect_err "resposta sem tag_name aborta" resolve_tag
 
+# --- instalação de usuário (tarball em ~/.local, sem sudo) -----------------------
+ROOT="$(cd "$HERE/../.." && pwd)"
+LX="$FIXTURES/linux"
+mkdir -p "$LX/home" "$LX/fakebin" "$LX/dist"
+# sudo/apt/dnf/pkexec de mentira: qualquer chamada vira falha registrada.
+for tool in sudo apt-get dnf pkexec; do
+    printf '#!/bin/sh\necho "%s $*" >> "%s/forbidden.log"\nexit 1\n' "$tool" "$LX" > "$LX/fakebin/$tool"
+    chmod +x "$LX/fakebin/$tool"
+done
+make_tarball() { # <conteúdo do executável> <saída>
+    printf '#!/bin/sh\necho %s\n' "$1" > "$LX/stub"
+    chmod +x "$LX/stub"
+    DBML_APP_BIN="$LX/stub" DIST_DIR="$2" "$ROOT/scripts/build-linux-tarball.sh" >/dev/null
+}
+run_install() { # roda o script de verdade com HOME falso e sem sudo real
+    env -i HOME="$LX/home" PATH="$LX/fakebin:/usr/bin:/bin" "$ROOT/scripts/install.sh" "$@" >"$LX/out.log" 2>&1
+}
+APP="$LX/home/.local/db-modeling.app"
+DATA="$LX/home/.local/share"
+
+make_tarball v1 "$LX/dist"
+expect_ok  "install.sh padrão instala o tarball local" run_install "$LX/dist/$LINUX_TARBALL"
+[ -x "$APP/bin/db-modeling" ] && ok "binário em ~/.local/db-modeling.app/bin" || fail "binário em ~/.local/db-modeling.app/bin"
+[ "$(readlink "$LX/home/.local/bin/db-modeling")" = "$APP/bin/db-modeling" ] && ok "symlink em ~/.local/bin" || fail "symlink em ~/.local/bin"
+grep -qx "Exec=\"$APP/bin/db-modeling\" %F" "$DATA/applications/db-modeling.desktop" && ok ".desktop com Exec absoluto" || fail ".desktop com Exec absoluto"
+grep -qx "Icon=$APP/share/icons/hicolor/256x256/apps/db-modeling.png" "$DATA/applications/db-modeling.desktop" && ok ".desktop com Icon absoluto" || fail ".desktop com Icon absoluto"
+[ -f "$DATA/icons/hicolor/scalable/apps/db-modeling.svg" ] && [ -f "$DATA/icons/hicolor/256x256/apps/db-modeling.png" ] && ok "ícones do usuário" || fail "ícones do usuário"
+[ -f "$DATA/mime/packages/db-modeling.xml" ] && ok "tipo MIME do usuário" || fail "tipo MIME do usuário"
+[ -e "$LX/forbidden.log" ] && fail "nunca chama sudo/apt/dnf/pkexec" || ok "nunca chama sudo/apt/dnf/pkexec"
+
+# reinstalar troca a pasta inteira e não mexe no resto de ~/.local
+touch "$APP/arquivo-velho" "$LX/home/.local/bin/meu-script"
+make_tarball v2 "$LX/dist"
+expect_ok  "reinstalar atualiza" run_install "$LX/dist/$LINUX_TARBALL"
+grep -q v2 "$APP/bin/db-modeling" && ok "versão nova no lugar" || fail "versão nova no lugar"
+[ -e "$APP/arquivo-velho" ] && fail "reinstalar remove o que a versão nova não tem" || ok "reinstalar remove o que a versão nova não tem"
+[ -e "$LX/home/.local/bin/meu-script" ] && ok "arquivos do usuário em ~/.local intactos" || fail "arquivos do usuário em ~/.local intactos"
+
+# um arquivo comum em ~/.local/bin não é sobrescrito pelo symlink
+rm "$LX/home/.local/bin/db-modeling"
+printf 'meu' > "$LX/home/.local/bin/db-modeling"
+expect_ok  "binário do usuário em ~/.local/bin é preservado" run_install "$LX/dist/$LINUX_TARBALL"
+[ "$(cat "$LX/home/.local/bin/db-modeling")" = "meu" ] && ok "arquivo comum não vira symlink" || fail "arquivo comum não vira symlink"
+rm "$LX/home/.local/bin/db-modeling"
+
+# tarball inválido não deixa nada para trás
+printf 'lixo' > "$LX/ruim.tar.gz"
+expect_err "tarball inválido aborta" run_install "$LX/ruim.tar.gz"
+grep -q v2 "$APP/bin/db-modeling" && ok "instalação anterior intacta após falha" || fail "instalação anterior intacta após falha"
+
+expect_ok  "--uninstall remove a instalação de usuário sem sudo" run_install --uninstall
+[ -e "$APP" ] || [ -e "$DATA/applications/db-modeling.desktop" ] && fail "--uninstall remove app e atalho" || ok "--uninstall remove app e atalho"
+[ -e "$LX/home/.local/bin/meu-script" ] && ok "--uninstall preserva arquivos do usuário" || fail "--uninstall preserva arquivos do usuário"
+[ -e "$LX/forbidden.log" ] && fail "--uninstall de usuário nunca chama sudo" || ok "--uninstall de usuário nunca chama sudo"
+expect_err "opção desconhecida aborta" run_install --nao-existe
+
 echo
 if [ "$FAILS" -ne 0 ]; then
     echo "$FAILS teste(s) falharam."

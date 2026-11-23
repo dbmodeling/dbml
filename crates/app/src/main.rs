@@ -10,6 +10,7 @@
 //! DB Modeling: visual database modeling with DBML ↔ canvas.
 
 mod actions;
+mod auto_update;
 mod canvas;
 mod canvas_geom;
 mod connect_db;
@@ -26,13 +27,23 @@ mod history;
 mod i18n;
 mod ide;
 mod import_sql;
+#[cfg(target_os = "linux")]
+mod install_linux;
+#[cfg(any(target_os = "macos", test))]
+mod install_macos;
+#[cfg(any(windows, test))]
+mod install_windows;
 mod logging;
 mod motion;
 mod platform;
 mod recovery;
+mod relaunch;
 mod session;
 mod settings;
 mod shell;
+mod update_install;
+mod update_notice;
+mod updater_ui;
 
 use glass::Mode;
 use gpui_kit::*;
@@ -72,7 +83,32 @@ impl AssetSource for AppAssets {
     }
 }
 
+/// Processo curto de `--relaunch-after <pid>`: roda ANTES de logging, handoff e UI. Espera o app
+/// antigo terminar e abre o executável atualizado; falhas só vão para o `stderr` (o app antigo
+/// já saiu e a versão nova está instalada: abrir manualmente).
+fn run_relaunch_mode(args: relaunch::Args) -> bool {
+    match args {
+        relaunch::Args::Normal => false,
+        relaunch::Args::RelaunchAfter(pid) => {
+            if !relaunch::run_helper(pid) {
+                i18n::set(i18n::system());
+                eprintln!("{}", i18n::t(constants::RELAUNCH_MANUAL_HINT));
+                std::process::exit(constants::EXIT_CODE_RELAUNCH_FAILED);
+            }
+            true
+        }
+        relaunch::Args::Invalid => {
+            eprintln!("{}", i18n::t(constants::RELAUNCH_USAGE));
+            std::process::exit(constants::EXIT_CODE_USAGE);
+        }
+    }
+}
+
 fn main() {
+    let cli_args: Vec<String> = std::env::args().skip(1).collect();
+    if run_relaunch_mode(relaunch::parse_args(&cli_args)) {
+        return;
+    }
     logging::init();
     fatal::install_panic_hook();
     i18n::set(
@@ -208,4 +244,6 @@ fn main() {
         });
         shell::register_global_actions(win, &shell, cx);
     });
+    // Windows: com atualização pendente, o helper troca os arquivos ao encerrar (`--launch false`)
+    update_install::finalize_on_exit();
 }

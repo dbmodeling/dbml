@@ -1,0 +1,38 @@
+[package]
+name = "updater-net"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+description = "Rede, download e verificação do auto-update do App Desktop (ureq + rustls) sobre a crate pura `updater`."
+
+[features]
+# Gancho de teste (`DBM_UPDATE_URL` e chave pública de teste). Só existe em debug ou com esta
+# feature; NUNCA habilitar em release (o `release.yml` não pode compilar com `harness`).
+harness = ["updater/harness"]
+
+[dependencies]
+updater = { workspace = true }
+ureq = { workspace = true }
+rustls-native-certs = { workspace = true }
+url = { workspace = true }
+fs4 = { workspace = true }
+semver = { workspace = true }
+thiserror = { workspace = true }
+
+[target.'cfg(windows)'.dependencies]
+# ACL do diretório de downloads (somente Windows; ver `private_dir.rs`).
+windows-sys = { workspace = true, features = [
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_Security_Authorization",
+] }
+
+[dev-dependencies]
+updater = { workspace = true, features = ["testing"] }
+tempfile = { workspace = true }
+minisign = { workspace = true }
+
+[lints]
+workspace = true
