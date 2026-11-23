@@ -83,7 +83,7 @@ jobs:
       # On a PR, HEAD is the merge commit GitHub tests; its first parent is the base it merges
       # onto, so depth 2 is enough to list exactly what the PR changes.
       - name: Checkout
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           # Push: full history so the pushed range (before..after) can be diffed.
           fetch-depth: ${{ github.event_name == 'push' && '0' || '2' }}
@@ -179,7 +179,7 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Install native dependencies (GPUI / Wayland / Vulkan / X11 / Fontconfig)
         if: runner.os == 'Linux'
@@ -228,7 +228,7 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Install Rust toolchain (wasm32 target)
         uses: dtolnay/rust-toolchain@39008827e6b4319a349e9a42dfc90579dd25f1ca # stable
@@ -258,7 +258,7 @@ jobs:
           tool: wasm-bindgen@${{ steps.bindgen.outputs.version }}
 
       - name: Set up Node.js
-        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 24
           cache: npm
@@ -289,7 +289,7 @@ jobs:
 
       - name: Upload the CI-built bundle (divergence diagnostics)
         if: failure()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: web-bundle-ci
           path: crates/cli/web
