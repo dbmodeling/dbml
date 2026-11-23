@@ -111,13 +111,13 @@ Root: HKA; Subkey: "Software\Classes\DBModeling.Document\shell\open\command"; Va
 Root: HKCU; Subkey: "Environment"; ValueType: expandsz; ValueName: "Path"; ValueData: "{olddata};{app}"; Tasks: addtopath; Check: NeedsAddPath(ExpandConstant('{app}'))
 
 [Code]
-{ Atualização automática: instalação silenciosa chamada pelo app com /update=true. }
+// Atualização automática: instalação silenciosa chamada pelo app com /update=true.
 function IsUpdating(): Boolean;
 begin
   Result := (ExpandConstant('{param:update|false}') = 'true') and WizardSilent();
 end;
 
-{ Pasta de destino dos arquivos: {app}\install na atualização, {app} na instalação normal. }
+// Pasta de destino dos arquivos: {app}\install na atualização, {app} na instalação normal.
 function GetInstallDir(Param: String): String;
 begin
   if IsUpdating() then
@@ -126,8 +126,8 @@ begin
     Result := Param;
 end;
 
-{ Mutex que o instalador espera ficar livre. O app não cria mutex nenhum; vazio = não espera
-  (na atualização o app continua aberto de propósito). Ponto único a mudar se um dia houver um. }
+// Mutex que o instalador espera ficar livre. O app não cria mutex nenhum; vazio = não espera
+// (na atualização o app continua aberto de propósito). Ponto único a mudar se um dia houver um.
 function GetAppMutex(Param: String): String;
 begin
   Result := '';
@@ -142,7 +142,7 @@ begin
   FlagDir := AddBackslash(ExpandConstant('{app}')) + '{#UpdateFlagDir}';
   if CurStep = ssInstall then
   begin
-    { a flag só vale com a cópia completa: apaga a de uma tentativa anterior antes de copiar }
+    // a flag só vale com a cópia completa: apaga a de uma tentativa anterior antes de copiar
     DeleteFile(AddBackslash(FlagDir) + '{#UpdateFlagFile}');
   end
   else if CurStep = ssPostInstall then
