@@ -15,6 +15,14 @@
     "linux-x86_64": {
       "url": "https://github.com/dbmodeling/dbml/releases/download/v0.4.0/db-modeling-linux-x86_64.tar.gz",
       "sha256": "f5ef34b6efaa079d94219116fabfd93e58e3ba2ef5664671c5afe3a3262d8b8d"
+    },
+    "linux-x86_64-deb": {
+      "url": "https://github.com/dbmodeling/dbml/releases/download/v0.4.0/db-modeling-linux-amd64.deb",
+      "sha256": "20df2336247b5884e9d32599dd93929eeaea70f6c26444fb748fc7a73c706512"
+    },
+    "linux-x86_64-rpm": {
+      "url": "https://github.com/dbmodeling/dbml/releases/download/v0.4.0/db-modeling-linux-x86_64.rpm",
+      "sha256": "386d69eaa1008b71e5a6fc2d723b8a985c164e1f7c9b8657b04b89b7632fe6e3"
     }
   }
 }

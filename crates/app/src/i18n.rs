@@ -1072,8 +1072,12 @@ const TRANSLATIONS: &[(&str, &str)] = &[
         "No write permission on the app folder; update manually",
     ),
     (
-        "Só a instalação pelo install.sh se atualiza sozinha; atualize manualmente",
-        "Only the install.sh installation updates itself; update manually",
+        "Só instalações pelo install.sh ou pelos pacotes .deb/.rpm se atualizam sozinhas; atualize manualmente",
+        "Only installs from install.sh or the .deb/.rpm packages update themselves; update manually",
+    ),
+    (
+        "Sem pkexec neste sistema; baixe o pacote na página de Releases e instale manualmente",
+        "pkexec is not available on this system; download the package from the Releases page and install it manually",
     ),
     (
         "Instalado numa pasta do sistema; atualize pelo gerenciador de pacotes ou pelo install.sh",

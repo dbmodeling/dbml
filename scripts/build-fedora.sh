@@ -32,11 +32,9 @@ mkdir -p "${STAGE_ROOT}/usr/share/icons/hicolor/scalable/apps"
 mkdir -p "${STAGE_ROOT}/usr/share/icons/hicolor/256x256/apps"
 mkdir -p "${STAGE_ROOT}/usr/share/mime/packages"
 mkdir -p "${STAGE_ROOT}/usr/share/licenses/${PKG_NAME}"
-mkdir -p "${STAGE_ROOT}/usr/lib/${PKG_NAME}"
 
-# Desliga o auto-update do app: quem atualiza é o dnf (o app lê este arquivo e mostra o texto).
-install -m 0644 "${ROOT_DIR}/scripts/linux/update-explanation" "${STAGE_ROOT}/usr/lib/${PKG_NAME}/update-explanation"
-
+# O app se atualiza sozinho (pkexec dnf install -y); este pacote NÃO instala mais o arquivo
+# /usr/lib/db-modeling/update-explanation que desligava o auto-update.
 cp "${ROOT_DIR}/target/release/app" "${STAGE_ROOT}/usr/bin/${PKG_NAME}"
 strip "${STAGE_ROOT}/usr/bin/${PKG_NAME}" || true
 chmod 0755 "${STAGE_ROOT}/usr/bin/${PKG_NAME}"
@@ -114,8 +112,6 @@ fi
 /usr/share/icons/hicolor/256x256/apps/${PKG_NAME}.png
 /usr/share/mime/packages/${PKG_NAME}.xml
 /usr/share/licenses/${PKG_NAME}/LICENSE
-%dir /usr/lib/${PKG_NAME}
-/usr/lib/${PKG_NAME}/update-explanation
 EOF
 
 echo "==> Packaging .rpm with rpmbuild..."

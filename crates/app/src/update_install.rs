@@ -9,6 +9,7 @@
 //! 3. em `Ok` chama `state.installed()` (a UI passa a mostrar "Reiniciar para atualizar"); em `Err`
 //!    chama `state.fail()` (silencioso se automática; "Falha ao atualizar" se manual).
 
+use updater::platform::PlatformKey;
 use updater_net::fetch::FetchError;
 use updater_net::round::VerifiedUpdate;
 
@@ -57,6 +58,12 @@ pub trait Installer: Send + Sync {
     /// Padrão: "indisponível nesta plataforma"; o Linux diz se é layout ou prefixo de sistema.
     fn unsupported_note(&self) -> &'static str {
         crate::updater_ui::KEY_UNSUPPORTED_PLATFORM
+    }
+
+    /// Chave do artefato no manifesto para esta instalação. Padrão: a da plataforma em execução;
+    /// o Linux refina por tarball/`.deb`/`.rpm`.
+    fn platform(&self) -> Option<PlatformKey> {
+        PlatformKey::current()
     }
 
     /// Instala `update` (já verificado; `recheck` já foi chamado pelo controlador). Bloqueante:
@@ -138,10 +145,11 @@ fn macos_installer() -> Box<dyn Installer> {
     Box::new(crate::install_macos::MacosInstaller)
 }
 
-/// Linux (ticket 07): `tar` + `rsync --delete` para `~/.local` (ou o prefixo do executável).
+/// Linux: `tar` + `rsync --delete` para `~/.local` (tarball) ou `pkexec dpkg -i`/`dnf install -y`
+/// (`.deb`/`.rpm`).
 #[cfg(target_os = "linux")]
 fn linux_installer() -> Box<dyn Installer> {
-    Box::new(crate::install_linux::LinuxInstaller)
+    Box::new(crate::install_linux::LinuxInstaller::default())
 }
 
 #[cfg(test)]

@@ -506,7 +506,8 @@ jobs:
             exit 1
           fi
 
-      # Falha se faltar ativo, se tag/Cargo.toml divergirem ou se a tag tiver sufixo.
+      # Falha se faltar ativo (inclui o .deb e o .rpm, que o app instala via pkexec), se
+      # tag/Cargo.toml divergirem ou se a tag tiver sufixo.
       # `team_id` só entra quando o build do macOS saiu assinado.
       - name: Gerar o manifesto de atualização (latest.json)
         if: steps.tag_info.outputs.stable == 'true'

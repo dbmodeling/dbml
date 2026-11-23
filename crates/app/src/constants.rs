@@ -224,7 +224,7 @@ pub const LINUX_EXE_NAME: &str = "db-modeling";
 /// Linux: subpasta (dentro do diretório privado de updates) onde o tarball é extraído.
 #[cfg(target_os = "linux")]
 pub const LINUX_EXTRACT_DIR_NAME: &str = "linux-extract";
-/// Linux: programas externos (resolvidos pelo `PATH`; nunca root, `apt`, `dnf` ou `pkexec`).
+/// Linux: programas externos do tarball (resolvidos pelo `PATH`; o tarball nunca usa root).
 #[cfg(target_os = "linux")]
 pub const LINUX_TAR_BIN: &str = "tar";
 #[cfg(target_os = "linux")]
@@ -251,18 +251,65 @@ pub const LINUX_SYSTEM_PREFIXES: &[&str] = &[
 /// Linux: máximo de caracteres do `stderr` do `tar`/`rsync` copiados para o log.
 #[cfg(target_os = "linux")]
 pub const LINUX_STDERR_MAX_CHARS: usize = 400;
-/// Linux: dica quando o `rsync`/`tar` não existe (só texto; o app nunca instala nada).
+/// Linux: dica quando o `rsync`/`tar` não existe (só texto; o app nunca instala ferramentas).
 #[cfg(target_os = "linux")]
 pub const LINUX_MISSING_TOOL_HINT: &str =
     "instale com o gerenciador de pacotes (ex.: sudo apt install rsync, sudo dnf install rsync)";
 /// Linux: chaves `i18n` do motivo de não atualizar quando o executável não está no layout do
-/// tarball ou está num prefixo de sistema.
+/// tarball (nem é de um pacote `.deb`/`.rpm`), está num prefixo de sistema ou falta o `pkexec`.
 #[cfg(any(target_os = "linux", test))]
-pub const KEY_LINUX_NOT_TARBALL: &str =
-    "Só a instalação pelo install.sh se atualiza sozinha; atualize manualmente";
+pub const KEY_LINUX_NOT_TARBALL: &str = "Só instalações pelo install.sh ou pelos pacotes .deb/.rpm se atualizam sozinhas; atualize manualmente";
 #[cfg(target_os = "linux")]
 pub const KEY_LINUX_SYSTEM_PREFIX: &str =
     "Instalado numa pasta do sistema; atualize pelo gerenciador de pacotes ou pelo install.sh";
+#[cfg(target_os = "linux")]
+pub const KEY_LINUX_NO_PKEXEC: &str =
+    "Sem pkexec neste sistema; baixe o pacote na página de Releases e instale manualmente";
+/// Linux: nome do pacote `.deb`/`.rpm` do app (dono do executável em `/usr/bin`).
+#[cfg(target_os = "linux")]
+pub const LINUX_PACKAGE_NAME: &str = "db-modeling";
+/// Linux: consulta de dono do arquivo no `.deb` (`dpkg -S <exe>`; saída `pacote[:arq]: caminho`).
+#[cfg(target_os = "linux")]
+pub const LINUX_DPKG_BIN: &str = "dpkg";
+#[cfg(target_os = "linux")]
+pub const LINUX_DPKG_OWNER_FLAG: &str = "-S";
+/// Linux: separador entre os pacotes donos e o caminho na saída do `dpkg -S`.
+#[cfg(target_os = "linux")]
+pub const LINUX_DPKG_OWNER_SEPARATOR: &str = ": ";
+/// Linux: separador entre vários pacotes donos do mesmo arquivo na saída do `dpkg -S`.
+#[cfg(target_os = "linux")]
+pub const LINUX_DPKG_OWNERS_SEPARATOR: &str = ", ";
+/// Linux: separador do nome do pacote e da arquitetura (`db-modeling:amd64`) no `dpkg -S`.
+#[cfg(target_os = "linux")]
+pub const LINUX_DPKG_ARCH_SEPARATOR: char = ':';
+/// Linux: consulta de dono do arquivo no `.rpm` (`rpm -qf --queryformat %{NAME} <exe>`).
+#[cfg(target_os = "linux")]
+pub const LINUX_RPM_BIN: &str = "rpm";
+#[cfg(target_os = "linux")]
+pub const LINUX_RPM_OWNER_FLAG: &str = "-qf";
+#[cfg(target_os = "linux")]
+pub const LINUX_RPM_QUERYFORMAT_FLAG: &str = "--queryformat";
+#[cfg(target_os = "linux")]
+pub const LINUX_RPM_NAME_FORMAT: &str = "%{NAME}";
+/// Linux: instalação de pacote com privilégio (`pkexec`: o polkit pede a senha; o app nunca a vê).
+#[cfg(target_os = "linux")]
+pub const LINUX_PKEXEC_BIN: &str = "pkexec";
+/// Linux: `pkexec dpkg -i <arquivo.deb>`.
+#[cfg(target_os = "linux")]
+pub const LINUX_DPKG_INSTALL_FLAG: &str = "-i";
+/// Linux: `pkexec dnf install -y <arquivo.rpm>`.
+#[cfg(target_os = "linux")]
+pub const LINUX_DNF_BIN: &str = "dnf";
+#[cfg(target_os = "linux")]
+pub const LINUX_DNF_INSTALL_ARG: &str = "install";
+#[cfg(target_os = "linux")]
+pub const LINUX_DNF_ASSUME_YES_FLAG: &str = "-y";
+/// Linux: variável com os diretórios de busca de programas.
+#[cfg(target_os = "linux")]
+pub const ENV_PATH: &str = "PATH";
+/// Linux: bits de execução (dono, grupo, outros) de um arquivo.
+#[cfg(target_os = "linux")]
+pub const UNIX_EXEC_BITS: u32 = 0o111;
 /// Diretório de processos do Linux (existência de `/proc/<pid>` = processo vivo).
 #[cfg(target_os = "linux")]
 pub const PROC_DIR: &str = "/proc";

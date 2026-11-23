@@ -27,7 +27,7 @@ pub enum UpdateNotice {
 /// Texto de desativação: ou do empacotador/usuário (literal) ou uma chave traduzível.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DisabledText {
-    /// Texto vindo de `DBM_UPDATE_EXPLANATION` ou do arquivo dos pacotes: exibido como está.
+    /// Texto vindo de `DBM_UPDATE_EXPLANATION`: exibido como está.
     Verbatim(String),
     /// Chave pt-BR de `i18n::t`.
     Key(&'static str),
@@ -48,9 +48,7 @@ impl DisabledText {
 #[must_use]
 pub fn disabled_text(reason: &DisabledReason) -> DisabledText {
     match reason {
-        DisabledReason::Env(text) | DisabledReason::File(text) => {
-            DisabledText::Verbatim(text.clone())
-        }
+        DisabledReason::Env(text) => DisabledText::Verbatim(text.clone()),
         DisabledReason::UnsupportedPlatform => DisabledText::Key(KEY_UNSUPPORTED_PLATFORM),
         DisabledReason::UnknownAppLocation => DisabledText::Key(KEY_UNKNOWN_LOCATION),
         DisabledReason::ProgramFiles => DisabledText::Key(KEY_PROGRAM_FILES),
@@ -78,7 +76,11 @@ pub const KEY_PROGRAM_FILES: &str =
     "Instalado para todos os usuários; atualize baixando o instalador novo";
 pub const KEY_TRANSLOCATION: &str = "Mova o app para a pasta Aplicativos para atualizar";
 pub const KEY_NOT_WRITABLE: &str = "Sem permissão de escrita na pasta do app; atualize manualmente";
-/// Linux: o executável não está no layout do tarball (`<prefixo>/db-modeling.app/bin/db-modeling`).
+/// Linux: instalação por pacote, mas sem `pkexec` para instalar a atualização.
+#[cfg(target_os = "linux")]
+pub use crate::constants::KEY_LINUX_NO_PKEXEC;
+/// Linux: o executável não está no layout do tarball (`<prefixo>/db-modeling.app/bin/db-modeling`)
+/// nem pertence a um pacote `.deb`/`.rpm`.
 #[cfg(any(target_os = "linux", test))]
 pub use crate::constants::KEY_LINUX_NOT_TARBALL;
 /// Linux: o tarball está num prefixo de sistema (`/usr`, `/var`...), que só os pacotes mexem.
@@ -328,7 +330,7 @@ mod tests {
 
     #[test]
     fn razao_de_desativacao_do_pacote_e_exibida_literalmente() {
-        let text = disabled_text(&DisabledReason::File(
+        let text = disabled_text(&DisabledReason::Env(
             "Atualize com `apt upgrade`".to_owned(),
         ));
         assert_eq!(text.resolve(), "Atualize com `apt upgrade`");
@@ -344,7 +346,6 @@ mod tests {
     fn toda_razao_tem_texto_nao_vazio() {
         for reason in [
             DisabledReason::Env("x".into()),
-            DisabledReason::File("y".into()),
             DisabledReason::UnsupportedPlatform,
             DisabledReason::UnknownAppLocation,
             DisabledReason::ProgramFiles,

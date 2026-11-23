@@ -25,9 +25,13 @@ readonly MANIFEST_SCHEMA=1
 readonly PLATFORM_WINDOWS="windows-x86_64"
 readonly PLATFORM_MACOS="macos-aarch64"
 readonly PLATFORM_LINUX="linux-x86_64"
+readonly PLATFORM_LINUX_DEB="linux-x86_64-deb"
+readonly PLATFORM_LINUX_RPM="linux-x86_64-rpm"
 readonly ASSET_WINDOWS="db-modeling-windows-setup.exe"
 readonly ASSET_MACOS="db-modeling-macos-arm64.dmg"
 readonly ASSET_LINUX="db-modeling-linux-x86_64.tar.gz"
+readonly ASSET_LINUX_DEB="db-modeling-linux-amd64.deb"
+readonly ASSET_LINUX_RPM="db-modeling-linux-x86_64.rpm"
 readonly SEMVER_NUMBER='(0|[1-9][0-9]*)'
 readonly STABLE_TAG_REGEX="^v(${SEMVER_NUMBER}\\.${SEMVER_NUMBER}\\.${SEMVER_NUMBER})\$"
 readonly SUFFIXED_TAG_REGEX="^v${SEMVER_NUMBER}\\.${SEMVER_NUMBER}\\.${SEMVER_NUMBER}[-+]"
@@ -97,16 +101,18 @@ main() {
 
   [[ -d "$RELEASE_DIST_DIR" ]] || die "diretório de ativos inexistente: ${RELEASE_DIST_DIR}"
   local asset
-  for asset in "$ASSET_WINDOWS" "$ASSET_MACOS" "$ASSET_LINUX"; do
+  for asset in "$ASSET_WINDOWS" "$ASSET_MACOS" "$ASSET_LINUX" "$ASSET_LINUX_DEB" "$ASSET_LINUX_RPM"; do
     [[ -s "${RELEASE_DIST_DIR}/${asset}" ]] || die "ativo esperado ausente ou vazio: ${asset}"
   done
 
   local base_url="https://github.com/${repo}/releases/download/${tag}"
   local notes_url="https://github.com/${repo}/releases/tag/${tag}"
-  local sha_windows sha_macos sha_linux
+  local sha_windows sha_macos sha_linux sha_linux_deb sha_linux_rpm
   sha_windows="$(sha256_of "${RELEASE_DIST_DIR}/${ASSET_WINDOWS}")"
   sha_macos="$(sha256_of "${RELEASE_DIST_DIR}/${ASSET_MACOS}")"
   sha_linux="$(sha256_of "${RELEASE_DIST_DIR}/${ASSET_LINUX}")"
+  sha_linux_deb="$(sha256_of "${RELEASE_DIST_DIR}/${ASSET_LINUX_DEB}")"
+  sha_linux_rpm="$(sha256_of "${RELEASE_DIST_DIR}/${ASSET_LINUX_RPM}")"
 
   local out_dir tmp
   out_dir="$(dirname "$MANIFEST_OUTPUT")"
@@ -123,6 +129,8 @@ main() {
     --arg k_macos "$PLATFORM_MACOS" --arg u_macos "${base_url}/${ASSET_MACOS}" --arg s_macos "$sha_macos" \
     --arg team_id "$team_id" \
     --arg k_linux "$PLATFORM_LINUX" --arg u_linux "${base_url}/${ASSET_LINUX}" --arg s_linux "$sha_linux" \
+    --arg k_linux_deb "$PLATFORM_LINUX_DEB" --arg u_linux_deb "${base_url}/${ASSET_LINUX_DEB}" --arg s_linux_deb "$sha_linux_deb" \
+    --arg k_linux_rpm "$PLATFORM_LINUX_RPM" --arg u_linux_rpm "${base_url}/${ASSET_LINUX_RPM}" --arg s_linux_rpm "$sha_linux_rpm" \
     '{
       schema: $schema,
       version: $version,
@@ -131,7 +139,9 @@ main() {
         ($k_windows): { url: $u_windows, sha256: $s_windows },
         ($k_macos): ({ url: $u_macos, sha256: $s_macos }
                      + (if $team_id == "" then {} else { team_id: $team_id } end)),
-        ($k_linux): { url: $u_linux, sha256: $s_linux }
+        ($k_linux): { url: $u_linux, sha256: $s_linux },
+        ($k_linux_deb): { url: $u_linux_deb, sha256: $s_linux_deb },
+        ($k_linux_rpm): { url: $u_linux_rpm, sha256: $s_linux_rpm }
       }
     }' > "$tmp"
 
