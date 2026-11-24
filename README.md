@@ -8,7 +8,7 @@
 
 [Download](https://github.com/dbmodeling/dbml/releases) · [Highlights](#highlights) · [Installation](#installation--usage) · [Running & Building](#running--building) · [Contributing](#contributing)
 
-[![License: PolyForm Noncommercial](https://img.shields.io/badge/License-PolyForm%20Noncommercial-blue.svg)](LICENSE)
+[![License: Apache 2.0](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
 [![Built with Rust](https://img.shields.io/badge/Built%20with-Rust-orange.svg)](https://www.rust-lang.org/)
 
 </div>
@@ -77,6 +77,15 @@ Most visual database modeling tools either lock your schemas inside a cloud web 
   docker compose up --build
   ```
   The startup logs print the session URL (`http://127.0.0.1:3000/?token=...`). All edits to `.dbml` files and `.dbml.layout.json` sidecars are persisted directly to the mounted host directory. Health status is exposed at `GET /health`.
+
+  **Public demo behind a domain (e.g. Render).** By default the server only answers to `localhost`/`127.0.0.1`/`[::1]` and requires a random per-start session token. Behind an HTTPS reverse proxy the `Host` arrives without port, so declare it explicitly:
+  ```bash
+  # --allowed-host / DBML_ALLOWED_HOSTS: extra Host values (with or without port, comma-separated)
+  # --token / DBML_TOKEN: fixed session token (>= 16 chars, A-Z a-z 0-9 - _ . ~); open as /?token=<TOKEN>
+  docker run -p 3000:3000 -e DBML_ALLOWED_HOSTS=meu-app.onrender.com \
+    -e DBML_TOKEN=troque-por-um-segredo-longo -v "$(pwd)/demo:/workspace" dbml-web
+  ```
+  Other hosts stay refused (DNS-rebinding protection is kept) and `Origin` must still match `Host`. Raise the WebSocket limit (default 256, one per open tab) with `--max-connections N` / `DBML_MAX_CONNECTIONS`. For a link anyone can open, add `--public-demo` / `DBML_PUBLIC_DEMO=1`, which **disables the token**: whoever reaches the server can read and write everything in `/workspace` and use the database-connection feature. Use a folder with no real data, never run it on a network with reachable databases, and prefer a fixed token for anything that is not a throwaway demo.
 - **VS Code Extension:** Open any `.dbml` file using the **DB Modeling** custom editor (`vscode-extension/`).
 
 ---
@@ -127,4 +136,4 @@ Contributions are welcome! See [CONTRIBUTING.md](CONTRIBUTING.md) for the worksp
 
 Free code signing provided by [SignPath.io](https://about.signpath.io/), using a certificate by [SignPath Foundation](https://signpath.org/). DB Modeling runs locally with zero telemetry — see [SECURITY.md](SECURITY.md) for details.
 
-Licensed under the **[PolyForm Noncommercial License 1.0.0](LICENSE)**: free to clone, use, modify and share for any noncommercial purpose. **Commercial use or selling is not permitted.** For commercial licensing, open an issue.
+Licensed under the **[Apache License 2.0](LICENSE)**: free to use, modify and distribute, including commercially, provided the license text and copyright notice are kept. Copyright (c) 2026 Samuel Viana da Silva.

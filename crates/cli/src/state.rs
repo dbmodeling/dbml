@@ -232,6 +232,10 @@ struct DocumentMessage<'a> {
 pub struct AppState {
     /// Token de sessão exigido em `/ws` e `/api/*`.
     pub token: Arc<str>,
+    /// Modo demo pública: `/ws` e `/api/*` dispensam o token (ver `--public-demo`).
+    pub public_demo: bool,
+    /// Máximo de conexões WebSocket simultâneas (`--max-connections`).
+    pub max_ws_connections: usize,
     pub target_path: PathBuf,
     pub project_dir: Option<PathBuf>,
     /// Documento ativo (arquivo, sidecar, conteúdo, layout e hash) sob um único lock.
@@ -330,6 +334,8 @@ impl AppState {
 
         Ok(Self {
             token: generate_token().into(),
+            public_demo: false,
+            max_ws_connections: crate::server::MAX_WS_CONNECTIONS,
             target_path: target_abs,
             project_dir,
             doc: Arc::new(RwLock::new(DocState {
@@ -401,6 +407,27 @@ impl AppState {
                 tracing::error!("Failed to save changes: {err:#}");
             }
         });
+    }
+
+    /// Troca o token aleatório por um fixo (`--token`/`DBML_TOKEN`).
+    #[must_use]
+    pub fn with_token(mut self, token: &str) -> Self {
+        self.token = token.into();
+        self
+    }
+
+    /// Troca o limite padrão de conexões WebSocket simultâneas.
+    #[must_use]
+    pub const fn with_max_ws_connections(mut self, max: usize) -> Self {
+        self.max_ws_connections = max;
+        self
+    }
+
+    /// Liga o modo demo pública: nenhuma rota exige token. O `Host`/`Origin` continua validado.
+    #[must_use]
+    pub const fn with_public_demo(mut self, public_demo: bool) -> Self {
+        self.public_demo = public_demo;
+        self
     }
 
     /// Token de sessão desta execução (exigido em `/ws` e `/api/*`).

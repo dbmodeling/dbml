@@ -79,7 +79,7 @@ Name:           ${PKG_NAME}
 Version:        ${VERSION}
 Release:        1%{?dist}
 Summary:        Visual Database Modeler powered by DBML
-License:        MIT
+License:        Apache-2.0
 URL:            https://github.com/smovisk/db_modeling
 BuildArch:      ${ARCH}
 AutoReqProv:    no

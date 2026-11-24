@@ -64,6 +64,11 @@ pub fn non_loopback_warning(ip: std::net::IpAddr) -> Option<String> {
     ))
 }
 
+/// Aviso do `--public-demo`: sem token, o acesso é aberto a quem alcançar o servidor.
+pub const PUBLIC_DEMO_WARNING: &str = "token de sessão desativado. Qualquer pessoa que alcance \
+    este servidor lê e grava o workspace e pode usar a conexão com banco de dados. Use apenas \
+    com pasta sem dados reais.";
+
 /// Compara em tempo constante (para o comprimento do menor) para não vazar o token por timing.
 fn token_matches(expected: &str, given: &str) -> bool {
     let (a, b) = (expected.as_bytes(), given.as_bytes());
@@ -94,6 +99,9 @@ fn request_token(headers: &HeaderMap, query: Option<&str>) -> Option<String> {
 }
 
 async fn require_token(State(state): State<AppState>, req: Request, next: Next) -> Response {
+    if state.public_demo {
+        return next.run(req).await;
+    }
     let given = request_token(req.headers(), req.uri().query());
     if given.is_some_and(|g| token_matches(state.token(), &g)) {
         next.run(req).await
@@ -110,6 +118,35 @@ pub const MAX_API_BODY_BYTES: usize = 1024 * 1024;
 /// defeats DNS rebinding: the attacker's name never matches the allowlist.
 #[must_use]
 pub fn allowed_hosts(bind_host: &str, port: u16) -> Vec<String> {
+    allowed_hosts_with_extra(bind_host, port, &[])
+}
+
+/// Como [`allowed_hosts`], mais `extra` (ex.: domínio público atrás de proxy). Cada item aceita
+/// com ou sem porta: sem porta vale exatamente aquele `Host` (proxy HTTPS não envia a porta);
+/// com porta, só aquela. Curingas e itens vazios são ignorados, então os demais hosts seguem
+/// recusados (proteção contra DNS rebinding intacta).
+#[must_use]
+pub fn allowed_hosts_with_extra(bind_host: &str, port: u16, extra: &[String]) -> Vec<String> {
+    let mut hosts = base_allowed_hosts(bind_host, port);
+    for raw in extra {
+        let entry = raw.trim().to_ascii_lowercase();
+        let entry = entry
+            .strip_prefix("https://")
+            .or_else(|| entry.strip_prefix("http://"))
+            .unwrap_or(&entry)
+            .trim_end_matches('/')
+            .to_owned();
+        if entry.is_empty() || entry.contains('*') || entry.contains('/') {
+            continue;
+        }
+        if !hosts.contains(&entry) {
+            hosts.push(entry);
+        }
+    }
+    hosts
+}
+
+fn base_allowed_hosts(bind_host: &str, port: u16) -> Vec<String> {
     let mut hosts: Vec<String> = ["127.0.0.1", "localhost", "[::1]"]
         .iter()
         .map(|h| format!("{h}:{port}"))
@@ -200,14 +237,20 @@ pub fn create_router(state: AppState, allowed: Vec<String>) -> Router {
         .merge(app)
 }
 
-/// Máximo de conexões WebSocket simultâneas; além disso o upgrade é recusado com `503`.
-pub const MAX_WS_CONNECTIONS: usize = 64;
+/// Máximo padrão de conexões WebSocket simultâneas (configurável); além disso o upgrade é recusado com `503`.
+pub const MAX_WS_CONNECTIONS: usize = 256;
 
 async fn ws_handler(ws: WebSocketUpgrade, State(state): State<AppState>) -> Response {
-    let Some(slot) = state.lifecycle.try_acquire_connection(MAX_WS_CONNECTIONS) else {
+    let Some(slot) = state
+        .lifecycle
+        .try_acquire_connection(state.max_ws_connections)
+    else {
         return (
             StatusCode::SERVICE_UNAVAILABLE,
-            format!("too many open connections (limit {MAX_WS_CONNECTIONS}); close another tab"),
+            format!(
+                "too many open connections (limit {}); close another tab",
+                state.max_ws_connections
+            ),
         )
             .into_response();
     };
@@ -398,6 +441,71 @@ mod tests {
         assert_eq!(request_token(&h, None).as_deref(), Some("tk"));
         h.insert("x-dbml-token", HeaderValue::from_static("hh"));
         assert_eq!(request_token(&h, None).as_deref(), Some("hh"));
+    }
+}
+
+#[cfg(test)]
+mod exposure_tests {
+    use super::*;
+    use axum::http::HeaderValue;
+
+    fn hdr(origin: Option<&str>, host: &str) -> HeaderMap {
+        let mut h = HeaderMap::new();
+        h.insert(header::HOST, HeaderValue::from_str(host).unwrap());
+        if let Some(o) = origin {
+            h.insert(header::ORIGIN, HeaderValue::from_str(o).unwrap());
+        }
+        h
+    }
+
+    fn extra(items: &[&str]) -> Vec<String> {
+        items.iter().map(|s| (*s).to_owned()).collect()
+    }
+
+    #[test]
+    fn default_stays_loopback_only() {
+        let a = allowed_hosts_with_extra("0.0.0.0", 3000, &[]);
+        assert_eq!(a, allowed_hosts("0.0.0.0", 3000));
+        assert!(!request_allowed(&hdr(None, "meu-app.onrender.com"), &a));
+    }
+
+    #[test]
+    fn extra_host_without_port_is_accepted_behind_https_proxy() {
+        let a = allowed_hosts_with_extra("0.0.0.0", 3000, &extra(&["Meu-App.onrender.com"]));
+        assert!(request_allowed(&hdr(None, "meu-app.onrender.com"), &a));
+        assert!(request_allowed(
+            &hdr(Some("https://meu-app.onrender.com"), "meu-app.onrender.com"),
+            &a
+        ));
+        assert!(!request_allowed(
+            &hdr(Some("https://evil.example"), "meu-app.onrender.com"),
+            &a
+        ));
+    }
+
+    #[test]
+    fn extra_host_only_matches_declared_form_and_others_stay_refused() {
+        let a = allowed_hosts_with_extra("0.0.0.0", 3000, &extra(&["demo.example.com:8080"]));
+        assert!(request_allowed(&hdr(None, "demo.example.com:8080"), &a));
+        assert!(!request_allowed(&hdr(None, "demo.example.com"), &a));
+        assert!(!request_allowed(&hdr(None, "evil.example"), &a));
+    }
+
+    #[test]
+    fn extra_host_ignores_wildcards_empty_and_url_forms() {
+        let a = allowed_hosts_with_extra(
+            "0.0.0.0",
+            3000,
+            &extra(&["*", "", "  ", "*.example.com", "https://ok.example.com/"]),
+        );
+        assert!(!request_allowed(&hdr(None, "anything.example.com"), &a));
+        assert!(request_allowed(&hdr(None, "ok.example.com"), &a));
+    }
+
+    #[test]
+    fn fixed_token_is_compared_like_any_other() {
+        assert!(token_matches("fixed-token-1234567", "fixed-token-1234567"));
+        assert!(!token_matches("fixed-token-1234567", "random"));
     }
 }
 

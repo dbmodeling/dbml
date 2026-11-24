@@ -62,7 +62,7 @@ FROM debian:bookworm-slim AS runtime
 LABEL org.opencontainers.image.title="DB Modeling Web Server" \
       org.opencontainers.image.description="Interactive DBML visual database modeling web server (dbml CLI)" \
       org.opencontainers.image.source="https://github.com/dbmodeling/dbml" \
-      org.opencontainers.image.licenses="PolyForm-Noncommercial-1.0.0"
+      org.opencontainers.image.licenses="Apache-2.0"
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates curl \
