@@ -382,7 +382,7 @@ OR MIT), `rustls-webpki` 0.103.16 (ISC), `rustls-pki-types` 1.15.1 e `ureq-proto
 listada está entre as aceitas em `deny.toml` (`Apache-2.0`, `MIT`, `ISC`, `CDLA-Permissive-2.0`). Não foi verificado
 `cargo deny check advisories`, `bans` nem `sources`. Rodar `cargo deny check` no CI (`security.yml`) é o veredito. O
 `deny.toml` **não foi alterado** e a troca de licença do projeto para Apache-2.0 ainda não foi feita: o workspace
-declara `PolyForm-Noncommercial-1.0.0` (as crates do workspace são ignoradas por `private = { ignore = true }`).
+declara `Apache-2.0` (as crates do workspace são ignoradas por `private = { ignore = true }`).
 
 ## Testes manuais pendentes
 

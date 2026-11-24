@@ -128,6 +128,8 @@ mod tests {
             let (tx, _) = broadcast::channel(1);
             let state = AppState {
                 token: "t".into(),
+                public_demo: false,
+                max_ws_connections: 1,
                 target_path: dir.clone(),
                 project_dir: Some(dir.clone()),
                 doc: Arc::new(RwLock::new(DocState {
