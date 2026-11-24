@@ -81,6 +81,23 @@
   ],
   "releases": [
     {
+      "version": "0.4.3",
+      "date": "2026-11-23",
+      "highlights": [
+        {
+          "kind": "added",
+          "title": {
+            "pt": "Servidor web pronto para demo pública",
+            "en": "Web server ready for public demos"
+          },
+          "detail": {
+            "pt": "Novas opções --allowed-host, --token e --public-demo (ou DBML_ALLOWED_HOSTS, DBML_TOKEN e DBML_PUBLIC_DEMO) permitem publicar o servidor atrás de um domínio. Sem elas, tudo continua restrito a localhost. O projeto agora usa a licença Apache-2.0.",
+            "en": "New --allowed-host, --token and --public-demo options (or DBML_ALLOWED_HOSTS, DBML_TOKEN and DBML_PUBLIC_DEMO) let you publish the server behind a domain. Without them everything stays restricted to localhost. The project now uses the Apache-2.0 license."
+          }
+        }
+      ]
+    },
+    {
       "version": "0.4.2",
       "date": "2026-11-23",
       "highlights": [

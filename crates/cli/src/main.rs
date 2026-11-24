@@ -79,7 +79,14 @@ async fn main() -> anyhow::Result<()> {
     }
     let config = cli.resolve_config()?;
 
-    let state = AppState::new(config.file.clone()).await?;
+    let mut state = AppState::new(config.file.clone()).await?;
+    if let Some(token) = &config.exposure.token {
+        state = state.with_token(token);
+    }
+    state = state.with_public_demo(config.exposure.public_demo);
+    if let Some(max) = config.exposure.max_connections {
+        state = state.with_max_ws_connections(max);
+    }
 
     // Inicia o observador de arquivos no disco se não desativado
     if !config.no_watch {
@@ -126,6 +133,13 @@ async fn main() -> anyhow::Result<()> {
     if let Some(warning) = server::non_loopback_warning(local_addr.ip()) {
         println!("\n  {} {}", "AVISO:".red().bold(), warning.red());
     }
+    if config.exposure.public_demo {
+        println!(
+            "\n  {} {}",
+            "PUBLIC DEMO:".red().bold(),
+            server::PUBLIC_DEMO_WARNING.red()
+        );
+    }
     println!(
         "\n  {} Press {} to stop the server.\n",
         "Tip:".yellow(),
@@ -143,7 +157,11 @@ async fn main() -> anyhow::Result<()> {
 
     let app = server::create_router(
         state.clone(),
-        server::allowed_hosts(&config.host, local_addr.port()),
+        server::allowed_hosts_with_extra(
+            &config.host,
+            local_addr.port(),
+            &config.exposure.allowed_hosts,
+        ),
     );
     let shutdown_state = state.clone();
 

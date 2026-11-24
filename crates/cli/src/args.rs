@@ -122,6 +122,34 @@ impl ImportDialect {
     }
 }
 
+/// Flags que controlam a exposição do servidor além do loopback (demo pública atrás de proxy).
+/// Sem nenhuma delas o servidor continua restrito a `localhost` com token aleatório por execução.
+#[derive(clap::Args, Debug, Clone, Default)]
+pub struct ExposureArgs {
+    /// Extra `Host` accepted besides loopback/bind (with or without port; repeatable or
+    /// comma-separated). Needed behind a reverse proxy, e.g. `meu-app.onrender.com`
+    #[arg(
+        long = "allowed-host",
+        env = "DBML_ALLOWED_HOSTS",
+        value_delimiter = ',',
+        value_name = "HOST"
+    )]
+    pub allowed_hosts: Vec<String>,
+
+    /// Fixed session token instead of a random one per start (min 16 chars)
+    #[arg(long, env = "DBML_TOKEN", value_name = "TOKEN", hide_env_values = true)]
+    pub token: Option<String>,
+
+    /// DANGEROUS: no session token required. Anyone who can reach the server can read and write
+    /// the workspace and use the database-connection feature. Only for throwaway public demos
+    #[arg(long, env = "DBML_PUBLIC_DEMO")]
+    pub public_demo: bool,
+
+    /// Max simultaneous WebSocket connections (one per open tab; default 256)
+    #[arg(long, env = "DBML_MAX_CONNECTIONS", value_name = "N")]
+    pub max_connections: Option<usize>,
+}
+
 #[derive(Parser, Debug)]
 #[command(name = "dbml")]
 #[command(about = "DB Modeling CLI - Interactive database schema viewer and editor")]
@@ -149,6 +177,9 @@ pub struct Cli {
     /// Disable watching for external file changes
     #[arg(long)]
     pub no_watch: bool,
+
+    #[command(flatten)]
+    pub exposure: ExposureArgs,
 }
 
 #[derive(Subcommand, Debug)]
@@ -174,6 +205,9 @@ pub enum Commands {
         /// Disable watching for external file changes
         #[arg(long)]
         no_watch: bool,
+
+        #[command(flatten)]
+        exposure: ExposureArgs,
     },
     /// Alias to start the web server
     Serve {
@@ -196,6 +230,9 @@ pub enum Commands {
         /// Disable watching for external file changes
         #[arg(long)]
         no_watch: bool,
+
+        #[command(flatten)]
+        exposure: ExposureArgs,
     },
     /// Export a .dbml file to SQL DDL
     Export {
@@ -311,7 +348,11 @@ pub struct RunConfig {
     pub host: String,
     pub no_open: bool,
     pub no_watch: bool,
+    pub exposure: ExposureArgs,
 }
+
+/// Tamanho mínimo de um token fixo (`--token`/`DBML_TOKEN`).
+pub const MIN_FIXED_TOKEN_LEN: usize = 16;
 
 impl Cli {
     /// Resolves CLI flags and fallback session target into a [`RunConfig`].
@@ -320,7 +361,7 @@ impl Cli {
     ///
     /// Returns an error if no target file or folder was provided and no previous session exists.
     pub fn resolve_config(self) -> anyhow::Result<RunConfig> {
-        let (file, port, host, no_open, no_watch) = match self.command {
+        let (file, port, host, no_open, no_watch, exposure) = match self.command {
             Some(
                 Commands::Run {
                     file,
@@ -328,6 +369,7 @@ impl Cli {
                     host,
                     no_open,
                     no_watch,
+                    exposure,
                 }
                 | Commands::Serve {
                     file,
@@ -335,8 +377,9 @@ impl Cli {
                     host,
                     no_open,
                     no_watch,
+                    exposure,
                 },
-            ) => (file, port, host, no_open, no_watch),
+            ) => (file, port, host, no_open, no_watch, exposure),
             Some(Commands::Export { .. }) => {
                 anyhow::bail!("export command should be handled before starting the web server")
             }
@@ -349,7 +392,14 @@ impl Cli {
             Some(Commands::Import { .. }) => {
                 anyhow::bail!("import command should be handled before starting the web server")
             }
-            None => (self.file, self.port, self.host, self.no_open, self.no_watch),
+            None => (
+                self.file,
+                self.port,
+                self.host,
+                self.no_open,
+                self.no_watch,
+                self.exposure,
+            ),
         };
 
         let resolved_file = if let Some(f) = file {
@@ -364,12 +414,30 @@ impl Cli {
             }
         };
 
+        anyhow::ensure!(
+            exposure.max_connections != Some(0),
+            "--max-connections/DBML_MAX_CONNECTIONS must be at least 1"
+        );
+        if let Some(token) = &exposure.token {
+            anyhow::ensure!(
+                token.len() >= MIN_FIXED_TOKEN_LEN,
+                "--token/DBML_TOKEN needs at least {MIN_FIXED_TOKEN_LEN} characters"
+            );
+            anyhow::ensure!(
+                token
+                    .bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || b"-_.~".contains(&b)),
+                "--token/DBML_TOKEN accepts only A-Z a-z 0-9 - _ . ~"
+            );
+        }
+
         Ok(RunConfig {
             file: resolved_file,
             port,
             host,
             no_open,
             no_watch,
+            exposure,
         })
     }
 }
@@ -377,6 +445,52 @@ impl Cli {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn exposure_flags_parse_and_default_to_restricted() {
+        let cli = Cli::try_parse_from(["dbml", "run", "a.dbml"]).unwrap();
+        let cfg = cli.resolve_config().unwrap();
+        assert_eq!(cfg.exposure.allowed_hosts, Vec::<String>::new());
+        assert!(cfg.exposure.token.is_none() && !cfg.exposure.public_demo);
+
+        let cli = Cli::try_parse_from([
+            "dbml",
+            "run",
+            "a.dbml",
+            "--allowed-host",
+            "a.example.com,b.example.com",
+            "--allowed-host",
+            "c.example.com:8080",
+            "--token",
+            "0123456789abcdef",
+            "--public-demo",
+        ])
+        .unwrap();
+        let cfg = cli.resolve_config().unwrap();
+        assert_eq!(cfg.exposure.allowed_hosts.len(), 3);
+        assert_eq!(cfg.exposure.token.as_deref(), Some("0123456789abcdef"));
+        assert!(cfg.exposure.public_demo);
+    }
+
+    #[test]
+    fn max_connections_parses_and_rejects_zero() {
+        let cli =
+            Cli::try_parse_from(["dbml", "run", "a.dbml", "--max-connections", "500"]).unwrap();
+        assert_eq!(
+            cli.resolve_config().unwrap().exposure.max_connections,
+            Some(500)
+        );
+        let cli = Cli::try_parse_from(["dbml", "run", "a.dbml", "--max-connections", "0"]).unwrap();
+        assert!(cli.resolve_config().is_err());
+    }
+
+    #[test]
+    fn short_or_odd_fixed_token_is_rejected() {
+        for bad in ["short", "has space 0123456789", "with?query=0123456789"] {
+            let cli = Cli::try_parse_from(["dbml", "run", "a.dbml", "--token", bad]).unwrap();
+            assert!(cli.resolve_config().is_err(), "{bad}");
+        }
+    }
 
     #[test]
     fn cli_parses_export_subcommand_with_all_dialects() {
